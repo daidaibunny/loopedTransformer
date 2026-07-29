@@ -12,15 +12,15 @@
 - [x] Create and validate the 100,000-row train subset with the exact 50:35:15 ratio.
 - [x] Split 50,000 held-out rows into disjoint 25,000-row validation and test sets.
 - [x] Freeze and enforce the required Mix and per-dataset evaluation metric contract.
-- [ ] Verify the installed Qwen3-VL implementation and exact layer/module boundaries.
-- [ ] Add failing acceptance tests for sections 27–29 of the recurrent v1.0 specification.
-- [ ] Implement latent-slot insertion and the shared 16-slot seed-42 initialization file.
-- [ ] Implement four-pass Layers 13–20 recurrence with detached prefix K/V evidence.
-- [ ] Implement the zero-output recurrent connector and EOS-conditioned late fusion.
-- [ ] Implement Base, EOS-only, slots-only, full, slot-count, and loop-count variants.
-- [ ] Implement warm-up heads, losses, Stage 1, and Stage 2 LoRA trainability allowlists.
-- [ ] Implement deterministic paired training data, optimizer, scheduler, and full RNG resume.
-- [ ] Add required per-step and per-recurrent-pass diagnostics.
+- [x] Verify the installed Qwen3-VL implementation and exact layer/module boundaries.
+- [x] Add failing acceptance tests for sections 27–29 of the recurrent v1.0 specification.
+- [x] Implement latent-slot insertion and the shared 16-slot seed-42 initialization file.
+- [x] Implement four-pass Layers 13–20 recurrence with detached prefix K/V evidence.
+- [x] Implement the zero-output recurrent connector and EOS-conditioned late fusion.
+- [x] Implement Base, EOS-only, slots-only, full, slot-count, and loop-count variants.
+- [x] Implement warm-up heads, losses, Stage 1, and Stage 2 LoRA trainability allowlists.
+- [x] Implement deterministic paired training data, optimizer, scheduler, and full RNG resume.
+- [x] Add required per-step and per-recurrent-pass diagnostics.
 - [ ] Pass unit, integration, equivalence, gradient, and two-GPU training smoke tests.
 - [ ] Monitor both GPUs idle for three continuous minutes before the full launch.
 - [ ] Launch the two-stage training in a unique tmux session and verify stable progress.
