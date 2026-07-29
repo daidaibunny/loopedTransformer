@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Build and validate data loading for `looped_vl_mix_v1`.
+- Build and validate data loading for the 100,000-row train subset.
 - Use the frozen local Qwen3-VL-Embedding-2B checkpoint for smoke tests only.
 - Do not train, create an optimizer, call backward, or modify model weights.
 
@@ -15,7 +15,8 @@
 
 ## Data
 
-- Dataset root: `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1`.
+- Dataset root: `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000`.
+- Parent full dataset: `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1`.
 - Resolve COCO and CLEVR with `image_path`.
 - Resolve GQA Balanced from its materialized image cache by `image_id`.
 - Preserve exact train and validation source ratios and never use test samples.

@@ -9,11 +9,20 @@ from PIL import Image
 from torch.utils.data import DataLoader
 
 from looped_vl.data import (
+	DEFAULT_DATASET_ROOT,
 	GQAImageResolver,
 	LoopedVLMixtureDataset,
 	mixture_collate,
 	select_source_balanced_indices,
 )
+
+
+def test_default_dataset_root_uses_100k_experiment_train_split() -> None:
+	actual_root = DEFAULT_DATASET_ROOT
+	expected_root = Path(
+		"/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000",
+	)
+	assert actual_root == expected_root
 
 
 def write_image(path: Path, color: tuple[int, int, int]) -> None:

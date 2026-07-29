@@ -15,7 +15,7 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
-from looped_vl.data import LoopedVLMixtureDataset, mixture_collate
+from looped_vl.data import DEFAULT_DATASET_ROOT, LoopedVLMixtureDataset, mixture_collate
 from looped_vl.smoke import (
 	assert_model_frozen,
 	checkpoint_sha256,
@@ -255,7 +255,7 @@ def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument(
 		"--dataset-root",
-		default="/mnt/afs/liyiwei/datasets/looped_vl_mix_v1",
+		default=DEFAULT_DATASET_ROOT,
 	)
 	parser.add_argument(
 		"--gqa-materialized-root",

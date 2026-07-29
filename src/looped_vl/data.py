@@ -14,6 +14,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 SOURCE_ORDER = ("coco", "gqa_balanced", "clevr")
+DEFAULT_DATASET_ROOT = Path("/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000")
 SOURCE_INSTRUCTIONS = {
 	"coco": "Represent the image and caption for multimodal retrieval.",
 	"gqa_balanced": "Represent the image and question for visual reasoning.",

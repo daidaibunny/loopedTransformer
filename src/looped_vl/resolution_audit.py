@@ -12,7 +12,7 @@ from typing import Any
 from PIL import Image
 from qwen_vl_utils.vision_process import smart_resize
 
-from looped_vl.data import LoopedVLMixtureDataset
+from looped_vl.data import DEFAULT_DATASET_ROOT, LoopedVLMixtureDataset
 
 QWEN_IMAGE_FACTOR = 32
 
@@ -166,7 +166,7 @@ def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument(
 		"--dataset-root",
-		default="/mnt/afs/liyiwei/datasets/looped_vl_mix_v1",
+		default=DEFAULT_DATASET_ROOT,
 	)
 	parser.add_argument(
 		"--gqa-materialized-root",
