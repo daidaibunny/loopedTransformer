@@ -21,6 +21,6 @@
 - [x] Implement warm-up heads, losses, Stage 1, and Stage 2 LoRA trainability allowlists.
 - [x] Implement deterministic paired training data, optimizer, scheduler, and full RNG resume.
 - [x] Add required per-step and per-recurrent-pass diagnostics.
-- [ ] Pass unit, integration, equivalence, gradient, and two-GPU training smoke tests.
-- [ ] Monitor both GPUs idle for three continuous minutes before the full launch.
-- [ ] Launch the two-stage training in a unique tmux session and verify stable progress.
+- [x] Pass unit, integration, equivalence, gradient, and two-GPU training smoke tests.
+- [x] Monitor both GPUs idle for three continuous minutes before the full launch.
+- [x] Launch the two-stage training in a unique tmux session and verify stable progress.
