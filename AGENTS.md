@@ -12,7 +12,7 @@
 ## Remote execution
 
 - Use only SSH alias `gyy1` and its two assigned physical GPUs, 0 and 1.
-- Use `/mnt/afs/liyiwei/looped_vl` as the remote code root.
+- Use the official Git clone at `/mnt/afs/liyiwei/loopedTransformer` as the remote code root.
 - Use `/mnt/afs/likangle/reserach/LOCUS-MLLM/envs/LOCUS/bin/python`.
 - Run long jobs in uniquely named detached tmux sessions with separate logs.
 - Before a two-GPU training launch, verify both GPUs have no compute processes for three

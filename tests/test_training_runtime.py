@@ -17,6 +17,7 @@ from looped_vl.training.config import TrainingStageConfig
 from looped_vl.training.optimizer import build_optimizer_and_scheduler
 from looped_vl.training.reproducibility import seed_everything
 from looped_vl.training.step import compose_stage_loss
+from looped_vl.training.train import _resolve_git_commit
 
 
 def test_stage_configs_match_all_fixed_optimizer_values() -> None:
@@ -124,3 +125,12 @@ def test_stage_loss_weights_are_exact() -> None:
 
 	assert stage1.item() == pytest.approx(2.0 + 3.0 + 0.05 * 4.0)
 	assert stage2.item() == pytest.approx(10.0 + 0.2 * 2.0 + 0.2 * 3.0 + 0.05 * 4.0)
+
+
+def test_explicit_commit_allows_a_non_git_launch_directory(tmp_path: Path) -> None:
+	commit = "a" * 40
+
+	assert _resolve_git_commit(tmp_path, commit) == commit
+
+	with pytest.raises(RuntimeError, match="not a Git checkout"):
+		_resolve_git_commit(tmp_path, None)

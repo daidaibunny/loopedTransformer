@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--master-slot-path",
 		type=Path,
-		default=Path("/mnt/afs/liyiwei/looped_vl/artifacts/master_slot_init_seed42.pt"),
+		default=Path("/mnt/afs/liyiwei/loopedTransformer/artifacts/master_slot_init_seed42.pt"),
 	)
 	parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
 	parser.add_argument(

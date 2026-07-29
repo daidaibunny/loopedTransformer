@@ -52,14 +52,26 @@ def _append_json_line(path: Path, value: Any) -> None:
 		handle.write(json.dumps(value, sort_keys=True) + "\n")
 
 
-def _git_commit(project_root: Path) -> str:
-	result = subprocess.run(
-		["git", "rev-parse", "HEAD"],
-		cwd=project_root,
-		check=True,
-		capture_output=True,
-		text=True,
-	)
+def _resolve_git_commit(project_root: Path, explicit_commit: str | None) -> str:
+	"""Return a validated explicit commit or resolve HEAD from a real Git checkout."""
+	if explicit_commit is not None:
+		if len(explicit_commit) != 40 or any(
+			character not in "0123456789abcdef" for character in explicit_commit.lower()
+		):
+			raise ValueError("code_commit must be a full 40-character hexadecimal commit")
+		return explicit_commit.lower()
+	try:
+		result = subprocess.run(
+			["git", "rev-parse", "HEAD"],
+			cwd=project_root,
+			check=True,
+			capture_output=True,
+			text=True,
+		)
+	except subprocess.CalledProcessError as error:
+		raise RuntimeError(
+			f"Training project root is not a Git checkout: {project_root}",
+		) from error
 	return result.stdout.strip()
 
 
@@ -429,6 +441,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		_write_json(output_dir / "status.json", {"status": "initializing"})
 	dist.barrier()
 	project_root = Path(args.project_root)
+	git_commit = _resolve_git_commit(project_root, args.code_commit)
 	model_config = RecurrentModelConfig.from_yaml(args.model_config)
 	model_checkpoint_path = Path(args.model_root) / "model.safetensors"
 	semantic_checkpoint_path = Path(args.semantic_decoder_root) / "model.safetensors"
@@ -466,7 +479,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	manifest = {
 		"scope": "recurrent_latent_slot_qwen3vl_v1",
 		"hostname": socket.gethostname(),
-		"git_commit": _git_commit(project_root),
+		"git_commit": git_commit,
 		"command": sys.argv,
 		"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
 		"world_size": world_size,
@@ -553,7 +566,12 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 def parse_args() -> argparse.Namespace:
 	"""Parse the complete two-stage training command."""
 	parser = argparse.ArgumentParser(description=__doc__)
-	parser.add_argument("--project-root", type=Path, default=Path("/mnt/afs/liyiwei/looped_vl"))
+	parser.add_argument(
+		"--project-root",
+		type=Path,
+		default=Path("/mnt/afs/liyiwei/loopedTransformer"),
+	)
+	parser.add_argument("--code-commit")
 	parser.add_argument("--model-config", type=Path, default=Path("configs/base.yaml"))
 	parser.add_argument("--stage1-config", type=Path, default=Path("configs/stage1.yaml"))
 	parser.add_argument("--stage2-config", type=Path, default=Path("configs/stage2.yaml"))
@@ -570,7 +588,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--master-slot-path",
 		type=Path,
-		default=Path("/mnt/afs/liyiwei/looped_vl/artifacts/master_slot_init_seed42.pt"),
+		default=Path("/mnt/afs/liyiwei/loopedTransformer/artifacts/master_slot_init_seed42.pt"),
 	)
 	parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
 	parser.add_argument(
