@@ -126,6 +126,18 @@ def test_recurrent_connector_starts_as_an_exact_zero_residual() -> None:
 	assert connector.up_projection.weight.count_nonzero().item() == 0
 
 
+def test_recurrent_components_run_after_bfloat16_precision_alignment() -> None:
+	connector = RecurrentConnector(hidden_size=32, bottleneck_dim=8).to(torch.bfloat16)
+	fusion = EOSConditionedSlotFusion(hidden_size=32, attention_dim=8).to(torch.bfloat16)
+	hidden_states = torch.randn(2, 5, 32, dtype=torch.bfloat16)
+
+	connector_output = connector(hidden_states)
+	fusion_output = fusion(hidden_states[:, -1], hidden_states[:, :4])
+
+	assert connector_output.dtype == torch.bfloat16
+	assert fusion_output.fused_embedding.dtype == torch.bfloat16
+
+
 def test_late_fusion_starts_as_identity_and_k1_attention_is_one() -> None:
 	fusion = EOSConditionedSlotFusion(hidden_size=32, attention_dim=8)
 	eos = torch.randn(2, 32)

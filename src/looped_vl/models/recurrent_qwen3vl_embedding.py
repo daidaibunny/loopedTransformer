@@ -1,0 +1,590 @@
+"""Exact recurrent latent-slot forward path for Qwen3-VL-Embedding-2B."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import torch
+from torch import nn
+from torch.nn import functional as F
+from transformers.masking_utils import create_causal_mask
+from transformers.models.qwen3_vl.modeling_qwen3_vl import (
+	apply_rotary_pos_emb,
+	repeat_kv,
+)
+
+from looped_vl.models.config import RecurrentModelConfig
+from looped_vl.models.late_slot_fusion import EOSConditionedSlotFusion
+from looped_vl.models.latent_slot_inserter import (
+	AugmentedSequence,
+	augment_before_last_valid_token,
+)
+from looped_vl.models.lora import inject_loop_layer_lora
+from looped_vl.models.recurrent_connector import RecurrentConnector
+from looped_vl.models.recurrent_decoder_block import (
+	build_dynamic_attention_mask,
+	detach_prefix_key_values,
+)
+
+
+@dataclass(frozen=True)
+class PrefixKeyValue:
+	"""One loop layer's detached, already-rotated prefix evidence."""
+
+	key: torch.Tensor
+	value: torch.Tensor
+
+
+@dataclass(frozen=True)
+class RecurrentEmbeddingOutput:
+	"""Normalized retrieval output plus contextual slots and diagnostics."""
+
+	embeddings: torch.Tensor
+	slot_hidden_states: torch.Tensor
+	eos_hidden_state: torch.Tensor
+	attention_weights: torch.Tensor | None
+	diagnostics: dict[str, Any]
+
+
+def _gather_sequence_positions(
+	hidden_states: torch.Tensor,
+	positions: torch.Tensor,
+) -> torch.Tensor:
+	"""Gather per-sample sequence positions without assuming equal valid lengths."""
+	batch_index = torch.arange(hidden_states.shape[0], device=hidden_states.device)
+	if positions.ndim == 1:
+		return hidden_states[batch_index, positions]
+	return hidden_states[batch_index[:, None], positions]
+
+
+def _scatter_sequence_positions(
+	hidden_states: torch.Tensor,
+	positions: torch.Tensor,
+	values: torch.Tensor,
+) -> torch.Tensor:
+	"""Return a cloned sequence with per-sample positions replaced by values."""
+	result = hidden_states.clone()
+	batch_index = torch.arange(hidden_states.shape[0], device=hidden_states.device)
+	if positions.ndim == 1:
+		result[batch_index, positions] = values
+	else:
+		result[batch_index[:, None], positions] = values
+	return result
+
+
+def _pairwise_slot_cosine(slot_hidden_states: torch.Tensor) -> torch.Tensor:
+	"""Return the mean off-diagonal slot cosine for logging."""
+	if slot_hidden_states.shape[1] <= 1:
+		return slot_hidden_states.new_zeros(())
+	normalized = F.normalize(slot_hidden_states.float(), p=2, dim=-1)
+	cosine = normalized @ normalized.transpose(1, 2)
+	slot_count = slot_hidden_states.shape[1]
+	off_diagonal = ~torch.eye(slot_count, dtype=torch.bool, device=cosine.device)
+	return cosine[:, off_diagonal].mean()
+
+
+class RecurrentQwen3VLEmbedding(nn.Module):
+	"""Wrap the official embedding model with dynamic-only middle-layer recurrence."""
+
+	def __init__(
+		self,
+		base_embedding_model: nn.Module,
+		config: RecurrentModelConfig,
+		master_slot_initialization: torch.Tensor,
+		latent_placeholder_id: int,
+		pad_token_id: int,
+		*,
+		enable_lora: bool,
+	) -> None:
+		super().__init__()
+		config.validate()
+		if tuple(master_slot_initialization.shape) != (
+			1,
+			config.max_num_latent_slots,
+			config.hidden_size,
+		):
+			raise ValueError("Master slot tensor does not match [1, 16, 2048]")
+		self.config = config
+		self.base_embedding_model = base_embedding_model
+		self.latent_placeholder_id = latent_placeholder_id
+		self.pad_token_id = pad_token_id
+		self.latent_slots = nn.Parameter(master_slot_initialization.clone())
+		self.eos_delta = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
+		self.recurrent_connector = RecurrentConnector(
+			hidden_size=config.hidden_size,
+			bottleneck_dim=config.recurrent_bottleneck_dim,
+		)
+		self.late_fusion = EOSConditionedSlotFusion(
+			hidden_size=config.hidden_size,
+			attention_dim=config.fusion_attention_dim,
+		)
+		self.injected_lora_modules: tuple[str, ...] = ()
+		if enable_lora:
+			self.injected_lora_modules = inject_loop_layer_lora(
+				layers=self.language_model.layers,
+				layer_start=config.lora_layer_start,
+				layer_end=config.lora_layer_end,
+				rank=config.lora_rank,
+				alpha=config.lora_alpha,
+				dropout=config.lora_dropout,
+			)
+
+	@property
+	def multimodal_model(self) -> nn.Module:
+		"""Return the official Qwen3-VL multimodal backbone."""
+		return self.base_embedding_model.model
+
+	@property
+	def language_model(self) -> nn.Module:
+		"""Return the official 28-layer language decoder."""
+		return self.multimodal_model.language_model
+
+	def forward(
+		self,
+		input_ids: torch.Tensor,
+		attention_mask: torch.Tensor,
+		pixel_values: torch.Tensor | None = None,
+		pixel_values_videos: torch.Tensor | None = None,
+		image_grid_thw: torch.Tensor | None = None,
+		video_grid_thw: torch.Tensor | None = None,
+	) -> RecurrentEmbeddingOutput:
+		"""Encode one tower with either an exact baseline or recurrent v1.0 path."""
+		if self.config.num_latent_slots == 0 and self.config.num_total_loop_passes == 1:
+			return self._official_base_forward(
+				input_ids=input_ids,
+				attention_mask=attention_mask,
+				pixel_values=pixel_values,
+				pixel_values_videos=pixel_values_videos,
+				image_grid_thw=image_grid_thw,
+				video_grid_thw=video_grid_thw,
+			)
+		augmented = augment_before_last_valid_token(
+			input_ids=input_ids,
+			attention_mask=attention_mask,
+			num_latent_slots=self.config.num_latent_slots,
+			latent_placeholder_id=self.latent_placeholder_id,
+			pad_token_id=self.pad_token_id,
+		)
+		(
+			hidden_states,
+			position_ids,
+			visual_position_mask,
+			deepstack_visual_embeddings,
+		) = self._prepare_augmented_embeddings(
+			augmented=augmented,
+			pixel_values=pixel_values,
+			pixel_values_videos=pixel_values_videos,
+			image_grid_thw=image_grid_thw,
+			video_grid_thw=video_grid_thw,
+		)
+		return self._run_recurrent_decoder(
+			hidden_states=hidden_states,
+			augmented=augmented,
+			position_ids=position_ids,
+			visual_position_mask=visual_position_mask,
+			deepstack_visual_embeddings=deepstack_visual_embeddings,
+		)
+
+	def _official_base_forward(self, **inputs: torch.Tensor | None) -> RecurrentEmbeddingOutput:
+		"""Delegate K=0, R=1 to the official code path for numerical equivalence."""
+		attention_mask = inputs["attention_mask"]
+		if attention_mask is None:
+			raise ValueError("attention_mask is required")
+		outputs = self.base_embedding_model(**inputs)
+		hidden_states = outputs.last_hidden_state
+		eos_positions = attention_mask.to(torch.long).sum(dim=-1) - 1
+		eos_hidden_state = _gather_sequence_positions(hidden_states, eos_positions)
+		embeddings = F.normalize(eos_hidden_state, p=2, dim=-1)
+		return RecurrentEmbeddingOutput(
+			embeddings=embeddings,
+			slot_hidden_states=hidden_states[:, :0],
+			eos_hidden_state=eos_hidden_state,
+			attention_weights=None,
+			diagnostics={
+				"variant": "base",
+				"deepstack_layer_indices": (0, 1, 2),
+				"extra_pass_dynamic_token_counts": (),
+			},
+		)
+
+	def _prepare_augmented_embeddings(
+		self,
+		augmented: AugmentedSequence,
+		pixel_values: torch.Tensor | None,
+		pixel_values_videos: torch.Tensor | None,
+		image_grid_thw: torch.Tensor | None,
+		video_grid_thw: torch.Tensor | None,
+	) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, list[torch.Tensor] | None]:
+		"""Use official vision, placeholder, and MRoPE routines on the augmented sequence."""
+		model = self.multimodal_model
+		input_ids = augmented.input_ids
+		inputs_embeds = model.get_input_embeddings()(input_ids)
+		image_mask = None
+		video_mask = None
+		deepstack_image_embeddings = None
+		deepstack_video_embeddings = None
+		if pixel_values is not None:
+			image_embeddings, deepstack_image_embeddings = model.get_image_features(
+				pixel_values,
+				image_grid_thw,
+			)
+			image_embeddings = torch.cat(image_embeddings, dim=0).to(
+				inputs_embeds.device,
+				inputs_embeds.dtype,
+			)
+			image_mask, _ = model.get_placeholder_mask(
+				input_ids,
+				inputs_embeds=inputs_embeds,
+				image_features=image_embeddings,
+			)
+			inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeddings)
+		if pixel_values_videos is not None:
+			video_embeddings, deepstack_video_embeddings = model.get_video_features(
+				pixel_values_videos,
+				video_grid_thw,
+			)
+			video_embeddings = torch.cat(video_embeddings, dim=0).to(
+				inputs_embeds.device,
+				inputs_embeds.dtype,
+			)
+			_, video_mask = model.get_placeholder_mask(
+				input_ids,
+				inputs_embeds=inputs_embeds,
+				video_features=video_embeddings,
+			)
+			inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeddings)
+		visual_position_mask, deepstack_embeddings = self._merge_deepstack_inputs(
+			inputs_embeds,
+			image_mask,
+			video_mask,
+			deepstack_image_embeddings,
+			deepstack_video_embeddings,
+		)
+		position_ids, _ = model.get_rope_index(
+			input_ids,
+			image_grid_thw,
+			video_grid_thw,
+			attention_mask=augmented.attention_mask,
+		)
+		if self.config.num_latent_slots:
+			slots = self.latent_slots[:, : self.config.num_latent_slots].expand(
+				input_ids.shape[0],
+				-1,
+				-1,
+			).to(inputs_embeds.dtype)
+			inputs_embeds = _scatter_sequence_positions(
+				inputs_embeds,
+				augmented.slot_positions,
+				slots,
+			)
+		eos_values = _gather_sequence_positions(inputs_embeds, augmented.eos_positions)
+		eos_values = eos_values + self.eos_delta[0, 0].to(inputs_embeds.dtype)
+		inputs_embeds = _scatter_sequence_positions(
+			inputs_embeds,
+			augmented.eos_positions,
+			eos_values,
+		)
+		return inputs_embeds, position_ids, visual_position_mask, deepstack_embeddings
+
+	@staticmethod
+	def _merge_deepstack_inputs(
+		inputs_embeds: torch.Tensor,
+		image_mask: torch.Tensor | None,
+		video_mask: torch.Tensor | None,
+		deepstack_image_embeddings: list[torch.Tensor] | None,
+		deepstack_video_embeddings: list[torch.Tensor] | None,
+	) -> tuple[torch.Tensor | None, list[torch.Tensor] | None]:
+		"""Match the official image/video DeepStack merge without moving its layers."""
+		if image_mask is not None and video_mask is not None:
+			flat_image_mask = image_mask[..., 0]
+			flat_video_mask = video_mask[..., 0]
+			visual_position_mask = flat_image_mask | flat_video_mask
+			if deepstack_image_embeddings is None or deepstack_video_embeddings is None:
+				raise RuntimeError("Missing DeepStack image or video embeddings")
+			joint_embeddings: list[torch.Tensor] = []
+			image_joint_mask = flat_image_mask[visual_position_mask]
+			video_joint_mask = flat_video_mask[visual_position_mask]
+			for image_embedding, video_embedding in zip(
+				deepstack_image_embeddings,
+				deepstack_video_embeddings,
+				strict=True,
+			):
+				joint = image_embedding.new_zeros(
+					visual_position_mask.sum(),
+					image_embedding.shape[-1],
+				).to(inputs_embeds.device)
+				joint[image_joint_mask] = image_embedding
+				joint[video_joint_mask] = video_embedding
+				joint_embeddings.append(joint)
+			return visual_position_mask, joint_embeddings
+		if image_mask is not None:
+			return image_mask[..., 0], deepstack_image_embeddings
+		if video_mask is not None:
+			return video_mask[..., 0], deepstack_video_embeddings
+		return None, None
+
+	def _run_recurrent_decoder(
+		self,
+		hidden_states: torch.Tensor,
+		augmented: AugmentedSequence,
+		position_ids: torch.Tensor,
+		visual_position_mask: torch.Tensor | None,
+		deepstack_visual_embeddings: list[torch.Tensor] | None,
+	) -> RecurrentEmbeddingOutput:
+		"""Run prefix, full first pass, dynamic-only passes, suffix, norm, and fusion."""
+		language_model = self.language_model
+		sequence_length = hidden_states.shape[1]
+		cache_position = torch.arange(sequence_length, device=hidden_states.device)
+		text_position_ids = position_ids[0]
+		causal_mask = create_causal_mask(
+			config=language_model.config,
+			input_embeds=hidden_states,
+			attention_mask=augmented.attention_mask,
+			cache_position=cache_position,
+			past_key_values=None,
+			position_ids=text_position_ids,
+		)
+		position_embeddings = language_model.rotary_emb(hidden_states, position_ids)
+		deepstack_layers_executed: list[int] = []
+		for layer_index in range(self.config.loop_start_layer):
+			hidden_states = language_model.layers[layer_index](
+				hidden_states,
+				attention_mask=causal_mask,
+				position_ids=text_position_ids,
+				past_key_values=None,
+				cache_position=cache_position,
+				position_embeddings=position_embeddings,
+			)
+			if (
+				deepstack_visual_embeddings is not None
+				and layer_index < len(deepstack_visual_embeddings)
+			):
+				hidden_states = language_model._deepstack_process(
+					hidden_states,
+					visual_position_mask,
+					deepstack_visual_embeddings[layer_index],
+				)
+				deepstack_layers_executed.append(layer_index)
+
+		dynamic_positions = self._dynamic_positions(augmented)
+		dynamic_base = _gather_sequence_positions(hidden_states, dynamic_positions)
+		prefix_caches: list[PrefixKeyValue] = []
+		for layer_index in range(self.config.loop_start_layer, self.config.loop_end_layer):
+			layer = language_model.layers[layer_index]
+			if self.config.num_extra_loop_passes:
+				prefix_caches.append(
+					self._cache_prefix_key_value(
+						layer=layer,
+						hidden_states=hidden_states,
+						position_embeddings=position_embeddings,
+						prefix_lengths=augmented.prefix_lengths,
+					),
+				)
+			hidden_states = layer(
+				hidden_states,
+				attention_mask=causal_mask,
+				position_ids=text_position_ids,
+				past_key_values=None,
+				cache_position=cache_position,
+				position_embeddings=position_embeddings,
+			)
+		pass_one_full_hidden_states = hidden_states
+		dynamic_output = _gather_sequence_positions(hidden_states, dynamic_positions)
+
+		dynamic_cos, dynamic_sin = self._gather_dynamic_position_embeddings(
+			position_embeddings,
+			dynamic_positions,
+		)
+		max_prefix_length = int(augmented.prefix_lengths.max().item())
+		prefix_mask = (
+			torch.arange(max_prefix_length, device=hidden_states.device)[None, :]
+			< augmented.prefix_lengths[:, None]
+		)
+		dynamic_mask = build_dynamic_attention_mask(
+			prefix_mask,
+			dynamic_token_count=dynamic_positions.shape[1],
+			dtype=hidden_states.dtype,
+		)
+		pass_cosines: list[torch.Tensor] = []
+		pass_relative_updates: list[torch.Tensor] = []
+		for _ in range(self.config.num_extra_loop_passes):
+			dynamic_input = dynamic_base + self.recurrent_connector(dynamic_output)
+			previous_output = dynamic_output
+			for offset, layer_index in enumerate(
+				range(self.config.loop_start_layer, self.config.loop_end_layer),
+			):
+				dynamic_input = self._run_dynamic_layer(
+					layer=language_model.layers[layer_index],
+					dynamic_hidden_states=dynamic_input,
+					prefix_key_value=prefix_caches[offset],
+					position_embeddings=(dynamic_cos, dynamic_sin),
+					attention_mask=dynamic_mask,
+				)
+			dynamic_output = dynamic_input
+			pass_cosines.append(
+				F.cosine_similarity(
+					dynamic_output.float().flatten(1),
+					previous_output.float().flatten(1),
+					dim=-1,
+				).mean(),
+			)
+			pass_relative_updates.append(
+				(
+					(dynamic_output.float() - previous_output.float()).flatten(1).norm(dim=-1)
+					/ previous_output.float().flatten(1).norm(dim=-1).clamp_min(1e-12)
+				).mean(),
+			)
+
+		hidden_states = _scatter_sequence_positions(
+			pass_one_full_hidden_states,
+			dynamic_positions,
+			dynamic_output,
+		)
+		for layer_index in range(self.config.loop_end_layer, len(language_model.layers)):
+			hidden_states = language_model.layers[layer_index](
+				hidden_states,
+				attention_mask=causal_mask,
+				position_ids=text_position_ids,
+				past_key_values=None,
+				cache_position=cache_position,
+				position_embeddings=position_embeddings,
+			)
+		hidden_states = language_model.norm(hidden_states)
+		eos_hidden_state = _gather_sequence_positions(hidden_states, augmented.eos_positions)
+		slot_hidden_states = _gather_sequence_positions(
+			hidden_states,
+			augmented.slot_positions,
+		)
+		attention_weights = None
+		attention_entropy = eos_hidden_state.new_zeros(eos_hidden_state.shape[0])
+		fusion_gate = eos_hidden_state.new_zeros(())
+		if self.config.num_latent_slots:
+			fusion_output = self.late_fusion(eos_hidden_state, slot_hidden_states)
+			pre_normalized_embedding = fusion_output.fused_embedding
+			attention_weights = fusion_output.attention_weights
+			attention_entropy = fusion_output.attention_entropy
+			fusion_gate = fusion_output.gate
+		else:
+			pre_normalized_embedding = eos_hidden_state
+		embeddings = F.normalize(pre_normalized_embedding, p=2, dim=-1)
+		return RecurrentEmbeddingOutput(
+			embeddings=embeddings,
+			slot_hidden_states=slot_hidden_states,
+			eos_hidden_state=eos_hidden_state,
+			attention_weights=attention_weights,
+			diagnostics={
+				"variant": self._variant_name(),
+				"deepstack_layer_indices": tuple(deepstack_layers_executed),
+				"extra_pass_dynamic_token_counts": tuple(
+					dynamic_positions.shape[1]
+					for _ in range(self.config.num_extra_loop_passes)
+				),
+				"prefix_cache_requires_grad": tuple(
+					cache.key.requires_grad or cache.value.requires_grad
+					for cache in prefix_caches
+				),
+				"recurrent_pass_cosine": tuple(pass_cosines),
+				"recurrent_pass_relative_update": tuple(pass_relative_updates),
+				"fusion_gate": fusion_gate,
+				"late_fusion_attention_entropy": attention_entropy.mean(),
+				"slot_pairwise_cosine": _pairwise_slot_cosine(slot_hidden_states),
+			},
+		)
+
+	def _cache_prefix_key_value(
+		self,
+		layer: nn.Module,
+		hidden_states: torch.Tensor,
+		position_embeddings: tuple[torch.Tensor, torch.Tensor],
+		prefix_lengths: torch.Tensor,
+	) -> PrefixKeyValue:
+		"""Project, rotate, slice, and detach the Pass-1 prefix K/V for one layer."""
+		normalized = layer.input_layernorm(hidden_states)
+		attention = layer.self_attn
+		batch_size, sequence_length, _ = normalized.shape
+		key = attention.k_norm(
+			attention.k_proj(normalized).view(
+				batch_size,
+				sequence_length,
+				-1,
+				attention.head_dim,
+			),
+		).transpose(1, 2)
+		value = attention.v_proj(normalized).view(
+			batch_size,
+			sequence_length,
+			-1,
+			attention.head_dim,
+		).transpose(1, 2)
+		cos, sin = position_embeddings
+		dummy_query = key
+		_, rotated_key = apply_rotary_pos_emb(dummy_query, key, cos, sin)
+		max_prefix_length = int(prefix_lengths.max().item())
+		prefix_key, prefix_value = detach_prefix_key_values(
+			rotated_key[:, :, :max_prefix_length],
+			value[:, :, :max_prefix_length],
+		)
+		return PrefixKeyValue(key=prefix_key, value=prefix_value)
+
+	@staticmethod
+	def _gather_dynamic_position_embeddings(
+		position_embeddings: tuple[torch.Tensor, torch.Tensor],
+		dynamic_positions: torch.Tensor,
+	) -> tuple[torch.Tensor, torch.Tensor]:
+		cos, sin = position_embeddings
+		return (
+			_gather_sequence_positions(cos, dynamic_positions),
+			_gather_sequence_positions(sin, dynamic_positions),
+		)
+
+	@staticmethod
+	def _run_dynamic_layer(
+		layer: nn.Module,
+		dynamic_hidden_states: torch.Tensor,
+		prefix_key_value: PrefixKeyValue,
+		position_embeddings: tuple[torch.Tensor, torch.Tensor],
+		attention_mask: torch.Tensor,
+	) -> torch.Tensor:
+		"""Run one loop layer on dynamic tokens only, with detached prefix evidence."""
+		residual = dynamic_hidden_states
+		normalized = layer.input_layernorm(dynamic_hidden_states)
+		attention = layer.self_attn
+		batch_size, token_count, _ = normalized.shape
+		hidden_shape = (batch_size, token_count, -1, attention.head_dim)
+		query = attention.q_norm(attention.q_proj(normalized).view(hidden_shape)).transpose(1, 2)
+		key = attention.k_norm(attention.k_proj(normalized).view(hidden_shape)).transpose(1, 2)
+		value = attention.v_proj(normalized).view(hidden_shape).transpose(1, 2)
+		query, key = apply_rotary_pos_emb(query, key, *position_embeddings)
+		key = torch.cat((prefix_key_value.key, key), dim=2)
+		value = torch.cat((prefix_key_value.value, value), dim=2)
+		repeated_key = repeat_kv(key, attention.num_key_value_groups)
+		repeated_value = repeat_kv(value, attention.num_key_value_groups)
+		weights = torch.matmul(query, repeated_key.transpose(2, 3)) * attention.scaling
+		weights = weights + attention_mask
+		weights = torch.softmax(weights, dim=-1, dtype=torch.float32).to(query.dtype)
+		attention_output = torch.matmul(weights, repeated_value)
+		attention_output = attention_output.transpose(1, 2).reshape(
+			batch_size,
+			token_count,
+			-1,
+		).contiguous()
+		hidden_states = residual + attention.o_proj(attention_output)
+		residual = hidden_states
+		hidden_states = layer.post_attention_layernorm(hidden_states)
+		return residual + layer.mlp(hidden_states)
+
+	def _dynamic_positions(self, augmented: AugmentedSequence) -> torch.Tensor:
+		if self.config.num_latent_slots:
+			return torch.cat(
+				(augmented.slot_positions, augmented.eos_positions[:, None]),
+				dim=1,
+			)
+		return augmented.eos_positions[:, None]
+
+	def _variant_name(self) -> str:
+		if self.config.num_latent_slots == 0:
+			return "eos_only_recurrence"
+		if self.config.num_total_loop_passes == 1:
+			return "slots_without_recurrence"
+		return "full_proposed_model"
