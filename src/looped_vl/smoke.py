@@ -72,6 +72,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 		raise RuntimeError(
 			"Smoke expects exactly one visible GPU; set CUDA_VISIBLE_DEVICES to one idle GPU",
 		)
+	torch.manual_seed(args.seed)
+	torch.cuda.manual_seed_all(args.seed)
 
 	model_root = Path(args.model_root)
 	checkpoint_path = model_root / "model.safetensors"
@@ -161,6 +163,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 		"max_length": args.max_length,
 		"min_pixels": args.min_pixels,
 		"max_pixels": args.max_pixels,
+		"seed": args.seed,
 	}
 
 
@@ -182,6 +185,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--split", choices=["train", "validation"], default="train")
 	parser.add_argument("--per-source", type=int, default=1)
 	parser.add_argument("--num-workers", type=int, default=0)
+	parser.add_argument("--seed", type=int, default=20260729)
 	parser.add_argument("--max-length", type=int, default=1024)
 	parser.add_argument("--min-pixels", type=int, default=64 * 64)
 	parser.add_argument("--max-pixels", type=int, default=512 * 512)
