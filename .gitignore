@@ -1,6 +1,9 @@
+.venv/
 .pytest_cache/
 .ruff_cache/
-.venv/
 __pycache__/
 *.py[cod]
+artifacts/
+checkpoints/
+logs/
 outputs/

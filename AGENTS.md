@@ -2,16 +2,22 @@
 
 ## Scope
 
-- Build and validate data loading for the 100,000-row train subset.
-- Use the frozen local Qwen3-VL-Embedding-2B checkpoint for smoke tests only.
-- Do not train, create an optimizer, call backward, or modify model weights.
+- This repository is exclusively for Recurrent Latent-Slot Qwen3-VL-Embedding work.
+- Do not add, import, or run PoLar code in this repository.
+- Implement the attached v1.0 specification exactly, keeping forward activation updates
+  separate from the trainable-parameter allowlist for each stage.
+- Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
+  only under experiment-specific output directories.
 
 ## Remote execution
 
-- Use only SSH alias `gyy1` and physical GPU 1 when it is idle.
+- Use only SSH alias `gyy1` and its two assigned physical GPUs, 0 and 1.
 - Use `/mnt/afs/liyiwei/looped_vl` as the remote code root.
 - Use `/mnt/afs/likangle/reserach/LOCUS-MLLM/envs/LOCUS/bin/python`.
 - Run long jobs in uniquely named detached tmux sessions with separate logs.
+- Before a two-GPU training launch, verify both GPUs have no compute processes for three
+  continuous minutes. Restart the timer if either GPU becomes busy.
+- After launch, poll both ranks, GPU use, progress logs, and checkpoints for several minutes.
 
 ## Data
 
@@ -28,6 +34,8 @@
 - Add tests before implementation changes.
 - Verify all dataset backends, batching, processor inputs, embedding shapes, finite values,
   unit norms, and model checkpoint hash stability.
+- Enforce every structural, trainability, determinism, and numerical acceptance condition
+  from sections 27–29 of the v1.0 implementation specification.
 
 ## Required evaluation metrics
 
