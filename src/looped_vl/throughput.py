@@ -272,9 +272,9 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--seed", type=int, default=20260729)
 	parser.add_argument("--validation-samples", type=int, default=50_000)
-	parser.add_argument("--max-length", type=int, default=1024)
+	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=64 * 64)
-	parser.add_argument("--max-pixels", type=int, default=512 * 512)
+	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)
 	parser.add_argument("--output-json")
 	return parser.parse_args()
 
