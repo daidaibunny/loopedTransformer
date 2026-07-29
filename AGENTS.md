@@ -28,3 +28,12 @@
 - Add tests before implementation changes.
 - Verify all dataset backends, batching, processor inputs, embedding shapes, finite values,
   unit norms, and model checkpoint hash stability.
+
+## Required evaluation metrics
+
+- Every evaluation report must pass `looped_vl.metrics.validate_evaluation_report`.
+- Report the weighted Mix result and complete per-dataset results for COCO, GQA Balanced,
+  and CLEVR. COCO must also report text-to-image and image-to-text separately.
+- Required metrics are mAP, P@1/5/10/20, R@1/5/10/20, MRR, and nDCG@10.
+- Use percentage values from 0 to 100. Aggregate COCO directions equally, then aggregate
+  datasets with fixed weights COCO:GQA Balanced:CLEVR = 50:35:15.
