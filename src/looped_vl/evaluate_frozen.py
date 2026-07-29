@@ -521,20 +521,30 @@ def _compute_report_metrics(
 	return report_metrics, gallery_statistics
 
 
+def _initialize_distributed(
+	expected_world_size: int,
+) -> tuple[int, int, int, torch.device]:
+	"""Bind the local CUDA device before initializing the NCCL process group."""
+	local_rank = int(os.environ["LOCAL_RANK"])
+	torch.cuda.set_device(local_rank)
+	device = torch.device("cuda", local_rank)
+	dist.init_process_group(backend="nccl", device_id=device)
+	rank = dist.get_rank()
+	world_size = dist.get_world_size()
+	if world_size != expected_world_size:
+		raise RuntimeError(
+			f"Expected {expected_world_size} distributed ranks, found {world_size}",
+		)
+	return rank, world_size, local_rank, device
+
+
 def run_distributed_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	"""Run the frozen evaluation under torchrun and return the report on rank zero."""
 	if not torch.cuda.is_available():
 		raise RuntimeError("CUDA is required; CPU fallback is disabled")
-	dist.init_process_group(backend="nccl")
-	rank = dist.get_rank()
-	world_size = dist.get_world_size()
-	local_rank = int(os.environ["LOCAL_RANK"])
-	if world_size != args.expected_world_size:
-		raise RuntimeError(
-			f"Expected {args.expected_world_size} distributed ranks, found {world_size}",
-		)
-	torch.cuda.set_device(local_rank)
-	device = torch.device("cuda", local_rank)
+	rank, world_size, local_rank, device = _initialize_distributed(
+		args.expected_world_size,
+	)
 	logging.basicConfig(
 		level=logging.INFO,
 		format=f"%(asctime)s %(levelname)s [rank {rank}] %(message)s",

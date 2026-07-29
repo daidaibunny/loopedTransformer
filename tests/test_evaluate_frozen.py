@@ -1,7 +1,9 @@
 import pytest
 import torch
 
+import looped_vl.evaluate_frozen as evaluate_frozen
 from looped_vl.evaluate_frozen import (
+	_initialize_distributed,
 	build_answer_gallery,
 	build_coco_relevance,
 	compute_ranking_metrics,
@@ -76,3 +78,38 @@ def test_coco_relevance_keeps_both_retrieval_directions() -> None:
 	assert result["image_ids"] == ["image-a", "image-b"]
 	assert result["text_to_image_positive_indices"] == [(0,), (0,), (1,)]
 	assert result["image_to_text_positive_indices"] == [(0, 1), (2,)]
+
+
+def test_distributed_initialization_binds_device_before_nccl(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	events: list[tuple[str, object]] = []
+	monkeypatch.setenv("LOCAL_RANK", "1")
+	monkeypatch.setattr(
+		evaluate_frozen.torch.cuda,
+		"set_device",
+		lambda rank: events.append(("set_device", rank)),
+	)
+	monkeypatch.setattr(
+		evaluate_frozen.dist,
+		"init_process_group",
+		lambda **kwargs: events.append(("init_process_group", kwargs)),
+	)
+	monkeypatch.setattr(evaluate_frozen.dist, "get_rank", lambda: 0)
+	monkeypatch.setattr(evaluate_frozen.dist, "get_world_size", lambda: 2)
+
+	rank, world_size, local_rank, device = _initialize_distributed(2)
+
+	assert events == [
+		("set_device", 1),
+		(
+			"init_process_group",
+			{"backend": "nccl", "device_id": torch.device("cuda", 1)},
+		),
+	]
+	assert (rank, world_size, local_rank, device) == (
+		0,
+		2,
+		1,
+		torch.device("cuda", 1),
+	)
