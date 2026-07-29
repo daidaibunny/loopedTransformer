@@ -418,8 +418,13 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		)
 		pass_cosines: list[torch.Tensor] = []
 		pass_relative_updates: list[torch.Tensor] = []
+		connector_output_norms: list[torch.Tensor] = []
 		for _ in range(self.config.num_extra_loop_passes):
-			dynamic_input = dynamic_base + self.recurrent_connector(dynamic_output)
+			connector_output = self.recurrent_connector(dynamic_output)
+			connector_output_norms.append(
+				connector_output.float().flatten(1).norm(dim=-1).mean(),
+			)
+			dynamic_input = dynamic_base + connector_output
 			previous_output = dynamic_output
 			for offset, layer_index in enumerate(
 				range(self.config.loop_start_layer, self.config.loop_end_layer),
@@ -496,6 +501,11 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 				),
 				"recurrent_pass_cosine": tuple(pass_cosines),
 				"recurrent_pass_relative_update": tuple(pass_relative_updates),
+				"connector_output_norm": (
+					torch.stack(connector_output_norms).mean()
+					if connector_output_norms
+					else eos_hidden_state.new_zeros(())
+				),
 				"fusion_gate": fusion_gate,
 				"late_fusion_attention_entropy": attention_entropy.mean(),
 				"slot_pairwise_cosine": _pairwise_slot_cosine(slot_hidden_states),

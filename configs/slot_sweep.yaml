@@ -1,0 +1,22 @@
+shared_master_initialization: artifacts/master_slot_init_seed42.pt
+seed: 42
+slot_counts: [1, 2, 4, 8, 16]
+loop_pass_counts: [1, 2, 3, 4]
+baselines:
+  base:
+    num_latent_slots: 0
+    num_total_loop_passes: 1
+    connector: false
+    fusion: false
+  eos_only_recurrence:
+    num_latent_slots: 0
+    num_total_loop_passes: 4
+    fusion: false
+  slots_without_recurrence:
+    num_latent_slots: 4
+    num_total_loop_passes: 1
+    fusion: true
+  full_proposed_model:
+    num_latent_slots: 4
+    num_total_loop_passes: 4
+    fusion: true

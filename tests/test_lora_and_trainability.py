@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 from looped_vl.models.lora import LoRALinear, inject_loop_layer_lora
-from looped_vl.training.trainability import configure_trainable_parameters
+from looped_vl.training.trainability import audit_gradient_scope, configure_trainable_parameters
 
 
 class TinyAttention(nn.Module):
@@ -95,3 +95,18 @@ def test_stage_trainability_matches_strict_parameter_allowlists() -> None:
 	assert any("lora_" in name for name in stage2)
 	assert not any("o_proj" in name for name in stage2)
 	assert not any("layers.11" in name or "layers.20" in name for name in stage2)
+
+
+def test_gradient_audit_rejects_any_gradient_outside_allowlist() -> None:
+	model = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 1))
+	allowed_name = "0.weight"
+	model[0].weight.grad = torch.ones_like(model[0].weight)
+	model[1].weight.grad = torch.ones_like(model[1].weight)
+
+	try:
+		audit_gradient_scope(model, allowed_names=(allowed_name,))
+		raised = False
+	except RuntimeError:
+		raised = True
+
+	assert raised is True

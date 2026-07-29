@@ -83,6 +83,9 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 	processed = components.processor.prepare([model_input], device=device)
 	with torch.inference_mode():
 		output = components.model(**processed)
+		repeated_output = components.model(**processed)
+	if not torch.equal(output.embeddings, repeated_output.embeddings):
+		raise RuntimeError("Repeated forward output changed under the fixed seed")
 	if output.embeddings.shape != (1, config.hidden_size):
 		raise RuntimeError(f"Unexpected embedding shape: {output.embeddings.shape}")
 	if not torch.isfinite(output.embeddings).all():
@@ -98,6 +101,9 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 		"embedding_shape": list(output.embeddings.shape),
 		"slot_shape": list(output.slot_hidden_states.shape),
 		"norm_error": norm_error,
+		"repeated_forward_max_absolute_error": float(
+			(output.embeddings.float() - repeated_output.embeddings.float()).abs().max().item(),
+		),
 		"diagnostics": {key: _json_value(value) for key, value in output.diagnostics.items()},
 	}
 	if args.mode == "base_equivalence":

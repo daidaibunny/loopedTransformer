@@ -12,7 +12,7 @@ class RecurrentConnector(nn.Module):
 
 	def __init__(self, hidden_size: int = 2048, bottleneck_dim: int = 512) -> None:
 		super().__init__()
-		self.normalization = nn.RMSNorm(hidden_size)
+		self.normalization = nn.RMSNorm(hidden_size, eps=1e-6)
 		self.down_projection = nn.Linear(hidden_size, bottleneck_dim, bias=True)
 		self.up_projection = nn.Linear(bottleneck_dim, hidden_size, bias=True)
 		nn.init.normal_(self.down_projection.weight, mean=0.0, std=0.02)

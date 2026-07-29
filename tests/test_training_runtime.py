@@ -16,6 +16,7 @@ from looped_vl.training.checkpointing import (
 from looped_vl.training.config import TrainingStageConfig
 from looped_vl.training.optimizer import build_optimizer_and_scheduler
 from looped_vl.training.reproducibility import seed_everything
+from looped_vl.training.step import compose_stage_loss
 
 
 def test_stage_configs_match_all_fixed_optimizer_values() -> None:
@@ -108,3 +109,18 @@ def test_effective_batch_size_must_equal_512() -> None:
 	assert stage.gradient_accumulation_steps(per_device_batch_size=1, world_size=2) == 256
 	with pytest.raises(ValueError, match="divide"):
 		stage.gradient_accumulation_steps(per_device_batch_size=3, world_size=2)
+
+
+def test_stage_loss_weights_are_exact() -> None:
+	components = {
+		"final_infonce": torch.tensor(10.0),
+		"slot_infonce": torch.tensor(2.0),
+		"semantic_decoder_ce": torch.tensor(3.0),
+		"slot_diversity": torch.tensor(4.0),
+	}
+
+	stage1 = compose_stage_loss(stage=1, **components)
+	stage2 = compose_stage_loss(stage=2, **components)
+
+	assert stage1.item() == pytest.approx(2.0 + 3.0 + 0.05 * 4.0)
+	assert stage2.item() == pytest.approx(10.0 + 0.2 * 2.0 + 0.2 * 3.0 + 0.05 * 4.0)

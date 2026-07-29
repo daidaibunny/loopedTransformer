@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import torch
 from torch import nn
 
 STAGE1_PREFIXES = (
@@ -32,3 +33,22 @@ def configure_trainable_parameters(model: nn.Module, stage: int) -> tuple[str, .
 	if not trainable:
 		raise RuntimeError(f"No trainable parameters were selected for Stage {stage}")
 	return tuple(trainable)
+
+
+def audit_gradient_scope(
+	model: nn.Module,
+	allowed_names: tuple[str, ...],
+) -> dict[str, object]:
+	"""Reject every nonzero gradient outside the active stage's exact allowlist."""
+	allowed = set(allowed_names)
+	nonzero_names: list[str] = []
+	for name, parameter in model.named_parameters():
+		if parameter.grad is None or not torch.count_nonzero(parameter.grad).item():
+			continue
+		if name not in allowed:
+			raise RuntimeError(f"Forbidden parameter received a gradient: {name}")
+		nonzero_names.append(name)
+	return {
+		"nonzero_gradient_parameter_count": len(nonzero_names),
+		"nonzero_gradient_parameter_names": tuple(nonzero_names),
+	}
