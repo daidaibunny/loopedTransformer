@@ -94,7 +94,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-	"""Run train and validation data integration checks."""
+	"""Run train, validation, and test data integration checks."""
 	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 	args = parse_args()
 	try:
@@ -105,7 +105,7 @@ def main() -> int:
 				split,
 				args.num_workers,
 			)
-			for split in ("train", "validation")
+			for split in ("train", "validation", "test")
 		]
 		serialized = json.dumps({"status": "passed", "splits": results}, indent=2) + "\n"
 		print(serialized, end="")

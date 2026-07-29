@@ -119,11 +119,24 @@ def build_prefix_subset(
 	source_root: str | Path,
 	output_root: str | Path,
 	train_samples: int,
+	validation_samples: int = 25_000,
+	test_samples: int = 25_000,
 ) -> dict[str, Any]:
-	"""Build a smaller train split while preserving the full validation split."""
-	if train_samples % INTERLEAVE_BLOCK_SIZE:
+	"""Build train, validation, and disjoint test splits from a parent mixture."""
+	requested_counts = {
+		"train": train_samples,
+		"validation": validation_samples,
+		"test": test_samples,
+	}
+	invalid_counts = {
+		split: count
+		for split, count in requested_counts.items()
+		if count <= 0 or count % INTERLEAVE_BLOCK_SIZE
+	}
+	if invalid_counts:
 		raise ValueError(
-			f"train_samples must be divisible by {INTERLEAVE_BLOCK_SIZE} to preserve 10:7:3",
+			f"Every split count must be positive and divisible by {INTERLEAVE_BLOCK_SIZE}: "
+			f"{invalid_counts}",
 		)
 	source_path = Path(source_root)
 	output_path = Path(output_root)
@@ -131,24 +144,46 @@ def build_prefix_subset(
 		raise FileExistsError(f"Output dataset already exists: {output_path}")
 
 	train_table = _read_prefix(source_path / "train", train_samples)
-	validation_table = _read_split(source_path / "validation")
+	parent_validation_table = _read_split(source_path / "validation")
+	evaluation_samples = validation_samples + test_samples
+	if evaluation_samples > parent_validation_table.num_rows:
+		raise ValueError(
+			f"Requested {evaluation_samples} validation and test rows but parent contains "
+			f"{parent_validation_table.num_rows}",
+		)
+	validation_table = parent_validation_table.slice(0, validation_samples)
+	test_table = parent_validation_table.slice(validation_samples, test_samples)
 	train_counts = _validate_interleave(train_table)
 	validation_counts = _validate_interleave(validation_table)
+	test_counts = _validate_interleave(test_table)
 	if len(set(train_table.column("sample_id").to_pylist())) != train_samples:
 		raise ValueError("Train prefix contains duplicate sample identifiers")
+	validation_ids = set(validation_table.column("sample_id").to_pylist())
+	test_ids = set(test_table.column("sample_id").to_pylist())
+	if len(validation_ids) != validation_samples or len(test_ids) != test_samples:
+		raise ValueError("Validation or test split contains duplicate sample identifiers")
+	if not validation_ids.isdisjoint(test_ids):
+		raise ValueError("Validation and test sample identifiers overlap")
 
 	train_root = output_path / "train"
 	validation_root = output_path / "validation"
+	test_root = output_path / "test"
 	train_root.mkdir(parents=True)
 	validation_root.mkdir(parents=True)
+	test_root.mkdir(parents=True)
 	train_file = train_root / "part-00000-of-00001.parquet"
 	validation_file = validation_root / "part-00000-of-00001.parquet"
+	test_file = test_root / "part-00000-of-00001.parquet"
 	pq.write_table(train_table, train_file, compression="zstd", row_group_size=8192)
 	pq.write_table(validation_table, validation_file, compression="zstd", row_group_size=8192)
+	pq.write_table(test_table, test_file, compression="zstd", row_group_size=8192)
 
 	parent_config_path = source_path / "config.json"
 	parent_config = json.loads(parent_config_path.read_text(encoding="utf-8"))
-	dataset_name = f"{parent_config.get('dataset_name', source_path.name)}_train{train_samples}"
+	dataset_name = (
+		f"{parent_config.get('dataset_name', source_path.name)}_train{train_samples}"
+		f"_val{validation_samples}_test{test_samples}"
+	)
 	config = {
 		**parent_config,
 		"dataset_name": dataset_name,
@@ -156,6 +191,7 @@ def build_prefix_subset(
 		"subset_method": "deterministic_prefix_of_interleaved_parent",
 		"train_counts": train_counts,
 		"validation_counts": validation_counts,
+		"test_counts": test_counts,
 		"schema": str(train_table.schema),
 	}
 	stats = {
@@ -189,6 +225,18 @@ def build_prefix_subset(
 				"source_stats": _source_stats(validation_table),
 				"verification": _verification(validation_table, validation_counts),
 			},
+			"test": {
+				"requested_counts": test_counts,
+				"shards": [
+					{
+						"file": test_file.name,
+						"rows": test_table.num_rows,
+						"source_counts": test_counts,
+					},
+				],
+				"source_stats": _source_stats(test_table),
+				"verification": _verification(test_table, test_counts),
+			},
 		},
 	}
 	(output_path / "config.json").write_text(
@@ -202,6 +250,7 @@ def build_prefix_subset(
 	checksum_lines = [
 		f"{_sha256(train_file)}  train/{train_file.name}",
 		f"{_sha256(validation_file)}  validation/{validation_file.name}",
+		f"{_sha256(test_file)}  test/{test_file.name}",
 	]
 	(output_path / "checksums.sha256").write_text(
 		"\n".join(checksum_lines) + "\n",
@@ -212,6 +261,7 @@ def build_prefix_subset(
 		"dataset_root": str(output_path),
 		"train": _verification(train_table, train_counts),
 		"validation": _verification(validation_table, validation_counts),
+		"test": _verification(test_table, test_counts),
 	}
 
 
@@ -221,13 +271,21 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--source-root", type=Path, required=True)
 	parser.add_argument("--output-root", type=Path, required=True)
 	parser.add_argument("--train-samples", type=int, default=100_000)
+	parser.add_argument("--validation-samples", type=int, default=25_000)
+	parser.add_argument("--test-samples", type=int, default=25_000)
 	return parser.parse_args()
 
 
 def main() -> None:
 	"""Build a subset and print its exact verification summary."""
 	args = parse_args()
-	result = build_prefix_subset(args.source_root, args.output_root, args.train_samples)
+	result = build_prefix_subset(
+		args.source_root,
+		args.output_root,
+		args.train_samples,
+		args.validation_samples,
+		args.test_samples,
+	)
 	print(json.dumps(result, indent=2, sort_keys=True))
 
 

@@ -215,13 +215,14 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 		batch_load_seconds=batch_load_seconds,
 		batch_process_seconds=batch_process_seconds,
 		train_samples=len(dataset),
-		full_samples=len(dataset) + args.validation_samples,
+		full_samples=len(dataset) + args.validation_samples + args.test_samples,
 	)
 	return {
 		"status": "passed",
 		"scope": "frozen_forward_only_no_backward_no_optimizer",
 		"dataset_train_samples": len(dataset),
 		"dataset_validation_samples": args.validation_samples,
+		"dataset_test_samples": args.test_samples,
 		"batch_size": args.batch_size,
 		"batch_source_counts": EXPECTED_BATCH_RATIO,
 		"warmup_batches": args.warmup_batches,
@@ -271,7 +272,8 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--num-workers", type=int, default=4)
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--seed", type=int, default=20260729)
-	parser.add_argument("--validation-samples", type=int, default=50_000)
+	parser.add_argument("--validation-samples", type=int, default=25_000)
+	parser.add_argument("--test-samples", type=int, default=25_000)
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=64 * 64)
 	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)

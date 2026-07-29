@@ -20,7 +20,7 @@ from looped_vl.data import (
 def test_default_dataset_root_uses_100k_experiment_train_split() -> None:
 	actual_root = DEFAULT_DATASET_ROOT
 	expected_root = Path(
-		"/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000",
+		"/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val25000_test25000",
 	)
 	assert actual_root == expected_root
 
@@ -66,6 +66,8 @@ def tiny_dataset(tmp_path: Path) -> tuple[Path, Path]:
 	data_root = tmp_path / "mixture"
 	train_root = data_root / "train"
 	train_root.mkdir(parents=True)
+	test_root = data_root / "test"
+	test_root.mkdir(parents=True)
 	gqa_root = tmp_path / "gqa_materialized"
 
 	coco_image = tmp_path / "coco.jpg"
@@ -94,6 +96,7 @@ def tiny_dataset(tmp_path: Path) -> tuple[Path, Path]:
 	table = pa.Table.from_pylist(rows)
 	pq.write_table(table.slice(0, 12), train_root / "part-00000.parquet", row_group_size=4)
 	pq.write_table(table.slice(12), train_root / "part-00001.parquet", row_group_size=3)
+	pq.write_table(table, test_root / "part-00000.parquet", row_group_size=4)
 	return data_root, gqa_root
 
 
@@ -131,6 +134,16 @@ def test_source_balanced_indices_and_collate_preserve_one_of_each_source(
 	assert len(batch["model_inputs"]) == 3
 	assert all("image" in model_input for model_input in batch["model_inputs"])
 	assert batch["model_inputs"][0]["text"].startswith("question or caption")
+
+
+def test_dataset_supports_internal_test_split(tiny_dataset: tuple[Path, Path]) -> None:
+	data_root, gqa_root = tiny_dataset
+	dataset = LoopedVLMixtureDataset(data_root, "test", gqa_root)
+
+	assert len(dataset) == 20
+	assert dataset[0].source == "coco"
+	assert dataset[10].source == "gqa_balanced"
+	assert dataset[19].source == "clevr"
 
 
 def test_missing_gqa_materialized_image_fails_with_actionable_path(tmp_path: Path) -> None:

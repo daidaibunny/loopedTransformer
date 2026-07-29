@@ -15,11 +15,13 @@
 
 ## Data
 
-- Dataset root: `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000`.
+- Dataset root:
+  `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val25000_test25000`.
 - Parent full dataset: `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1`.
 - Resolve COCO and CLEVR with `image_path`.
 - Resolve GQA Balanced from its materialized image cache by `image_id`.
-- Preserve exact train and validation source ratios and never use test samples.
+- Preserve the exact source ratio in train, validation, and test.
+- Never use test samples for tuning or checkpoint selection.
 
 ## Verification
 

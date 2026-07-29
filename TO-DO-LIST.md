@@ -10,3 +10,4 @@
 - [x] Benchmark 4,000 mixed-resolution samples with official Qwen preprocessing limits.
 - [x] Audit raw and processed resolutions for the exact throughput sample window.
 - [x] Create and validate the 100,000-row train subset with the exact 50:35:15 ratio.
+- [x] Split 50,000 held-out rows into disjoint 25,000-row validation and test sets.

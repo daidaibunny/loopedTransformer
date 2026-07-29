@@ -14,7 +14,9 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 SOURCE_ORDER = ("coco", "gqa_balanced", "clevr")
-DEFAULT_DATASET_ROOT = Path("/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000")
+DEFAULT_DATASET_ROOT = Path(
+	"/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val25000_test25000",
+)
 SOURCE_INSTRUCTIONS = {
 	"coco": "Represent the image and caption for multimodal retrieval.",
 	"gqa_balanced": "Represent the image and question for visual reasoning.",
@@ -150,7 +152,7 @@ class LoopedVLMixtureDataset(Dataset[MixtureSample]):
 		split: str,
 		gqa_materialized_root: str | Path,
 	) -> None:
-		if split not in {"train", "validation"}:
+		if split not in {"train", "validation", "test"}:
 			raise ValueError(f"Unsupported split: {split}")
 		self.dataset_root = Path(dataset_root)
 		self.split = split

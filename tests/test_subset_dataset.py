@@ -31,19 +31,30 @@ def test_build_prefix_subset_preserves_ratio_and_validation(tmp_path: Path) -> N
 	source_root = tmp_path / "full"
 	output_root = tmp_path / "subset"
 	_write_split(source_root / "train/part-00000-of-00001.parquet", repetitions=2)
-	_write_split(source_root / "validation/part-00000-of-00001.parquet", repetitions=1)
+	_write_split(source_root / "validation/part-00000-of-00001.parquet", repetitions=2)
 	(source_root / "config.json").write_text(
 		json.dumps({"dataset_name": "full", "seed": 7}),
 		encoding="utf-8",
 	)
 
-	result = build_prefix_subset(source_root, output_root, train_samples=20)
+	result = build_prefix_subset(
+		source_root,
+		output_root,
+		train_samples=20,
+		validation_samples=20,
+		test_samples=20,
+	)
 
 	train_table = pq.read_table(output_root / "train/part-00000-of-00001.parquet")
 	validation_table = pq.read_table(output_root / "validation/part-00000-of-00001.parquet")
+	test_table = pq.read_table(output_root / "test/part-00000-of-00001.parquet")
 	config = json.loads((output_root / "config.json").read_text(encoding="utf-8"))
 	assert train_table.num_rows == 20
 	assert validation_table.num_rows == 20
+	assert test_table.num_rows == 20
+	assert set(validation_table.column("sample_id").to_pylist()).isdisjoint(
+		set(test_table.column("sample_id").to_pylist()),
+	)
 	assert result["train"]["source_counts"] == {
 		"coco": 10,
 		"gqa_balanced": 7,
@@ -56,3 +67,8 @@ def test_build_prefix_subset_preserves_ratio_and_validation(tmp_path: Path) -> N
 	}
 	assert (output_root / "checksums.sha256").is_file()
 	assert (output_root / ".ready").is_file()
+	assert result["test"]["source_counts"] == {
+		"coco": 10,
+		"gqa_balanced": 7,
+		"clevr": 3,
+	}

@@ -172,7 +172,7 @@ def parse_args() -> argparse.Namespace:
 		"--gqa-materialized-root",
 		default="/mnt/afs/liyiwei/datasets/gqa_hf_full/materialized_balanced",
 	)
-	parser.add_argument("--split", choices=("train", "validation"), default="train")
+	parser.add_argument("--split", choices=("train", "validation", "test"), default="train")
 	parser.add_argument("--start-index", type=int, default=100)
 	parser.add_argument("--sample-count", type=int, default=500)
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)

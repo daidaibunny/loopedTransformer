@@ -183,7 +183,7 @@ def parse_args() -> argparse.Namespace:
 		"--model-root",
 		default="/mnt/afs/liyiwei/models/Qwen3-VL-Embedding-2B/base_original",
 	)
-	parser.add_argument("--split", choices=["train", "validation"], default="train")
+	parser.add_argument("--split", choices=["train", "validation", "test"], default="train")
 	parser.add_argument("--per-source", type=int, default=1)
 	parser.add_argument("--num-workers", type=int, default=0)
 	parser.add_argument("--seed", type=int, default=20260729)
