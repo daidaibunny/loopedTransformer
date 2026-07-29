@@ -1,0 +1,55 @@
+model_name: Qwen/Qwen3-VL-Embedding-2B
+seed: 42
+hidden_size: 2048
+max_num_latent_slots: 16
+num_latent_slots: 4
+latent_init_mean: 0.0
+latent_init_std: 0.02
+loop_start_layer: 12
+loop_end_layer: 20
+num_total_loop_passes: 4
+num_extra_loop_passes: 3
+update_prefix_in_extra_loops: false
+detach_prefix_kv_cache: true
+
+recurrent_connector:
+  bottleneck_dim: 512
+  activation: silu
+  dropout: 0.0
+  share_across_passes: true
+  output_init: zero
+
+fusion:
+  type: eos_conditioned_slot_attention
+  attention_dim: 256
+  num_heads: 1
+  dropout: 0.0
+  residual_gate_init: 0.0
+  fuse_after_final_decoder_norm: true
+
+lora:
+  enabled_stage1: false
+  enabled_stage2: true
+  layer_start: 12
+  layer_end: 20
+  rank: 32
+  alpha: 32
+  dropout: 0.0
+  bias: none
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - up_proj
+    - down_proj
+    - gate_proj
+
+loss:
+  temperature: 0.02
+  stage1_slot_weight: 1.0
+  stage1_decoder_weight: 1.0
+  stage1_diversity_weight: 0.05
+  stage2_final_weight: 1.0
+  stage2_slot_weight: 0.2
+  stage2_decoder_weight: 0.2
+  stage2_diversity_weight: 0.05
