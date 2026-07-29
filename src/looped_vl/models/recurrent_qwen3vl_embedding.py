@@ -26,6 +26,7 @@ from looped_vl.models.recurrent_decoder_block import (
 	build_dynamic_attention_mask,
 	detach_prefix_key_values,
 )
+from looped_vl.models.warmup_heads import WarmupEmbeddingHead
 
 
 @dataclass(frozen=True)
@@ -119,16 +120,11 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			hidden_size=config.hidden_size,
 			attention_dim=config.fusion_attention_dim,
 		)
+		self.warmup_embedding_head = WarmupEmbeddingHead(config.hidden_size)
+		self.warmup_semantic_head: nn.Module = nn.Identity()
 		self.injected_lora_modules: tuple[str, ...] = ()
 		if enable_lora:
-			self.injected_lora_modules = inject_loop_layer_lora(
-				layers=self.language_model.layers,
-				layer_start=config.lora_layer_start,
-				layer_end=config.lora_layer_end,
-				rank=config.lora_rank,
-				alpha=config.lora_alpha,
-				dropout=config.lora_dropout,
-			)
+			self.inject_lora()
 
 	@property
 	def multimodal_model(self) -> nn.Module:
@@ -139,6 +135,20 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 	def language_model(self) -> nn.Module:
 		"""Return the official 28-layer language decoder."""
 		return self.multimodal_model.language_model
+
+	def inject_lora(self) -> tuple[str, ...]:
+		"""Inject the shared Stage-2 LoRA modules exactly once."""
+		if self.injected_lora_modules:
+			return self.injected_lora_modules
+		self.injected_lora_modules = inject_loop_layer_lora(
+			layers=self.language_model.layers,
+			layer_start=self.config.lora_layer_start,
+			layer_end=self.config.lora_layer_end,
+			rank=self.config.lora_rank,
+			alpha=self.config.lora_alpha,
+			dropout=self.config.lora_dropout,
+		)
+		return self.injected_lora_modules
 
 	def forward(
 		self,

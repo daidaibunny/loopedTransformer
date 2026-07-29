@@ -11,6 +11,7 @@ from looped_vl.models.config import RecurrentModelConfig
 from looped_vl.models.input_processing import RecurrentInputProcessor
 from looped_vl.models.latent_slot_inserter import create_or_load_master_slot_initialization
 from looped_vl.models.recurrent_qwen3vl_embedding import RecurrentQwen3VLEmbedding
+from looped_vl.models.warmup_heads import WarmupSemanticDecoderHead
 from looped_vl.smoke import load_local_embedding_module
 
 
@@ -34,6 +35,7 @@ def load_recurrent_components(
 	max_length: int = 8192,
 	min_pixels: int = 4 * 32 * 32,
 	max_pixels: int = 1800 * 32 * 32,
+	semantic_decoder_root: str | Path | None = None,
 ) -> LoadedRecurrentComponents:
 	"""Load local weights without ever writing into the original checkpoint directory."""
 	model_path = Path(model_root)
@@ -70,4 +72,11 @@ def load_recurrent_components(
 		pad_token_id=processor.pad_token_id,
 		enable_lora=enable_lora,
 	).to(device=device, dtype=dtype)
+	if semantic_decoder_root is not None:
+		model.warmup_semantic_head = WarmupSemanticDecoderHead.from_pretrained(
+			model_root=semantic_decoder_root,
+			device=device,
+			dtype=dtype,
+			encoder_hidden_size=config.hidden_size,
+		)
 	return LoadedRecurrentComponents(model=model, processor=processor)
