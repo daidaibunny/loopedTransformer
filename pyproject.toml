@@ -7,11 +7,11 @@ dependencies = [
 	"orjson>=3.10",
 	"peft>=0.18.0,<0.19",
 	"pillow>=10.2",
-	"pyarrow>=23.0",
-	"pyyaml>=6.0.3",
+	"pyarrow>=14.0",
+	"pyyaml>=6.0",
 	"qwen-vl-utils>=0.0.14",
-	"torch>=2.8",
-	"torchvision>=0.28.0",
+	"torch>=2.3",
+	"torchvision>=0.18.0",
 	"transformers>=4.57",
 ]
 

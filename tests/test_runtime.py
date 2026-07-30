@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -6,6 +8,14 @@ from looped_vl.runtime import (
 	resolve_torch_dtype,
 	resolve_training_precision,
 )
+
+
+def test_project_dependencies_allow_the_verified_v100_ngc_runtime() -> None:
+	project = Path("pyproject.toml").read_text(encoding="utf-8")
+
+	assert '"torch>=2.3"' in project
+	assert '"torchvision>=0.18.0"' in project
+	assert '"pyarrow>=14.0"' in project
 
 
 def test_v100_auto_attention_uses_sdpa() -> None:
