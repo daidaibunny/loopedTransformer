@@ -210,7 +210,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--runtime-precision",
 		choices=RUNTIME_PRECISIONS,
-		default="bf16",
+		default="fp16",
 	)
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)

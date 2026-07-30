@@ -969,7 +969,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--runtime-precision",
 		choices=RUNTIME_PRECISIONS,
-		default="bf16",
+		default="fp16",
 	)
 	parser.add_argument("--initial-gradient-scale", type=float, default=65_536.0)
 	parser.add_argument("--num-workers", type=int, default=2)
