@@ -1,10 +1,13 @@
 from pathlib import Path
 
+import pytest
+
 from looped_vl.training.resume_throughput_pipeline import (
 	TrainingBenchmark,
 	build_frozen_evaluation_command,
 	build_training_command,
 	select_best_training_benchmark,
+	validate_resume_configuration,
 )
 
 
@@ -34,6 +37,47 @@ def test_training_benchmark_command_resumes_exact_checkpoint_with_batch_four(
 	assert command[command.index("--resume-per-device-batch-size") + 1] == "1"
 	assert command[command.index("--max-additional-optimizer-steps") + 1] == "3"
 	assert command[command.index("--end-stage") + 1] == "1"
+
+
+def test_training_benchmark_command_can_start_from_initial_model(
+	tmp_path: Path,
+) -> None:
+	command = build_training_command(
+		torchrun=Path("/env/bin/torchrun"),
+		output_dir=tmp_path / "batch4",
+		resume_checkpoint=None,
+		per_device_batch_size=4,
+		resume_per_device_batch_size=None,
+		code_commit="a" * 40,
+		max_additional_optimizer_steps=3,
+		num_workers=8,
+		prefetch_factor=4,
+		end_stage=1,
+	)
+
+	assert "--resume-checkpoint" not in command
+	assert "--resume-per-device-batch-size" not in command
+	assert command[command.index("--per-device-batch-size") + 1] == "4"
+	assert command[command.index("--max-additional-optimizer-steps") + 1] == "3"
+
+
+def test_resume_configuration_requires_all_checkpoint_source_arguments(
+	tmp_path: Path,
+) -> None:
+	with pytest.raises(ValueError, match="all be provided"):
+		validate_resume_configuration(
+			resume_checkpoint=tmp_path / "checkpoint.pt",
+			latest_checkpoint_json=None,
+			source_tmux_session=None,
+		)
+
+
+def test_resume_configuration_accepts_fresh_start() -> None:
+	assert not validate_resume_configuration(
+		resume_checkpoint=None,
+		latest_checkpoint_json=None,
+		source_tmux_session=None,
+	)
 
 
 def test_frozen_full_evaluation_command_does_not_apply_smoke_limit(tmp_path: Path) -> None:

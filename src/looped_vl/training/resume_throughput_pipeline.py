@@ -1,4 +1,4 @@
-"""Preserve a checkpoint, tune physical batches, run frozen test, and resume training."""
+"""Tune physical batches, run frozen test, and launch or resume full training."""
 
 from __future__ import annotations
 
@@ -45,9 +45,9 @@ def build_training_command(
 	*,
 	torchrun: Path,
 	output_dir: Path,
-	resume_checkpoint: Path,
+	resume_checkpoint: Path | None,
 	per_device_batch_size: int,
-	resume_per_device_batch_size: int,
+	resume_per_device_batch_size: int | None,
 	code_commit: str,
 	max_additional_optimizer_steps: int,
 	num_workers: int,
@@ -69,10 +69,6 @@ def build_training_command(
 		str(end_stage),
 		"--output-dir",
 		str(output_dir),
-		"--resume-checkpoint",
-		str(resume_checkpoint),
-		"--resume-per-device-batch-size",
-		str(resume_per_device_batch_size),
 		"--per-device-batch-size",
 		str(per_device_batch_size),
 		"--num-workers",
@@ -84,6 +80,15 @@ def build_training_command(
 		"--code-commit",
 		code_commit,
 	]
+	if resume_checkpoint is not None:
+		command.extend(["--resume-checkpoint", str(resume_checkpoint)])
+		if resume_per_device_batch_size is not None:
+			command.extend(
+				[
+					"--resume-per-device-batch-size",
+					str(resume_per_device_batch_size),
+				],
+			)
 	if max_additional_optimizer_steps:
 		command.extend(
 			[
@@ -218,6 +223,24 @@ def _stop_source_training(tmux_session: str) -> None:
 	)
 
 
+def validate_resume_configuration(
+	*,
+	resume_checkpoint: Path | None,
+	latest_checkpoint_json: Path | None,
+	source_tmux_session: str | None,
+) -> bool:
+	"""Validate checkpoint-source arguments and return whether this is a resume."""
+	values = (resume_checkpoint, latest_checkpoint_json, source_tmux_session)
+	if any(value is not None for value in values) and not all(
+		value is not None for value in values
+	):
+		raise ValueError(
+			"resume_checkpoint, latest_checkpoint_json, and source_tmux_session "
+			"must all be provided for checkpoint-resume mode",
+		)
+	return resume_checkpoint is not None
+
+
 def _environment(cuda_visible_devices: str) -> dict[str, str]:
 	environment = os.environ.copy()
 	environment["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -301,26 +324,43 @@ def _read_frozen_benchmark(
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
-	"""Execute the checkpoint-preserving benchmark, test, and resume sequence."""
+	"""Execute the fresh-or-resumed benchmark, test, and training sequence."""
 	project_root = Path(args.project_root)
 	pipeline_root = Path(args.pipeline_root)
 	if pipeline_root.exists():
 		raise FileExistsError(f"Pipeline output already exists: {pipeline_root}")
 	pipeline_root.mkdir(parents=True)
 	status_path = pipeline_root / "status.json"
-	checkpoint_path = Path(args.resume_checkpoint)
-	_wait_for_checkpoint(
-		checkpoint_path=checkpoint_path,
-		latest_checkpoint_path=Path(args.latest_checkpoint_json),
-		status_path=status_path,
-		poll_seconds=args.poll_seconds,
+	is_resume = validate_resume_configuration(
+		resume_checkpoint=args.resume_checkpoint,
+		latest_checkpoint_json=args.latest_checkpoint_json,
+		source_tmux_session=args.source_tmux_session,
 	)
-	_write_json(status_path, {"status": "stopping_source_training_at_checkpoint"})
-	_stop_source_training(args.source_tmux_session)
+	checkpoint_path = args.resume_checkpoint
+	if is_resume:
+		assert checkpoint_path is not None
+		assert args.latest_checkpoint_json is not None
+		assert args.source_tmux_session is not None
+		_wait_for_checkpoint(
+			checkpoint_path=checkpoint_path,
+			latest_checkpoint_path=args.latest_checkpoint_json,
+			status_path=status_path,
+			poll_seconds=args.poll_seconds,
+		)
+		_write_json(status_path, {"status": "stopping_source_training_at_checkpoint"})
+		_stop_source_training(args.source_tmux_session)
+	_write_json(
+		status_path,
+		{
+			"status": "waiting_for_idle_before_pipeline",
+			"training_mode": "resume" if is_resume else "fresh",
+			"required_idle_seconds": args.required_idle_seconds,
+		},
+	)
 	wait_for_idle_window(
-		required_seconds=30.0,
+		required_seconds=args.required_idle_seconds,
 		poll_seconds=5.0,
-		log_path=pipeline_root / "gpu_idle_after_source.jsonl",
+		log_path=pipeline_root / "gpu_idle_before_pipeline.jsonl",
 	)
 	_write_json(status_path, {"status": "running_architecture_acceptance"})
 	_run_architecture_acceptance(
@@ -464,19 +504,20 @@ def run_pipeline(args: argparse.Namespace) -> None:
 	if full_frozen_status.get("status") != "passed":
 		raise RuntimeError(f"Complete frozen test was not passed: {full_frozen_status}")
 
-	resumed_training_output = Path(args.resumed_training_output)
+	training_output = Path(args.training_output)
 	_write_json(
 		status_path,
 		{
-			"status": "running_resumed_training",
+			"status": "running_training",
+			"training_mode": "resume" if is_resume else "fresh",
 			"per_device_batch_size": best_training.per_device_batch_size,
 			"frozen_report": str(full_frozen_output / "report.json"),
 		},
 	)
-	resume_return_code = _run_logged(
+	training_return_code = _run_logged(
 		build_training_command(
 			torchrun=torchrun,
-			output_dir=resumed_training_output,
+			output_dir=training_output,
 			resume_checkpoint=checkpoint_path,
 			per_device_batch_size=best_training.per_device_batch_size,
 			resume_per_device_batch_size=args.resume_per_device_batch_size,
@@ -488,10 +529,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
 		),
 		cwd=project_root,
 		environment=_environment("0,1"),
-		log_path=pipeline_root / "logs" / "resumed_training.log",
+		log_path=pipeline_root / "logs" / "training.log",
 	)
-	if resume_return_code != 0:
-		raise RuntimeError(f"Resumed training failed with exit code {resume_return_code}")
+	if training_return_code != 0:
+		raise RuntimeError(f"Training failed with exit code {training_return_code}")
 	_write_json(status_path, {"status": "passed"})
 
 
@@ -503,7 +544,7 @@ def _parse_batch_sizes(value: str) -> tuple[int, ...]:
 
 
 def parse_args() -> argparse.Namespace:
-	"""Parse the checkpoint-preserving performance pipeline."""
+	"""Parse the fresh-or-resumed performance pipeline."""
 	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument(
 		"--project-root",
@@ -516,10 +557,10 @@ def parse_args() -> argparse.Namespace:
 		default=Path("/mnt/afs/likangle/reserach/LOCUS-MLLM/envs/LOCUS/bin/python"),
 	)
 	parser.add_argument("--pipeline-root", type=Path, required=True)
-	parser.add_argument("--source-tmux-session", required=True)
-	parser.add_argument("--resume-checkpoint", type=Path, required=True)
-	parser.add_argument("--latest-checkpoint-json", type=Path, required=True)
-	parser.add_argument("--resume-per-device-batch-size", type=int, default=1)
+	parser.add_argument("--source-tmux-session")
+	parser.add_argument("--resume-checkpoint", type=Path)
+	parser.add_argument("--latest-checkpoint-json", type=Path)
+	parser.add_argument("--resume-per-device-batch-size", type=int)
 	parser.add_argument("--training-batch-sizes", type=_parse_batch_sizes, default=(4, 8, 16))
 	parser.add_argument("--training-benchmark-steps", type=int, default=3)
 	parser.add_argument("--frozen-batch-sizes", type=_parse_batch_sizes, default=(64, 128, 256))
@@ -529,9 +570,16 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--prefetch-factor", type=int, default=4)
 	parser.add_argument("--memory-limit-gib", type=int, default=72)
 	parser.add_argument("--poll-seconds", type=float, default=30.0)
+	parser.add_argument("--required-idle-seconds", type=float, default=180.0)
 	parser.add_argument("--code-commit", required=True)
 	parser.add_argument("--full-frozen-output", type=Path, required=True)
-	parser.add_argument("--resumed-training-output", type=Path, required=True)
+	parser.add_argument(
+		"--training-output",
+		"--resumed-training-output",
+		dest="training_output",
+		type=Path,
+		required=True,
+	)
 	return parser.parse_args()
 
 
