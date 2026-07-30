@@ -26,9 +26,10 @@ def test_gpu_snapshot_can_require_all_eight_v100_devices() -> None:
 def test_training_command_keeps_dataset_specific_parallel_parameters(tmp_path: Path) -> None:
 	run = BaselineRun(
 		dataset="clevr",
-		per_device_batch_size=8,
-		gradient_accumulation_steps=4,
+		per_device_batch_size=32,
+		gradient_accumulation_steps=1,
 		num_workers=6,
+		gradient_checkpointing=False,
 	)
 
 	command = build_training_command(
@@ -42,10 +43,12 @@ def test_training_command_keeps_dataset_specific_parallel_parameters(tmp_path: P
 
 	assert command[1:3] == ["-m", "torch.distributed.run"]
 	assert command[command.index("--dataset") + 1] == "clevr"
-	assert command[command.index("--per-device-batch-size") + 1] == "8"
-	assert command[command.index("--gradient-accumulation-steps") + 1] == "4"
+	assert command[command.index("--per-device-batch-size") + 1] == "32"
+	assert command[command.index("--gradient-accumulation-steps") + 1] == "1"
+	assert command[command.index("--expected-contrastive-global-batch-size") + 1] == "256"
 	assert command[command.index("--num-workers") + 1] == "6"
 	assert command[command.index("--expected-world-size") + 1] == "8"
+	assert "--no-gradient-checkpointing" in command
 
 
 def test_smoke_search_preserves_the_selected_runtime_pythonpath(tmp_path: Path) -> None:

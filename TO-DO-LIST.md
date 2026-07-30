@@ -54,3 +54,13 @@
 - [x] Queue all three full LoRA train/test runs after a continuous two-minute idle window.
 - [x] Make recurrent training, acceptance, and evaluation directly reuse the latest
   baseline train/validation/test manifests and reject the older recurrent-only splits.
+- [x] Make baseline and recurrent COCO training share one deterministic 50:50
+  text-to-image/image-to-text direction rule without changing manifest row counts.
+- [x] Require the baseline negative pool itself to contain 256 pairs and search
+  eight-V100 batch-32 throughput without treating gradient accumulation as negatives.
+- [x] Add exact resumable baseline state and cap baseline/recurrent training checkpoints
+  at four files per experiment, including the final checkpoint.
+- [x] Average baseline loss and embedding norms over every microbatch and every rank,
+  while skipping scheduler advancement after a non-finite FP16 optimizer step.
+- [x] Group baseline inputs by text/vision modality before Qwen preprocessing and restore
+  their exact logical pair order before the contrastive loss.

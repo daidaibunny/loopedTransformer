@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -33,6 +34,7 @@ class TrainingCursor:
 	sampler_epoch: int
 	batch_in_epoch: int
 	gradient_accumulation_step: int
+	processed_samples: int = 0
 
 
 def rebase_training_cursor_batch_size(
@@ -57,6 +59,7 @@ def rebase_training_cursor_batch_size(
 		sampler_epoch=cursor.sampler_epoch,
 		batch_in_epoch=local_samples_consumed // target_per_device_batch_size,
 		gradient_accumulation_step=0,
+		processed_samples=cursor.processed_samples,
 	)
 
 
@@ -77,6 +80,31 @@ def restore_rng_state(state: dict[str, Any]) -> None:
 	torch.set_rng_state(state["torch_cpu"])
 	if torch.cuda.is_available() and state["torch_cuda_all"]:
 		torch.cuda.set_rng_state_all(state["torch_cuda_all"])
+
+
+def _checkpoint_sort_key(path: Path) -> tuple[int, int, str]:
+	"""Sort named step checkpoints deterministically, then fall back to modification time."""
+	match = re.search(r"step(\d+)", path.stem)
+	step = int(match.group(1)) if match else -1
+	stage_match = re.search(r"stage(\d+)", path.stem)
+	stage = int(stage_match.group(1)) if stage_match else 0
+	return stage, step, path.name
+
+
+def prune_training_checkpoints(
+	checkpoint_root: str | Path,
+	*,
+	max_checkpoints: int,
+) -> list[Path]:
+	"""Keep only the newest requested training checkpoint files."""
+	if max_checkpoints <= 0 or max_checkpoints > 4:
+		raise ValueError("max_checkpoints must be between 1 and 4")
+	root = Path(checkpoint_root)
+	checkpoints = sorted(root.glob("*.pt"), key=_checkpoint_sort_key)
+	removed = checkpoints[:-max_checkpoints]
+	for path in removed:
+		path.unlink()
+	return removed
 
 
 def _trainable_parameter_state(model: nn.Module) -> dict[str, torch.Tensor]:

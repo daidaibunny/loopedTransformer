@@ -38,6 +38,7 @@ from looped_vl.training.checkpointing import (
 	TrainingCursor,
 	capture_rng_state,
 	load_training_checkpoint,
+	prune_training_checkpoints,
 	rebase_training_cursor_batch_size,
 	save_training_checkpoint,
 )
@@ -50,6 +51,12 @@ from looped_vl.training.data import (
 from looped_vl.training.model import RecurrentTrainingModel
 from looped_vl.training.optimizer import build_optimizer_and_scheduler
 from looped_vl.training.reproducibility import seed_everything
+from looped_vl.training.schedule import (
+	BatchOffsetSampler,
+	EpochStagePlan,
+	resolve_one_epoch_stage_plans,
+	resolve_parallel_batch_sizes,
+)
 from looped_vl.training.trainability import (
 	align_trainable_parameter_dtype,
 	audit_gradient_scope,
@@ -128,16 +135,17 @@ def _build_loader(
 	rank: int,
 	world_size: int,
 	generator: torch.Generator,
-) -> tuple[DataLoader[dict[str, Any]], DistributedSampler[Any]]:
+) -> tuple[DataLoader[dict[str, Any]], BatchOffsetSampler]:
 	dataset = RecurrentAlignedDataset(args.dataset_root, "train")
-	sampler = DistributedSampler(
+	distributed_sampler = DistributedSampler(
 		dataset,
 		num_replicas=world_size,
 		rank=rank,
 		shuffle=True,
 		seed=42,
-		drop_last=True,
+		drop_last=False,
 	)
+	sampler = BatchOffsetSampler(distributed_sampler, args.per_device_batch_size)
 	loader_kwargs: dict[str, Any] = {
 		"dataset": dataset,
 		"batch_size": args.per_device_batch_size,
@@ -145,7 +153,7 @@ def _build_loader(
 		"shuffle": False,
 		"num_workers": args.num_workers,
 		"collate_fn": paired_training_collate,
-		"drop_last": True,
+		"drop_last": False,
 		"pin_memory": False,
 		"generator": generator,
 	}
@@ -181,6 +189,7 @@ def _save_checkpoint(
 	world_size: int,
 	metadata: dict[str, Any],
 	gradient_scaler: torch.cuda.amp.GradScaler,
+	max_checkpoints: int,
 ) -> Path:
 	rank_rng_states = _gather_rank_rng_states(world_size)
 	path = output_dir / "checkpoints" / (
@@ -196,6 +205,10 @@ def _save_checkpoint(
 			rank_rng_states=rank_rng_states,
 			metadata=metadata,
 			gradient_scaler=gradient_scaler,
+		)
+		prune_training_checkpoints(
+			path.parent,
+			max_checkpoints=max_checkpoints,
 		)
 	dist.barrier()
 	return path
@@ -258,10 +271,11 @@ def _train_stage(
 	*,
 	args: argparse.Namespace,
 	stage_config: TrainingStageConfig,
+	stage_plan: EpochStagePlan,
 	training_model: RecurrentTrainingModel,
 	processor: Any,
 	loader: DataLoader[dict[str, Any]],
-	sampler: DistributedSampler[Any],
+	sampler: BatchOffsetSampler,
 	rank: int,
 	world_size: int,
 	local_rank: int,
@@ -269,8 +283,11 @@ def _train_stage(
 	output_dir: Path,
 	checkpoint_metadata: dict[str, Any],
 	resume_checkpoint: Path | None,
+	initial_data_cursor: TrainingCursor | None,
 	training_precision: TrainingPrecision,
 ) -> TrainingCursor:
+	if stage_plan.stage != stage_config.stage:
+		raise ValueError("Stage plan does not match the active stage configuration")
 	trainable_names = configure_trainable_parameters(training_model.encoder, stage_config.stage)
 	aligned_names = align_trainable_parameter_dtype(
 		training_model.encoder,
@@ -279,24 +296,39 @@ def _train_stage(
 	if set(aligned_names) != set(trainable_names):
 		raise RuntimeError("Trainable dtype alignment did not match the stage allowlist")
 	_set_training_modes(training_model)
-	optimizer, scheduler = build_optimizer_and_scheduler(training_model, stage_config)
-	gradient_scaler = torch.cuda.amp.GradScaler(
-		enabled=training_precision.gradient_scaling_enabled,
-		init_scale=args.initial_gradient_scale,
-	)
 	gradient_accumulation_steps = stage_config.gradient_accumulation_steps(
 		args.per_device_batch_size,
 		world_size,
 	)
 	if args.smoke_optimizer_steps:
 		gradient_accumulation_steps = args.smoke_gradient_accumulation_steps
+	optimizer, scheduler = build_optimizer_and_scheduler(
+		training_model,
+		stage_config,
+		total_steps=stage_plan.optimizer_steps,
+	)
+	gradient_scaler = torch.cuda.amp.GradScaler(
+		enabled=training_precision.gradient_scaling_enabled,
+		init_scale=args.initial_gradient_scale,
+	)
 	cursor = TrainingCursor(
 		stage=stage_config.stage,
 		global_step=0,
 		sampler_epoch=0,
-		batch_in_epoch=0,
+		batch_in_epoch=stage_plan.start_batch,
 		gradient_accumulation_step=0,
+		processed_samples=(
+			initial_data_cursor.processed_samples
+			if initial_data_cursor is not None
+			else 0
+		),
 	)
+	if (
+		initial_data_cursor is not None
+		and not args.smoke_optimizer_steps
+		and initial_data_cursor.batch_in_epoch != stage_plan.start_batch
+	):
+		raise ValueError("Previous stage did not finish at the next stage boundary")
 	if resume_checkpoint is not None:
 		cursor, resume_metadata = load_training_checkpoint(
 			path=resume_checkpoint,
@@ -322,8 +354,12 @@ def _train_stage(
 				source_per_device_batch_size=source_batch_size,
 				target_per_device_batch_size=args.per_device_batch_size,
 			)
+	if cursor.sampler_epoch != 0:
+		raise ValueError("One-epoch training checkpoints must remain in sampler epoch zero")
+	if not stage_plan.start_batch <= cursor.batch_in_epoch <= stage_plan.end_batch:
+		raise ValueError("Checkpoint data cursor is outside the active stage batch range")
 	optimizer_step_limit = _optimizer_step_limit(
-		configured_steps=stage_config.steps,
+		configured_steps=stage_plan.optimizer_steps,
 		resumed_global_step=cursor.global_step,
 		smoke_optimizer_steps=args.smoke_optimizer_steps,
 		max_additional_optimizer_steps=args.max_additional_optimizer_steps,
@@ -353,9 +389,15 @@ def _train_stage(
 					if parameter.requires_grad
 				),
 				"gradient_accumulation_steps": gradient_accumulation_steps,
-				"effective_batch_size": (
+				"contrastive_global_batch_size": (
+					args.per_device_batch_size * world_size
+				),
+				"optimizer_global_batch_size": (
 					args.per_device_batch_size * world_size * gradient_accumulation_steps
 				),
+				"epoch_batch_start": stage_plan.start_batch,
+				"epoch_batch_end": stage_plan.end_batch,
+				"optimizer_steps": stage_plan.optimizer_steps,
 			},
 		)
 	optimizer.zero_grad(set_to_none=True)
@@ -372,214 +414,226 @@ def _train_stage(
 	)
 	accumulator: dict[str, torch.Tensor] = {}
 	accumulated_batches = 0
+	accumulated_global_samples = 0
+	contrastive_batch_sizes: Counter[int] = Counter()
 	source_counts: Counter[str] = Counter()
 	direction_counts: Counter[str] = Counter()
 	step_start = time.perf_counter()
 	latest_diagnostics: dict[str, Any] = {}
-	epoch = cursor.sampler_epoch
-	while cursor.global_step < optimizer_step_limit:
-		sampler.set_epoch(epoch)
-		for batch_index, batch in enumerate(loader):
-			if epoch == cursor.sampler_epoch and batch_index < cursor.batch_in_epoch:
-				close_training_batch_images(batch)
-				continue
-			try:
-				input_groups = group_model_inputs_by_modality(
-					batch["query_inputs"],
-					batch["candidate_inputs"],
-				)
-				processed_batches = tuple(
-					processor.prepare(list(group.model_inputs), device=device)
-					for group in input_groups
-				)
-			finally:
-				close_training_batch_images(batch)
-			is_accumulation_boundary = (
-				cursor.gradient_accumulation_step + 1 == gradient_accumulation_steps
+	epoch = 0
+	sampler.set_epoch(epoch)
+	start_batch = cursor.batch_in_epoch
+	sampler.set_batch_range(start_batch, stage_plan.end_batch)
+	for relative_batch_index, batch in enumerate(loader):
+		batch_index = start_batch + relative_batch_index
+		group_start = stage_plan.start_batch + (
+			(batch_index - stage_plan.start_batch) // gradient_accumulation_steps
+		) * gradient_accumulation_steps
+		group_end = min(
+			stage_plan.end_batch,
+			group_start + gradient_accumulation_steps,
+		)
+		group_size = group_end - group_start
+		is_accumulation_boundary = batch_index + 1 == group_end
+		local_batch_size = len(batch["pairs"])
+		contrastive_global_batch_size = local_batch_size * world_size
+		try:
+			input_groups = group_model_inputs_by_modality(
+				batch["query_inputs"],
+				batch["candidate_inputs"],
 			)
-			synchronization_context = (
-				nullcontext() if is_accumulation_boundary else ddp_model.no_sync()
+			processed_batches = tuple(
+				processor.prepare(list(group.model_inputs), device=device)
+				for group in input_groups
 			)
-			with synchronization_context:
-				with torch.autocast(
-					device_type="cuda",
-					dtype=training_precision.autocast_dtype,
-					enabled=training_precision.autocast_enabled,
-				):
-					step_output = ddp_model(
-						local_batch_size=args.per_device_batch_size,
-						semantic_targets=batch["semantic_targets"],
-						sources=batch["sources"],
-						stage=stage_config.stage,
-						processed_batches=processed_batches,
-						original_indices=tuple(
-							group.original_indices
-							for group in input_groups
-						),
-					)
-					loss = step_output["total_loss"] / gradient_accumulation_steps
-				gradient_scaler.scale(loss).backward()
-			_accumulate_metric_tensors(accumulator, step_output, metric_keys)
-			accumulated_batches += 1
-			source_counts.update(batch["sources"])
-			direction_counts.update(batch["directions"])
-			latest_diagnostics = {
-				"recurrent_pass_cosine": [
-					value.detach().float()
-					for value in step_output["recurrent_pass_cosine"]
-				],
-				"recurrent_pass_relative_update": [
-					value.detach().float()
-					for value in step_output["recurrent_pass_relative_update"]
-				],
-			}
-			if is_accumulation_boundary:
-				gradient_scaler.unscale_(optimizer)
-				gradient_audit = None
-				if cursor.global_step == 0:
-					gradient_audit = audit_gradient_scope(
-						training_model.encoder,
-						allowed_names=trainable_names,
-					)
-					if rank == 0:
-						_write_json(
-							output_dir / f"stage{stage_config.stage}_gradient_audit.json",
-							gradient_audit,
-						)
-				gradient_norm = torch.nn.utils.clip_grad_norm_(
-					(
-						parameter
-						for parameter in training_model.parameters()
-						if parameter.requires_grad
-					),
-					stage_config.gradient_clip_norm,
-				)
-				scale_before_step = gradient_scaler.get_scale()
-				gradient_scaler.step(optimizer)
-				gradient_scaler.update()
-				optimizer_step_skipped = (
-					gradient_scaler.is_enabled()
-					and gradient_scaler.get_scale() < scale_before_step
-				)
-				optimizer.zero_grad(set_to_none=True)
-				if optimizer_step_skipped:
-					if rank == 0:
-						LOGGER.warning(
-							"Skipped non-finite FP16 optimizer step at data batch %d",
-							batch_index,
-						)
-					cursor = TrainingCursor(
-						stage=stage_config.stage,
-						global_step=cursor.global_step,
-						sampler_epoch=epoch,
-						batch_in_epoch=batch_index + 1,
-						gradient_accumulation_step=0,
-					)
-					accumulator = {}
-					accumulated_batches = 0
-					source_counts = Counter()
-					direction_counts = Counter()
-					step_start = time.perf_counter()
-					continue
-				scheduler.step()
-				global_step = cursor.global_step + 1
-				averages = _finalize_metric_tensors(accumulator, accumulated_batches)
-				finalized_diagnostics = {
-					key: [float(value.item()) for value in values]
-					for key, values in latest_diagnostics.items()
-				}
-				elapsed = time.perf_counter() - step_start
-				global_samples = (
-					args.per_device_batch_size * world_size * accumulated_batches
-				)
-				log_record = {
-					"stage": stage_config.stage,
-					"global_step": global_step,
-					**averages,
-					**finalized_diagnostics,
-					"gradient_norm": float(gradient_norm.detach().float().item()),
-					"learning_rate": float(scheduler.get_last_lr()[0]),
-					"gradient_scale": float(gradient_scaler.get_scale()),
-					"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
-					"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
-					"samples_per_second": global_samples / elapsed,
-					"source_counts": dict(source_counts),
-					"direction_counts": dict(direction_counts),
-					"slot_collapse": averages["slot_pairwise_cosine"] > 0.98,
-					"pooling_collapse": (
-						training_model.encoder.config.num_latent_slots > 1
-						and averages["late_fusion_attention_entropy"] < 0.1
-					),
-					"recurrence_unused": (
-						global_step > 100 and averages["connector_output_norm"] < 1e-6
-					),
-					"gradient_scope_audited": gradient_audit is not None,
-				}
-				if rank == 0:
-					_append_json_line(output_dir / "train_metrics.jsonl", log_record)
-					LOGGER.info(
-						"stage=%d step=%d/%d loss=%.5f grad=%.5f samples/s=%.3f",
-						stage_config.stage,
-						global_step,
-						optimizer_step_limit,
-						averages["total_loss"],
-						float(gradient_norm.detach().float().item()),
-						global_samples / elapsed,
-					)
-				cursor = TrainingCursor(
+		finally:
+			close_training_batch_images(batch)
+		synchronization_context = (
+			nullcontext() if is_accumulation_boundary else ddp_model.no_sync()
+		)
+		with synchronization_context:
+			with torch.autocast(
+				device_type="cuda",
+				dtype=training_precision.autocast_dtype,
+				enabled=training_precision.autocast_enabled,
+			):
+				step_output = ddp_model(
+					local_batch_size=local_batch_size,
+					semantic_targets=batch["semantic_targets"],
+					positive_ids=batch["positive_ids"],
+					sources=batch["sources"],
 					stage=stage_config.stage,
-					global_step=global_step,
-					sampler_epoch=epoch,
-					batch_in_epoch=batch_index + 1,
-					gradient_accumulation_step=0,
+					processed_batches=processed_batches,
+					original_indices=tuple(
+						group.original_indices
+						for group in input_groups
+					),
 				)
-				accumulator = {}
-				accumulated_batches = 0
-				source_counts = Counter()
-				direction_counts = Counter()
-				step_start = time.perf_counter()
-				if _should_save_checkpoint(
-					global_step=cursor.global_step,
-					optimizer_step_limit=optimizer_step_limit,
-					checkpoint_every=args.checkpoint_every,
-					smoke_optimizer_steps=args.smoke_optimizer_steps,
-				):
-					checkpoint_path = _save_checkpoint(
-						output_dir=output_dir,
-						model=training_model,
-						optimizer=optimizer,
-						scheduler=scheduler,
-						cursor=cursor,
-						rank=rank,
-						world_size=world_size,
-						metadata=checkpoint_metadata,
-						gradient_scaler=gradient_scaler,
-					)
-					if rank == 0:
-						_write_json(
-							output_dir / "latest_checkpoint.json",
-							{"path": str(checkpoint_path), "cursor": asdict(cursor)},
-						)
-				if cursor.global_step >= optimizer_step_limit:
-					break
-			else:
-				cursor = TrainingCursor(
-					stage=stage_config.stage,
-					global_step=cursor.global_step,
-					sampler_epoch=epoch,
-					batch_in_epoch=batch_index + 1,
-					gradient_accumulation_step=cursor.gradient_accumulation_step + 1,
+				loss = step_output["total_loss"] / group_size
+			gradient_scaler.scale(loss).backward()
+		_accumulate_metric_tensors(accumulator, step_output, metric_keys)
+		accumulated_batches += 1
+		accumulated_global_samples += contrastive_global_batch_size
+		contrastive_batch_sizes[contrastive_global_batch_size] += 1
+		source_counts.update(batch["sources"])
+		direction_counts.update(batch["directions"])
+		latest_diagnostics = {
+			"recurrent_pass_cosine": [
+				value.detach().float()
+				for value in step_output["recurrent_pass_cosine"]
+			],
+			"recurrent_pass_relative_update": [
+				value.detach().float()
+				for value in step_output["recurrent_pass_relative_update"]
+			],
+		}
+		if not is_accumulation_boundary:
+			cursor = TrainingCursor(
+				stage=stage_config.stage,
+				global_step=cursor.global_step,
+				sampler_epoch=epoch,
+				batch_in_epoch=batch_index + 1,
+				gradient_accumulation_step=cursor.gradient_accumulation_step + 1,
+				processed_samples=cursor.processed_samples + contrastive_global_batch_size,
+			)
+			continue
+		gradient_scaler.unscale_(optimizer)
+		gradient_audit = None
+		if cursor.global_step == 0:
+			gradient_audit = audit_gradient_scope(
+				training_model.encoder,
+				allowed_names=trainable_names,
+			)
+			if rank == 0:
+				_write_json(
+					output_dir / f"stage{stage_config.stage}_gradient_audit.json",
+					gradient_audit,
+				)
+		gradient_norm = torch.nn.utils.clip_grad_norm_(
+			(
+				parameter
+				for parameter in training_model.parameters()
+				if parameter.requires_grad
+			),
+			stage_config.gradient_clip_norm,
+		)
+		scale_before_step = gradient_scaler.get_scale()
+		gradient_scaler.step(optimizer)
+		gradient_scaler.update()
+		optimizer_step_skipped = (
+			gradient_scaler.is_enabled()
+			and gradient_scaler.get_scale() < scale_before_step
+		)
+		optimizer.zero_grad(set_to_none=True)
+		processed_samples = cursor.processed_samples + contrastive_global_batch_size
+		if optimizer_step_skipped:
+			if rank == 0:
+				LOGGER.warning(
+					"Skipped non-finite FP16 optimizer step at data batch %d",
+					batch_index,
+				)
+			cursor = TrainingCursor(
+				stage=stage_config.stage,
+				global_step=cursor.global_step,
+				sampler_epoch=epoch,
+				batch_in_epoch=batch_index + 1,
+				gradient_accumulation_step=0,
+				processed_samples=processed_samples,
+			)
+			accumulator = {}
+			accumulated_batches = 0
+			accumulated_global_samples = 0
+			contrastive_batch_sizes = Counter()
+			source_counts = Counter()
+			direction_counts = Counter()
+			step_start = time.perf_counter()
+			continue
+		scheduler.step()
+		global_step = cursor.global_step + 1
+		averages = _finalize_metric_tensors(accumulator, accumulated_batches)
+		finalized_diagnostics = {
+			key: [float(value.item()) for value in values]
+			for key, values in latest_diagnostics.items()
+		}
+		elapsed = time.perf_counter() - step_start
+		log_record = {
+			"stage": stage_config.stage,
+			"global_step": global_step,
+			**averages,
+			**finalized_diagnostics,
+			"gradient_norm": float(gradient_norm.detach().float().item()),
+			"learning_rate": float(scheduler.get_last_lr()[0]),
+			"gradient_scale": float(gradient_scaler.get_scale()),
+			"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
+			"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
+			"samples_per_second": accumulated_global_samples / elapsed,
+			"optimizer_global_batch_size": accumulated_global_samples,
+			"contrastive_global_batch_size_min": min(contrastive_batch_sizes),
+			"contrastive_global_batch_size_max": max(contrastive_batch_sizes),
+			"contrastive_microbatch_count": sum(contrastive_batch_sizes.values()),
+			"source_counts": dict(source_counts),
+			"direction_counts": dict(direction_counts),
+			"slot_collapse": averages["slot_pairwise_cosine"] > 0.98,
+			"pooling_collapse": (
+				training_model.encoder.config.num_latent_slots > 1
+				and averages["late_fusion_attention_entropy"] < 0.1
+			),
+			"recurrence_unused": (
+				global_step > 100 and averages["connector_output_norm"] < 1e-6
+			),
+			"gradient_scope_audited": gradient_audit is not None,
+		}
+		if rank == 0:
+			_append_json_line(output_dir / "train_metrics.jsonl", log_record)
+			LOGGER.info(
+				"stage=%d step=%d/%d loss=%.5f grad=%.5f samples/s=%.3f",
+				stage_config.stage,
+				global_step,
+				optimizer_step_limit,
+				averages["total_loss"],
+				float(gradient_norm.detach().float().item()),
+				accumulated_global_samples / elapsed,
+			)
+		cursor = TrainingCursor(
+			stage=stage_config.stage,
+			global_step=global_step,
+			sampler_epoch=epoch,
+			batch_in_epoch=batch_index + 1,
+			gradient_accumulation_step=0,
+			processed_samples=processed_samples,
+		)
+		accumulator = {}
+		accumulated_batches = 0
+		accumulated_global_samples = 0
+		contrastive_batch_sizes = Counter()
+		source_counts = Counter()
+		direction_counts = Counter()
+		step_start = time.perf_counter()
+		if _should_save_checkpoint(
+			global_step=cursor.global_step,
+			optimizer_step_limit=optimizer_step_limit,
+			checkpoint_every=args.checkpoint_every,
+			smoke_optimizer_steps=args.smoke_optimizer_steps,
+		):
+			checkpoint_path = _save_checkpoint(
+				output_dir=output_dir,
+				model=training_model,
+				optimizer=optimizer,
+				scheduler=scheduler,
+				cursor=cursor,
+				rank=rank,
+				world_size=world_size,
+				metadata=checkpoint_metadata,
+				gradient_scaler=gradient_scaler,
+				max_checkpoints=args.max_checkpoints,
+			)
+			if rank == 0:
+				_write_json(
+					output_dir / "latest_checkpoint.json",
+					{"path": str(checkpoint_path), "cursor": asdict(cursor)},
 				)
 		if cursor.global_step >= optimizer_step_limit:
 			break
-		epoch += 1
-		cursor = TrainingCursor(
-			stage=stage_config.stage,
-			global_step=cursor.global_step,
-			sampler_epoch=epoch,
-			batch_in_epoch=0,
-			gradient_accumulation_step=cursor.gradient_accumulation_step,
-		)
 	del ddp_model
 	dist.barrier()
 	return cursor
@@ -591,6 +645,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		raise ValueError("start_stage cannot be greater than end_stage")
 	if args.checkpoint_every <= 0:
 		raise ValueError("checkpoint_every must be positive")
+	if args.max_checkpoints <= 0 or args.max_checkpoints > 4:
+		raise ValueError("max_checkpoints must be between 1 and 4")
 	if args.resume_per_device_batch_size is not None and args.resume_checkpoint is None:
 		raise ValueError("resume_per_device_batch_size requires resume_checkpoint")
 	if (
@@ -662,6 +718,43 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		1: TrainingStageConfig.from_yaml(args.stage1_config),
 		2: TrainingStageConfig.from_yaml(args.stage2_config),
 	}
+	gradient_accumulation_steps = stage_configs[1].gradient_accumulation_steps(
+		args.per_device_batch_size,
+		world_size,
+	)
+	if (
+		stage_configs[2].gradient_accumulation_steps(
+			args.per_device_batch_size,
+			world_size,
+		)
+		!= gradient_accumulation_steps
+	):
+		raise ValueError("Stage 1 and Stage 2 must use the same accumulation size")
+	if args.smoke_optimizer_steps:
+		gradient_accumulation_steps = args.smoke_gradient_accumulation_steps
+	stage_plan_values = resolve_one_epoch_stage_plans(
+		loader_batches=len(loader),
+		gradient_accumulation_steps=gradient_accumulation_steps,
+		stage_step_weights={
+			stage: config.schedule_weight for stage, config in stage_configs.items()
+		},
+	)
+	stage_plans = {plan.stage: plan for plan in stage_plan_values}
+	parallel_batch_sizes = resolve_parallel_batch_sizes(
+		per_device_batch_size=args.per_device_batch_size,
+		world_size=world_size,
+		gradient_accumulation_steps=gradient_accumulation_steps,
+	)
+	if (
+		parallel_batch_sizes.contrastive_global_batch_size
+		!= args.expected_contrastive_global_batch_size
+	):
+		raise ValueError(
+			"Contrastive global batch is "
+			f"{parallel_batch_sizes.contrastive_global_batch_size}, expected "
+			f"{args.expected_contrastive_global_batch_size}; gradient accumulation "
+			"does not add in-batch negatives",
+		)
 	manifest = {
 		"scope": "recurrent_latent_slot_qwen3vl_v1",
 		"hostname": socket.gethostname(),
@@ -693,9 +786,31 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"seed": 42,
 		"model_config": asdict(model_config),
 		"stage_configs": {stage: asdict(config) for stage, config in stage_configs.items()},
+		"schedule": {
+			"epochs": 1,
+			"policy": "one_epoch_contiguous_stage_split",
+			"stage_step_weights": {
+				str(stage): config.schedule_weight
+				for stage, config in stage_configs.items()
+			},
+			"resolved_stage_plans": {
+				str(stage): asdict(plan) for stage, plan in stage_plans.items()
+			},
+			"loader_batches_per_rank": len(loader),
+			"distributed_sampler_total_rows": sampler.total_size,
+			"distributed_sampler_padding_rows": sampler.total_size - len(loader.dataset),
+		},
 		"dataset_root": str(args.dataset_root),
 		"train_rows": len(loader.dataset),
 		"per_device_batch_size": args.per_device_batch_size,
+		"gradient_accumulation_steps": gradient_accumulation_steps,
+		**asdict(parallel_batch_sizes),
+		"expected_contrastive_global_batch_size": (
+			args.expected_contrastive_global_batch_size
+		),
+		"multi_positive_contrastive_loss": True,
+		"combined_contrastive_all_gather": True,
+		"stage1_final_infonce_computed": False,
 		"resume_per_device_batch_size": args.resume_per_device_batch_size,
 		"max_additional_optimizer_steps": args.max_additional_optimizer_steps,
 		"max_length": args.max_length,
@@ -712,6 +827,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			}
 		],
 		"smoke_optimizer_steps": args.smoke_optimizer_steps,
+		"checkpoint_every": args.checkpoint_every,
+		"max_checkpoints": args.max_checkpoints,
 	}
 	all_manifests: list[dict[str, Any] | None] = [None for _ in range(world_size)]
 	dist.all_gather_object(all_manifests, manifest)
@@ -726,7 +843,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	if rank == 0:
 		manifest["gpus"] = [item["gpus"][0] for item in all_manifests if item is not None]
 		_write_json(output_dir / "run_manifest.json", manifest)
-		_write_json(output_dir / "status.json", {"status": "training", "stage": 1})
+		_write_json(
+			output_dir / "status.json",
+			{"status": "training", "stage": args.start_stage},
+		)
 	training_start = time.perf_counter()
 	final_cursor = None
 	for stage in range(args.start_stage, args.end_stage + 1):
@@ -735,6 +855,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		final_cursor = _train_stage(
 			args=args,
 			stage_config=stage_configs[stage],
+			stage_plan=stage_plans[stage],
 			training_model=training_model,
 			processor=components.processor,
 			loader=loader,
@@ -746,6 +867,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			output_dir=output_dir,
 			checkpoint_metadata=checkpoint_metadata,
 			resume_checkpoint=args.resume_checkpoint if stage == args.start_stage else None,
+			initial_data_cursor=final_cursor,
 			training_precision=training_precision,
 		)
 	checkpoint_hash_after = checkpoint_sha256(model_checkpoint_path) if rank == 0 else None
@@ -808,6 +930,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--end-stage", type=int, choices=(1, 2), default=2)
 	parser.add_argument("--per-device-batch-size", type=int, default=8)
 	parser.add_argument(
+		"--expected-contrastive-global-batch-size",
+		type=int,
+		default=64,
+	)
+	parser.add_argument(
 		"--attention-implementation",
 		choices=ATTENTION_IMPLEMENTATIONS,
 		default="auto",
@@ -822,6 +949,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--num-workers", type=int, default=2)
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--checkpoint-every", type=int, default=500)
+	parser.add_argument("--max-checkpoints", type=int, choices=range(1, 5), default=4)
 	parser.add_argument("--resume-checkpoint", type=Path)
 	parser.add_argument("--resume-per-device-batch-size", type=int)
 	parser.add_argument("--max-additional-optimizer-steps", type=int, default=0)
@@ -839,6 +967,16 @@ def main() -> int:
 	try:
 		run_training(args)
 		return 0
+	except KeyboardInterrupt:
+		logging.basicConfig(level=logging.INFO)
+		LOGGER.warning("Recurrent training interrupted")
+		if int(os.environ.get("RANK", "0")) == 0:
+			output_dir = Path(args.output_dir)
+			if output_dir.exists():
+				_write_json(output_dir / "status.json", {"status": "interrupted"})
+		if dist.is_available() and dist.is_initialized():
+			dist.destroy_process_group()
+		return 130
 	except Exception:
 		logging.basicConfig(level=logging.INFO)
 		LOGGER.exception("Recurrent training failed")

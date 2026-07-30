@@ -1,5 +1,5 @@
 stage: 1
-steps: 2000
+schedule_weight: 2000
 optimizer: AdamW
 learning_rate: 1.0e-5
 weight_decay: 0.01

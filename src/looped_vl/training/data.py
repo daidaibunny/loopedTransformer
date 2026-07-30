@@ -7,11 +7,8 @@ from typing import Any
 
 from PIL import Image
 
+from looped_vl.baseline.data import VQA_INSTRUCTION, build_coco_retrieval_inputs
 from looped_vl.data import MixtureSample
-
-COCO_TEXT_TO_IMAGE_INSTRUCTION = "Retrieve the image that best matches the caption."
-COCO_IMAGE_TO_TEXT_INSTRUCTION = "Retrieve the caption that best describes the image."
-VQA_INSTRUCTION = "Retrieve the correct answer to the visual question."
 
 
 @dataclass(frozen=True)
@@ -23,6 +20,7 @@ class TrainingPair:
 	query_input: dict[str, Any]
 	candidate_input: dict[str, Any]
 	semantic_target: str
+	positive_id: str
 	reasoning_depth: int
 	sample_id: str
 	image: Image.Image
@@ -40,20 +38,14 @@ class ModalityInputGroup:
 def build_training_pair(sample: MixtureSample | Any) -> TrainingPair:
 	"""Map one mixture row to the exact v1.0 dual-tower training structure."""
 	if sample.source == "coco":
-		if sample.mixture_position % 2 == 0:
-			direction = "text_to_image"
-			query_input = {
-				"text": sample.text,
-				"instruction": COCO_TEXT_TO_IMAGE_INSTRUCTION,
-			}
-			candidate_input = {"image": sample.image}
-		else:
-			direction = "image_to_text"
-			query_input = {
-				"image": sample.image,
-				"instruction": COCO_IMAGE_TO_TEXT_INSTRUCTION,
-			}
-			candidate_input = {"text": sample.text}
+		coco_inputs = build_coco_retrieval_inputs(
+			text=sample.text,
+			image=sample.image,
+			position=sample.mixture_position,
+		)
+		direction = coco_inputs.direction
+		query_input = coco_inputs.query_input
+		candidate_input = coco_inputs.candidate_input
 		semantic_target = sample.text
 	elif sample.source in {"gqa_balanced", "clevr"}:
 		direction = "visual_question_answering"
@@ -74,6 +66,7 @@ def build_training_pair(sample: MixtureSample | Any) -> TrainingPair:
 		query_input=query_input,
 		candidate_input=candidate_input,
 		semantic_target=semantic_target,
+		positive_id=str(getattr(sample, "positive_id", "")),
 		reasoning_depth=int(getattr(sample, "reasoning_depth", 0)),
 		sample_id=str(getattr(sample, "sample_id", sample.mixture_position)),
 		image=sample.image,
@@ -83,11 +76,14 @@ def build_training_pair(sample: MixtureSample | Any) -> TrainingPair:
 def paired_training_collate(samples: list[MixtureSample]) -> dict[str, Any]:
 	"""Keep PIL images open until both towers have been processed in the trainer."""
 	pairs = [build_training_pair(sample) for sample in samples]
+	if any(not pair.positive_id for pair in pairs):
+		raise ValueError("Every recurrent training pair must have a positive_id")
 	return {
 		"pairs": pairs,
 		"query_inputs": [pair.query_input for pair in pairs],
 		"candidate_inputs": [pair.candidate_input for pair in pairs],
 		"semantic_targets": [pair.semantic_target for pair in pairs],
+		"positive_ids": [pair.positive_id for pair in pairs],
 		"sources": [pair.source for pair in pairs],
 		"directions": [pair.direction for pair in pairs],
 		"sample_ids": [pair.sample_id for pair in pairs],

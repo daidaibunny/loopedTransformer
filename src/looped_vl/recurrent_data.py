@@ -107,6 +107,7 @@ def _normalize_record(
 		"text": str(record["query_text"]),
 		"answer": str(record["candidate_text"]),
 		"full_answer": str(record["candidate_text"]),
+		"positive_id": str(record["positive_id"]),
 		"reasoning_trace_json": "[]",
 		"reasoning_depth": 0,
 		"metadata_json": json.dumps(
@@ -174,6 +175,7 @@ class RecurrentAlignedDataset(Dataset[MixtureSample]):
 			reasoning_trace_json=str(record["reasoning_trace_json"]),
 			reasoning_depth=int(record["reasoning_depth"]),
 			metadata_json=str(record["metadata_json"]),
+			positive_id=str(record["positive_id"]),
 		)
 
 

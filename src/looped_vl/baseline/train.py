@@ -11,7 +11,9 @@ import socket
 import subprocess
 import sys
 import time
+from collections import Counter
 from contextlib import nullcontext
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,7 @@ from looped_vl.baseline.data import (
 	BaselineManifestDataset,
 	baseline_pair_collate,
 	close_baseline_batch_images,
+	count_coco_retrieval_directions,
 )
 from looped_vl.baseline.model import (
 	BASELINE_LORA_ALPHA,
@@ -36,6 +39,14 @@ from looped_vl.baseline.model import (
 	load_lora_training_model,
 )
 from looped_vl.smoke import checkpoint_sha256
+from looped_vl.training.checkpointing import (
+	TrainingCursor,
+	capture_rng_state,
+	load_training_checkpoint,
+	prune_training_checkpoints,
+	save_training_checkpoint,
+)
+from looped_vl.training.data import group_model_inputs_by_modality
 
 LOGGER = logging.getLogger("baseline_train")
 
@@ -68,6 +79,146 @@ def _seed_everything(seed: int, rank: int) -> torch.Generator:
 	generator = torch.Generator()
 	generator.manual_seed(seed + rank)
 	return generator
+
+
+def _validate_parallel_batch_sizes(
+	*,
+	per_device_batch_size: int,
+	world_size: int,
+	gradient_accumulation_steps: int,
+	expected_contrastive_global_batch_size: int,
+) -> None:
+	"""Require the negative pool itself, not an optimizer accumulation, to reach target."""
+	if per_device_batch_size <= 0 or gradient_accumulation_steps <= 0:
+		raise ValueError("Batch size and gradient accumulation must be positive")
+	if expected_contrastive_global_batch_size <= 0:
+		raise ValueError("Expected contrastive global batch size must be positive")
+	contrastive_global_batch_size = per_device_batch_size * world_size
+	if contrastive_global_batch_size != expected_contrastive_global_batch_size:
+		raise ValueError(
+			"Contrastive global batch is "
+			f"{contrastive_global_batch_size}, expected "
+			f"{expected_contrastive_global_batch_size}; gradient accumulation does "
+			"not add in-batch negatives",
+		)
+
+
+def _accumulate_logging_metrics(
+	accumulator: dict[str, torch.Tensor],
+	output: dict[str, Any],
+	*,
+	sample_count: int,
+) -> None:
+	"""Accumulate sample-weighted detached metrics across every microbatch."""
+	if sample_count <= 0:
+		raise ValueError("Metric sample count must be positive")
+	for key in ("loss", "query_norm", "candidate_norm"):
+		value = output[key].detach().float()
+		accumulator[key] = (
+			accumulator.get(key, torch.zeros_like(value)) + value * sample_count
+		)
+
+
+def _finalize_logging_metrics(
+	accumulator: dict[str, torch.Tensor],
+	*,
+	sample_count: int,
+) -> dict[str, float]:
+	"""Return the actual sample-weighted metrics for one optimizer update."""
+	if sample_count <= 0:
+		raise ValueError("Metric sample count must be positive")
+	return {
+		key: float((value / sample_count).item())
+		for key, value in accumulator.items()
+	}
+
+
+def _reduce_logging_metrics(
+	accumulator: dict[str, torch.Tensor],
+	*,
+	local_sample_count: int,
+) -> tuple[dict[str, torch.Tensor], int]:
+	"""Sum logging numerators and sample counts across all training ranks."""
+	if local_sample_count <= 0:
+		raise ValueError("Metric sample count must be positive")
+	reduced = {key: value.clone() for key, value in accumulator.items()}
+	count = torch.tensor(
+		local_sample_count,
+		device=next(iter(reduced.values())).device,
+		dtype=torch.long,
+	)
+	if dist.is_available() and dist.is_initialized():
+		for value in reduced.values():
+			dist.all_reduce(value, op=dist.ReduceOp.SUM)
+		dist.all_reduce(count, op=dist.ReduceOp.SUM)
+	return reduced, int(count.item())
+
+
+def _gather_direction_counts(local_counts: Counter[str], world_size: int) -> Counter[str]:
+	"""Combine exact direction counts instead of extrapolating rank zero."""
+	gathered: list[dict[str, int] | None] = [None for _ in range(world_size)]
+	dist.all_gather_object(gathered, dict(local_counts))
+	total: Counter[str] = Counter()
+	for counts in gathered:
+		if counts is None:
+			raise RuntimeError("Failed to gather direction counts from every rank")
+		total.update(counts)
+	return total
+
+
+def _gather_rank_rng_states(world_size: int) -> list[dict[str, Any]]:
+	states: list[dict[str, Any] | None] = [None for _ in range(world_size)]
+	dist.all_gather_object(states, capture_rng_state())
+	if any(state is None for state in states):
+		raise RuntimeError("Failed to gather every rank RNG state")
+	return [state for state in states if state is not None]
+
+
+def _save_baseline_checkpoint(
+	*,
+	output_dir: Path,
+	model: torch.nn.Module,
+	optimizer: torch.optim.Optimizer,
+	scheduler: torch.optim.lr_scheduler.LRScheduler,
+	scaler: torch.cuda.amp.GradScaler,
+	cursor: TrainingCursor,
+	metadata: dict[str, Any],
+	rank: int,
+	world_size: int,
+	max_checkpoints: int,
+) -> Path:
+	rank_rng_states = _gather_rank_rng_states(world_size)
+	path = output_dir / "checkpoints" / f"step{cursor.global_step:06d}.pt"
+	if rank == 0 and not path.exists():
+		save_training_checkpoint(
+			path=path,
+			model=model,
+			optimizer=optimizer,
+			scheduler=scheduler,
+			cursor=cursor,
+			rank_rng_states=rank_rng_states,
+			metadata=metadata,
+			gradient_scaler=scaler,
+		)
+		prune_training_checkpoints(
+			path.parent,
+			max_checkpoints=max_checkpoints,
+		)
+	dist.barrier()
+	return path
+
+
+def _validate_resume_metadata(
+	metadata: dict[str, Any],
+	*,
+	expected: dict[str, Any],
+) -> None:
+	"""Reject a checkpoint whose fixed data/model/distributed identity has changed."""
+	for key, value in expected.items():
+		if metadata.get(key) != value:
+			raise ValueError(
+				f"Resume checkpoint {key} mismatch: {metadata.get(key)!r} != {value!r}",
+			)
 
 
 def _build_loader(
@@ -162,10 +313,20 @@ def _resolve_git_commit(project_root: Path) -> str:
 def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	if args.dataset not in BASELINE_DATASETS:
 		raise ValueError(args.dataset)
-	if args.per_device_batch_size <= 0 or args.gradient_accumulation_steps <= 0:
-		raise ValueError("Batch size and gradient accumulation must be positive")
+	if args.checkpoint_every <= 0:
+		raise ValueError("checkpoint_every must be positive")
+	if args.max_checkpoints <= 0 or args.max_checkpoints > 4:
+		raise ValueError("max_checkpoints must be between 1 and 4")
 	rank, world_size, local_rank, device = _initialize_distributed(
 		args.expected_world_size,
+	)
+	_validate_parallel_batch_sizes(
+		per_device_batch_size=args.per_device_batch_size,
+		world_size=world_size,
+		gradient_accumulation_steps=args.gradient_accumulation_steps,
+		expected_contrastive_global_batch_size=(
+			args.expected_contrastive_global_batch_size
+		),
 	)
 	logging.basicConfig(
 		level=logging.INFO,
@@ -173,16 +334,36 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	)
 	generator = _seed_everything(args.seed, rank)
 	output_dir = Path(args.output_dir)
+	resume_checkpoint = Path(args.resume_checkpoint) if args.resume_checkpoint else None
 	if rank == 0:
-		if output_dir.exists():
-			raise FileExistsError(f"Training output already exists: {output_dir}")
-		output_dir.mkdir(parents=True)
-		_write_json(output_dir / "status.json", {"status": "initializing"})
+		if resume_checkpoint is None:
+			if output_dir.exists():
+				raise FileExistsError(f"Training output already exists: {output_dir}")
+			(output_dir / "checkpoints").mkdir(parents=True)
+			_write_json(output_dir / "status.json", {"status": "initializing"})
+		else:
+			if not output_dir.is_dir():
+				raise FileNotFoundError(
+					f"Resume output directory does not exist: {output_dir}",
+				)
+			if not resume_checkpoint.is_file():
+				raise FileNotFoundError(
+					f"Resume checkpoint does not exist: {resume_checkpoint}",
+				)
+			if not resume_checkpoint.resolve().is_relative_to(output_dir.resolve()):
+				raise ValueError("Resume checkpoint must belong to the output directory")
+			_write_json(
+				output_dir / "status.json",
+				{"status": "resuming", "checkpoint": str(resume_checkpoint)},
+			)
 	dist.barrier()
 
 	model_root = Path(args.model_root)
 	checkpoint_path = model_root / "model.safetensors"
 	checkpoint_hash_before = checkpoint_sha256(checkpoint_path) if rank == 0 else None
+	checkpoint_hash_values = [checkpoint_hash_before]
+	dist.broadcast_object_list(checkpoint_hash_values, src=0)
+	checkpoint_hash_before = checkpoint_hash_values[0]
 	processor = BaselineInputProcessor.from_pretrained(
 		model_root,
 		max_length=args.max_length,
@@ -225,6 +406,50 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		warmup_ratio=args.warmup_ratio,
 	)
 	scaler = torch.cuda.amp.GradScaler(enabled=True)
+	git_commit = _resolve_git_commit(Path(args.project_root))
+	checkpoint_metadata = {
+		"dataset": args.dataset,
+		"dataset_root": str(Path(args.dataset_root)),
+		"model_checkpoint_sha256": checkpoint_hash_before,
+		"git_commit": git_commit,
+		"world_size": world_size,
+		"per_device_batch_size": args.per_device_batch_size,
+		"gradient_accumulation_steps": args.gradient_accumulation_steps,
+		"total_optimizer_steps": total_steps,
+		"train_rows": len(loader.dataset),
+		"seed": args.seed,
+		"attention_implementation": args.attention_implementation,
+		"gradient_checkpointing": args.gradient_checkpointing,
+		"temperature": args.temperature,
+		"max_length": args.max_length,
+		"min_pixels": args.min_pixels,
+		"max_pixels": args.max_pixels,
+	}
+	cursor = TrainingCursor(
+		stage=0,
+		global_step=0,
+		sampler_epoch=0,
+		batch_in_epoch=0,
+		gradient_accumulation_step=0,
+		processed_samples=0,
+	)
+	if resume_checkpoint is not None:
+		cursor, resume_metadata = load_training_checkpoint(
+			path=resume_checkpoint,
+			model=training_model,
+			optimizer=optimizer,
+			scheduler=scheduler,
+			rank=rank,
+			gradient_scaler=scaler,
+		)
+		_validate_resume_metadata(
+			resume_metadata,
+			expected=checkpoint_metadata,
+		)
+		if cursor.stage != 0 or cursor.gradient_accumulation_step != 0:
+			raise ValueError("Baseline resume requires a complete optimizer-step checkpoint")
+		if cursor.global_step >= total_steps:
+			raise ValueError("Resume checkpoint already reached the configured training limit")
 	ddp_model = DistributedDataParallel(
 		training_model,
 		device_ids=[local_rank],
@@ -238,8 +463,13 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"dataset": args.dataset,
 		"dataset_root": str(args.dataset_root),
 		"train_rows": len(loader.dataset),
+		"direction_counts": (
+			count_coco_retrieval_directions(len(loader.dataset))
+			if args.dataset == "coco"
+			else {"visual_question_answering": len(loader.dataset)}
+		),
 		"hostname": socket.gethostname(),
-		"git_commit": _resolve_git_commit(Path(args.project_root)),
+		"git_commit": git_commit,
 		"command": sys.argv,
 		"world_size": world_size,
 		"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
@@ -248,10 +478,14 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"gradient_checkpointing": args.gradient_checkpointing,
 		"per_device_batch_size": args.per_device_batch_size,
 		"gradient_accumulation_steps": args.gradient_accumulation_steps,
-		"effective_global_batch_size": (
+		"contrastive_global_batch_size": args.per_device_batch_size * world_size,
+		"optimizer_global_batch_size": (
 			args.per_device_batch_size
 			* world_size
 			* args.gradient_accumulation_steps
+		),
+		"expected_contrastive_global_batch_size": (
+			args.expected_contrastive_global_batch_size
 		),
 		"num_workers": args.num_workers,
 		"epochs": args.epochs,
@@ -264,6 +498,9 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"min_pixels": args.min_pixels,
 		"max_pixels": args.max_pixels,
 		"seed": args.seed,
+		"checkpoint_every": args.checkpoint_every,
+		"max_checkpoints": args.max_checkpoints,
+		"resume_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
 		"lora": {
 			"rank": BASELINE_LORA_RANK,
 			"alpha": BASELINE_LORA_ALPHA,
@@ -279,18 +516,36 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"model_checkpoint_sha256_before": checkpoint_hash_before,
 	}
 	if rank == 0:
-		_write_json(output_dir / "run_manifest.json", manifest)
-		_write_json(output_dir / "status.json", {"status": "training"})
+		if resume_checkpoint is None:
+			_write_json(output_dir / "run_manifest.json", manifest)
+		else:
+			_write_json(
+				output_dir / f"resume_manifest_step{cursor.global_step:06d}.json",
+				manifest,
+			)
+		_write_json(
+			output_dir / "status.json",
+			{
+				"status": "training",
+				"resumed_from_step": cursor.global_step,
+			},
+		)
 	optimizer.zero_grad(set_to_none=True)
-	global_step = 0
-	total_samples = 0
+	global_step = cursor.global_step
+	total_samples = cursor.processed_samples
 	training_start = time.perf_counter()
 	log_start = training_start
 	log_samples = 0
+	metric_samples = 0
+	metric_accumulator: dict[str, torch.Tensor] = {}
+	direction_counts: Counter[str] = Counter()
 	torch.cuda.reset_peak_memory_stats(device)
-	for epoch in range(args.epochs):
+	for epoch in range(cursor.sampler_epoch, args.epochs):
 		sampler.set_epoch(epoch)
 		for batch_index, batch in enumerate(loader):
+			if epoch == cursor.sampler_epoch and batch_index < cursor.batch_in_epoch:
+				close_baseline_batch_images(batch)
+				continue
 			group_start = (
 				batch_index // args.gradient_accumulation_steps
 			) * args.gradient_accumulation_steps
@@ -303,13 +558,13 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 				or batch_index + 1 == len(loader)
 			)
 			try:
-				query_inputs = processor.prepare(
+				input_groups = group_model_inputs_by_modality(
 					batch["query_inputs"],
-					device=device,
-				)
-				candidate_inputs = processor.prepare(
 					batch["candidate_inputs"],
-					device=device,
+				)
+				processed_batches = tuple(
+					processor.prepare(list(group.model_inputs), device=device)
+					for group in input_groups
 				)
 			finally:
 				close_baseline_batch_images(batch)
@@ -317,8 +572,11 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			with synchronization_context:
 				with torch.autocast(device_type="cuda", dtype=torch.float16):
 					output = ddp_model(
-						query_inputs=query_inputs,
-						candidate_inputs=candidate_inputs,
+						local_batch_size=len(batch["positive_ids"]),
+						processed_batches=processed_batches,
+						original_indices=tuple(
+							group.original_indices for group in input_groups
+						),
 						positive_ids=batch["positive_ids"],
 					)
 					loss = output["loss"] / group_size
@@ -326,6 +584,24 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			batch_global_samples = len(batch["positive_ids"]) * world_size
 			total_samples += batch_global_samples
 			log_samples += batch_global_samples
+			metric_samples += len(batch["positive_ids"])
+			_accumulate_logging_metrics(
+				metric_accumulator,
+				output,
+				sample_count=len(batch["positive_ids"]),
+			)
+			direction_counts.update(batch["directions"])
+			cursor = TrainingCursor(
+				stage=0,
+				global_step=global_step,
+				sampler_epoch=epoch,
+				batch_in_epoch=batch_index + 1,
+				gradient_accumulation_step=(
+					(cursor.gradient_accumulation_step + 1)
+					% args.gradient_accumulation_steps
+				),
+				processed_samples=total_samples,
+			)
 			if not is_boundary:
 				continue
 			scaler.unscale_(optimizer)
@@ -337,25 +613,68 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 				),
 				args.gradient_clip_norm,
 			)
+			scale_before_step = scaler.get_scale()
 			scaler.step(optimizer)
 			scaler.update()
+			optimizer_step_skipped = scaler.get_scale() < scale_before_step
 			optimizer.zero_grad(set_to_none=True)
+			if optimizer_step_skipped:
+				if rank == 0:
+					LOGGER.warning(
+						"Skipped non-finite FP16 optimizer step at data batch %d",
+						batch_index,
+					)
+				cursor = TrainingCursor(
+					stage=0,
+					global_step=global_step,
+					sampler_epoch=epoch,
+					batch_in_epoch=batch_index + 1,
+					gradient_accumulation_step=0,
+					processed_samples=total_samples,
+				)
+				log_start = time.perf_counter()
+				log_samples = 0
+				metric_samples = 0
+				metric_accumulator = {}
+				direction_counts = Counter()
+				continue
 			scheduler.step()
 			global_step += 1
+			cursor = TrainingCursor(
+				stage=0,
+				global_step=global_step,
+				sampler_epoch=epoch,
+				batch_in_epoch=batch_index + 1,
+				gradient_accumulation_step=0,
+				processed_samples=total_samples,
+			)
 			torch.cuda.synchronize(device)
 			elapsed = time.perf_counter() - log_start
+			reduced_metrics, global_metric_samples = _reduce_logging_metrics(
+				metric_accumulator,
+				local_sample_count=metric_samples,
+			)
+			averages = _finalize_logging_metrics(
+				reduced_metrics,
+				sample_count=global_metric_samples,
+			)
+			global_direction_counts = _gather_direction_counts(
+				direction_counts,
+				world_size,
+			)
 			record = {
 				"epoch": epoch,
 				"global_step": global_step,
-				"loss": float(output["loss"].detach().float().item()),
+				**averages,
 				"gradient_norm": float(gradient_norm.detach().float().item()),
 				"learning_rate": float(scheduler.get_last_lr()[0]),
 				"samples_per_second": log_samples / elapsed,
 				"total_samples": total_samples,
 				"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
 				"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
-				"query_norm": float(output["query_norm"].detach().float().item()),
-				"candidate_norm": float(output["candidate_norm"].detach().float().item()),
+				"contrastive_global_batch_size": batch_global_samples,
+				"optimizer_global_batch_size": global_metric_samples,
+				"direction_counts": dict(global_direction_counts),
 			}
 			if rank == 0:
 				_append_json_line(output_dir / "train_metrics.jsonl", record)
@@ -369,10 +688,45 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 				)
 			log_start = time.perf_counter()
 			log_samples = 0
+			metric_samples = 0
+			metric_accumulator = {}
+			direction_counts = Counter()
+			if (
+				not args.skip_checkpoint_save
+				and (
+					global_step % args.checkpoint_every == 0
+					or global_step == total_steps
+				)
+			):
+				saved_checkpoint = _save_baseline_checkpoint(
+					output_dir=output_dir,
+					model=training_model,
+					optimizer=optimizer,
+					scheduler=scheduler,
+					scaler=scaler,
+					cursor=cursor,
+					metadata=checkpoint_metadata,
+					rank=rank,
+					world_size=world_size,
+					max_checkpoints=args.max_checkpoints,
+				)
+				if rank == 0:
+					_write_json(
+						output_dir / "latest_checkpoint.json",
+						{"path": str(saved_checkpoint), "cursor": asdict(cursor)},
+					)
 			if global_step >= total_steps:
 				break
 		if global_step >= total_steps:
 			break
+		cursor = TrainingCursor(
+			stage=0,
+			global_step=global_step,
+			sampler_epoch=epoch + 1,
+			batch_in_epoch=0,
+			gradient_accumulation_step=0,
+			processed_samples=total_samples,
+		)
 	dist.barrier()
 	if rank == 0 and not args.skip_adapter_save:
 		adapter_root = output_dir / "adapter"
@@ -420,14 +774,23 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument("--output-dir", type=Path, required=True)
 	parser.add_argument("--expected-world-size", type=int, default=8)
-	parser.add_argument("--per-device-batch-size", type=int, default=4)
-	parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+	parser.add_argument("--per-device-batch-size", type=int, default=32)
+	parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
+	parser.add_argument(
+		"--expected-contrastive-global-batch-size",
+		type=int,
+		default=256,
+	)
 	parser.add_argument("--num-workers", type=int, default=4)
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--epochs", type=int, default=1)
 	parser.add_argument("--max-optimizer-steps", type=int, default=0)
 	parser.add_argument("--max-train-rows", type=int, default=0)
 	parser.add_argument("--skip-adapter-save", action="store_true")
+	parser.add_argument("--skip-checkpoint-save", action="store_true")
+	parser.add_argument("--checkpoint-every", type=int, default=100)
+	parser.add_argument("--max-checkpoints", type=int, choices=range(1, 5), default=4)
+	parser.add_argument("--resume-checkpoint", type=Path)
 	parser.add_argument("--learning-rate", type=float, default=5e-5)
 	parser.add_argument("--weight-decay", type=float, default=0.01)
 	parser.add_argument("--warmup-ratio", type=float, default=0.02)
@@ -455,9 +818,25 @@ def main() -> int:
 	try:
 		run_training(args)
 		return 0
+	except KeyboardInterrupt:
+		logging.basicConfig(level=logging.INFO)
+		LOGGER.warning("Baseline LoRA training interrupted")
+		if int(os.environ.get("RANK", "0")) == 0:
+			output_dir = Path(args.output_dir)
+			if output_dir.exists():
+				_write_json(output_dir / "status.json", {"status": "interrupted"})
+		if dist.is_available() and dist.is_initialized():
+			dist.destroy_process_group()
+		return 130
 	except Exception:
 		logging.basicConfig(level=logging.INFO)
 		LOGGER.exception("Baseline LoRA training failed")
+		if int(os.environ.get("RANK", "0")) == 0:
+			output_dir = Path(args.output_dir)
+			if output_dir.exists():
+				_write_json(output_dir / "status.json", {"status": "failed"})
+		if dist.is_available() and dist.is_initialized():
+			dist.destroy_process_group()
 		return 1
 
 

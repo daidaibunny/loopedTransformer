@@ -233,12 +233,28 @@ class BaselineLoRATrainingModel(nn.Module):
 	def forward(
 		self,
 		*,
-		query_inputs: dict[str, torch.Tensor],
-		candidate_inputs: dict[str, torch.Tensor],
+		local_batch_size: int,
+		processed_batches: tuple[dict[str, torch.Tensor], ...],
+		original_indices: tuple[tuple[int, ...], ...],
 		positive_ids: list[str],
 	) -> dict[str, torch.Tensor]:
-		query_embeddings = self.encode(query_inputs)
-		candidate_embeddings = self.encode(candidate_inputs)
+		if len(processed_batches) != len(original_indices):
+			raise ValueError("Processed batches and index groups must match")
+		if local_batch_size <= 0:
+			raise ValueError("local_batch_size must be positive")
+		group_embeddings = [
+			self.encode(processed_inputs) for processed_inputs in processed_batches
+		]
+		flat_indices = tuple(index for indices in original_indices for index in indices)
+		expected_indices = tuple(range(2 * local_batch_size))
+		if tuple(sorted(flat_indices)) != expected_indices:
+			raise ValueError("Grouped modality indices must cover both towers exactly once")
+		grouped_embeddings = torch.cat(group_embeddings, dim=0)
+		restore_order = torch.argsort(
+			torch.tensor(flat_indices, device=grouped_embeddings.device),
+		)
+		combined_embeddings = grouped_embeddings[restore_order]
+		query_embeddings, candidate_embeddings = combined_embeddings.split(local_batch_size)
 		loss = multi_positive_symmetric_info_nce(
 			query_embeddings,
 			candidate_embeddings,

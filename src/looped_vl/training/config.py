@@ -1,4 +1,4 @@
-"""Validated optimizer configuration for each fixed training stage."""
+"""Validated optimizer configuration for each one-epoch training stage."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ import yaml
 
 @dataclass(frozen=True)
 class TrainingStageConfig:
-	"""The exact v1.0 schedule for Stage 1 or Stage 2."""
+	"""Optimization values plus a relative share of one dataset epoch."""
 
 	stage: int
-	steps: int
+	schedule_weight: int
 	optimizer: str
 	learning_rate: float
 	weight_decay: float
@@ -33,7 +33,7 @@ class TrainingStageConfig:
 			raise ValueError("Stage configuration must be a YAML mapping")
 		config = cls(
 			stage=int(value["stage"]),
-			steps=int(value["steps"]),
+			schedule_weight=int(value["schedule_weight"]),
 			optimizer=str(value["optimizer"]),
 			learning_rate=float(value["learning_rate"]),
 			weight_decay=float(value["weight_decay"]),
@@ -48,11 +48,19 @@ class TrainingStageConfig:
 		config.validate()
 		return config
 
+	@property
+	def steps(self) -> int:
+		"""Return the legacy reference value, now used only as a schedule weight."""
+		return self.schedule_weight
+
 	def validate(self) -> None:
-		"""Enforce all fixed optimizer values from specification v1.0."""
-		expected_steps = {1: 2000, 2: 3200}
-		if self.stage not in expected_steps or self.steps != expected_steps[self.stage]:
-			raise ValueError("Stage 1/2 must use exactly 2000/3200 optimizer steps")
+		"""Enforce optimizer values and the original 2000:3200 stage ratio."""
+		expected_weights = {1: 2000, 2: 3200}
+		if (
+			self.stage not in expected_weights
+			or self.schedule_weight != expected_weights[self.stage]
+		):
+			raise ValueError("Stage 1/2 schedule weights must preserve ratio 2000:3200")
 		if self.optimizer != "AdamW":
 			raise ValueError("optimizer must be AdamW")
 		if self.learning_rate != 1e-5 or self.weight_decay != 0.01:

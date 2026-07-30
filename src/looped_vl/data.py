@@ -145,6 +145,7 @@ class MixtureSample:
 	reasoning_trace_json: str
 	reasoning_depth: int
 	metadata_json: str
+	positive_id: str = ""
 
 
 class LoopedVLMixtureDataset(Dataset[MixtureSample]):

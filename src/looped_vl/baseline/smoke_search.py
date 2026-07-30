@@ -30,9 +30,11 @@ def _training_command(
 	args: argparse.Namespace,
 	dataset: str,
 	batch_size: int,
+	num_workers: int,
+	gradient_checkpointing: bool,
 	output_dir: Path,
 ) -> list[str]:
-	return [
+	command = [
 		sys.executable,
 		"-m",
 		"torch.distributed.run",
@@ -56,12 +58,21 @@ def _training_command(
 		str(batch_size),
 		"--gradient-accumulation-steps",
 		"1",
+		"--expected-contrastive-global-batch-size",
+		str(batch_size * args.world_size),
 		"--num-workers",
-		str(args.num_workers),
+		str(num_workers),
 		"--max-optimizer-steps",
 		str(args.optimizer_steps),
 		"--skip-adapter-save",
+		"--skip-checkpoint-save",
 	]
+	command.append(
+		"--gradient-checkpointing"
+		if gradient_checkpointing
+		else "--no-gradient-checkpointing",
+	)
+	return command
 
 
 def _read_passed_metrics(output_dir: Path) -> dict[str, Any]:
@@ -105,51 +116,94 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
 	)
 	all_results: dict[str, Any] = {}
 	selected: dict[str, Any] = {}
+	worker_options = (
+		[args.num_workers]
+		if args.num_workers is not None
+		else args.num_workers_options
+	)
 	for dataset in args.datasets:
 		dataset_results: list[dict[str, Any]] = []
 		for batch_size in args.batch_sizes:
-			run_output = output_root / dataset / f"batch{batch_size}"
-			run_output.parent.mkdir(parents=True, exist_ok=True)
-			command = _training_command(args, dataset, batch_size, run_output)
-			log_path = output_root / dataset / f"batch{batch_size}.log"
-			with log_path.open("w", encoding="utf-8") as log_handle:
-				result = subprocess.run(
-					command,
-					cwd=args.project_root,
-					env=environment,
-					stdout=log_handle,
-					stderr=subprocess.STDOUT,
-					check=False,
-				)
-			record: dict[str, Any] = {
-				"batch_size": batch_size,
-				"num_workers": args.num_workers,
-				"return_code": result.returncode,
-				"command": command,
-				"log_path": str(log_path),
-				"output_dir": str(run_output),
-			}
-			if result.returncode == 0:
-				record.update(_read_passed_metrics(run_output))
-				record["status"] = "passed"
-			else:
-				log_tail = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
-				record["status"] = "failed"
-				record["out_of_memory"] = "out of memory" in log_tail.lower()
-				record["log_tail"] = log_tail
-			dataset_results.append(record)
-			_write_json(output_root / dataset / "search_progress.json", dataset_results)
-			if record.get("out_of_memory"):
-				break
+			for num_workers in worker_options:
+				for checkpointing_name in args.gradient_checkpointing_options:
+					gradient_checkpointing = checkpointing_name == "on"
+					trial_name = (
+						f"batch{batch_size}_workers{num_workers}_"
+						f"checkpoint{checkpointing_name}"
+					)
+					run_output = output_root / dataset / trial_name
+					run_output.parent.mkdir(parents=True, exist_ok=True)
+					command = _training_command(
+						args,
+						dataset,
+						batch_size,
+						num_workers,
+						gradient_checkpointing,
+						run_output,
+					)
+					log_path = output_root / dataset / f"{trial_name}.log"
+					with log_path.open("w", encoding="utf-8") as log_handle:
+						result = subprocess.run(
+							command,
+							cwd=args.project_root,
+							env=environment,
+							stdout=log_handle,
+							stderr=subprocess.STDOUT,
+							check=False,
+						)
+					record: dict[str, Any] = {
+						"batch_size": batch_size,
+						"contrastive_global_batch_size": (
+							batch_size * args.world_size
+						),
+						"num_workers": num_workers,
+						"gradient_checkpointing": gradient_checkpointing,
+						"return_code": result.returncode,
+						"command": command,
+						"log_path": str(log_path),
+						"output_dir": str(run_output),
+					}
+					if result.returncode == 0:
+						record.update(_read_passed_metrics(run_output))
+						record["status"] = "passed"
+					else:
+						log_tail = log_path.read_text(
+							encoding="utf-8",
+							errors="replace",
+						)[-8000:]
+						record["status"] = "failed"
+						record["out_of_memory"] = "out of memory" in log_tail.lower()
+						record["log_tail"] = log_tail
+					dataset_results.append(record)
+					_write_json(
+						output_root / dataset / "search_progress.json",
+						dataset_results,
+					)
 		passed = [record for record in dataset_results if record["status"] == "passed"]
 		if not passed:
 			raise RuntimeError(f"No safe smoke configuration passed for {dataset}")
+		target_batch_records = [
+			record
+			for record in passed
+			if record["contrastive_global_batch_size"]
+			== args.contrastive_global_batch_size
+		]
+		if not target_batch_records:
+			raise RuntimeError(
+				f"No {args.contrastive_global_batch_size}-pair contrastive batch passed "
+				f"for {dataset}",
+			)
 		memory_limit = args.memory_headroom_fraction * args.gpu_memory_bytes
 		safe = [
 			record
-			for record in passed
+			for record in target_batch_records
 			if int(record["peak_gpu_memory_bytes"]) <= memory_limit
-		] or passed
+		]
+		if not safe:
+			raise RuntimeError(
+				f"No {dataset} trial preserved {1.0 - args.memory_headroom_fraction:.0%} "
+				"GPU memory headroom",
+			)
 		best = max(
 			safe,
 			key=lambda record: (
@@ -157,20 +211,14 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
 				-int(record["peak_gpu_memory_bytes"]),
 			),
 		)
-		accumulation = args.effective_global_batch_size // (
-			args.world_size * int(best["batch_size"])
-		)
-		if accumulation <= 0 or (
-			args.world_size * int(best["batch_size"]) * accumulation
-			!= args.effective_global_batch_size
-		):
-			raise RuntimeError("Selected batch size cannot preserve the effective batch size")
 		selected[dataset] = {
 			"dataset": dataset,
 			"per_device_batch_size": int(best["batch_size"]),
-			"gradient_accumulation_steps": accumulation,
-			"num_workers": args.num_workers,
-			"effective_global_batch_size": args.effective_global_batch_size,
+			"gradient_accumulation_steps": 1,
+			"num_workers": int(best["num_workers"]),
+			"gradient_checkpointing": bool(best["gradient_checkpointing"]),
+			"contrastive_global_batch_size": args.contrastive_global_batch_size,
+			"optimizer_global_batch_size": args.contrastive_global_batch_size,
 			"measured_median_samples_per_second": best["median_samples_per_second"],
 			"peak_gpu_memory_bytes": best["peak_gpu_memory_bytes"],
 		}
@@ -212,11 +260,18 @@ def parse_args() -> argparse.Namespace:
 		default=Path("/home/mnt/liyiwei/loopedTransformer"),
 	)
 	parser.add_argument("--output-root", type=Path, required=True)
-	parser.add_argument("--batch-sizes", nargs="+", type=int, default=[1, 2, 4, 8])
-	parser.add_argument("--num-workers", type=int, default=4)
+	parser.add_argument("--batch-sizes", nargs="+", type=int, default=[32])
+	parser.add_argument("--num-workers", type=int)
+	parser.add_argument("--num-workers-options", nargs="+", type=int, default=[4, 8])
+	parser.add_argument(
+		"--gradient-checkpointing-options",
+		nargs="+",
+		choices=("on", "off"),
+		default=["on", "off"],
+	)
 	parser.add_argument("--world-size", type=int, default=8)
-	parser.add_argument("--optimizer-steps", type=int, default=4)
-	parser.add_argument("--effective-global-batch-size", type=int, default=256)
+	parser.add_argument("--optimizer-steps", type=int, default=10)
+	parser.add_argument("--contrastive-global-batch-size", type=int, default=256)
 	parser.add_argument("--gpu-memory-bytes", type=int, default=32 * 1024**3)
 	parser.add_argument("--memory-headroom-fraction", type=float, default=0.90)
 	return parser.parse_args()

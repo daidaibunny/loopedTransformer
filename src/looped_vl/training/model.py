@@ -10,7 +10,10 @@ from torch import nn
 
 from looped_vl.models.recurrent_qwen3vl_embedding import RecurrentQwen3VLEmbedding
 from looped_vl.training.losses import slot_diversity_loss
-from looped_vl.training.step import compose_stage_loss, distributed_symmetric_info_nce
+from looped_vl.training.step import (
+	compose_stage_loss,
+	distributed_multi_positive_info_nce_losses,
+)
 
 
 class _EncoderOutput(Protocol):
@@ -112,6 +115,7 @@ class RecurrentTrainingModel(nn.Module):
 		*,
 		local_batch_size: int,
 		semantic_targets: list[str],
+		positive_ids: list[str],
 		sources: list[str],
 		stage: int,
 		processed_batches: tuple[dict[str, torch.Tensor], ...],
@@ -130,24 +134,21 @@ class RecurrentTrainingModel(nn.Module):
 		query_slots, candidate_slots = output.slot_hidden_states.split(local_batch_size)
 		query_slot_embeddings = self.encoder.warmup_embedding_head(query_slots)
 		candidate_slot_embeddings = self.encoder.warmup_embedding_head(candidate_slots)
-		if stage == 1:
-			with torch.no_grad():
-				final_infonce = distributed_symmetric_info_nce(
-					query_embeddings.detach(),
-					candidate_embeddings.detach(),
-					self.encoder.config.temperature,
-				)
-		else:
-			final_infonce = distributed_symmetric_info_nce(
-				query_embeddings,
-				candidate_embeddings,
-				self.encoder.config.temperature,
-			)
-		slot_infonce = distributed_symmetric_info_nce(
-			query_slot_embeddings,
-			candidate_slot_embeddings,
-			self.encoder.config.temperature,
+		embedding_pairs = {
+			"slot": (query_slot_embeddings, candidate_slot_embeddings),
+		}
+		if stage == 2:
+			embedding_pairs = {
+				"final": (query_embeddings, candidate_embeddings),
+				**embedding_pairs,
+			}
+		contrastive_losses = distributed_multi_positive_info_nce_losses(
+			embedding_pairs=embedding_pairs,
+			positive_ids=positive_ids,
+			temperature=self.encoder.config.temperature,
 		)
+		final_infonce = contrastive_losses.get("final", query_embeddings.new_zeros(()))
+		slot_infonce = contrastive_losses["slot"]
 		semantic_output = self.encoder.warmup_semantic_head(
 			query_slots,
 			semantic_targets,

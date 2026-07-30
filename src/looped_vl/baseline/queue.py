@@ -24,6 +24,7 @@ class BaselineRun:
 	per_device_batch_size: int
 	gradient_accumulation_steps: int
 	num_workers: int
+	gradient_checkpointing: bool = True
 
 	def validate(self) -> None:
 		if self.dataset not in BASELINE_DATASETS:
@@ -45,10 +46,19 @@ def build_training_command(
 	model_root: Path,
 	output_root: Path,
 	world_size: int,
+	checkpoint_every: int = 100,
+	max_checkpoints: int = 4,
 ) -> list[str]:
 	"""Build one result-isolated eight-rank full training command."""
 	run.validate()
-	return [
+	contrastive_global_batch_size = run.per_device_batch_size * world_size
+	if contrastive_global_batch_size != 256:
+		raise ValueError(
+			"Full baseline training requires a true contrastive global batch of 256",
+		)
+	if run.gradient_accumulation_steps != 1:
+		raise ValueError("Full baseline training uses one 256-pair optimizer batch")
+	command = [
 		sys.executable,
 		"-m",
 		"torch.distributed.run",
@@ -72,9 +82,21 @@ def build_training_command(
 		str(run.per_device_batch_size),
 		"--gradient-accumulation-steps",
 		str(run.gradient_accumulation_steps),
+		"--expected-contrastive-global-batch-size",
+		str(contrastive_global_batch_size),
 		"--num-workers",
 		str(run.num_workers),
+		"--checkpoint-every",
+		str(checkpoint_every),
+		"--max-checkpoints",
+		str(max_checkpoints),
 	]
+	command.append(
+		"--gradient-checkpointing"
+		if run.gradient_checkpointing
+		else "--no-gradient-checkpointing",
+	)
+	return command
 
 
 def build_evaluation_command(
@@ -164,6 +186,8 @@ def run_queue(args: argparse.Namespace, runs: list[BaselineRun]) -> None:
 			model_root=Path(args.model_root),
 			output_root=output_root,
 			world_size=args.world_size,
+			checkpoint_every=args.checkpoint_every,
+			max_checkpoints=args.max_checkpoints,
 		)
 		_write_json(
 			status_path,
@@ -208,13 +232,21 @@ def run_queue(args: argparse.Namespace, runs: list[BaselineRun]) -> None:
 
 def _parse_run(value: str) -> BaselineRun:
 	parts = value.split(",")
-	if len(parts) != 4:
-		raise argparse.ArgumentTypeError("run must be DATASET,BATCH,ACCUMULATION,WORKERS")
+	if len(parts) not in (4, 5):
+		raise argparse.ArgumentTypeError(
+			"run must be DATASET,BATCH,ACCUMULATION,WORKERS[,CHECKPOINTING]",
+		)
+	gradient_checkpointing = True
+	if len(parts) == 5:
+		if parts[4] not in {"on", "off"}:
+			raise argparse.ArgumentTypeError("CHECKPOINTING must be on or off")
+		gradient_checkpointing = parts[4] == "on"
 	run = BaselineRun(
 		dataset=parts[0],
 		per_device_batch_size=int(parts[1]),
 		gradient_accumulation_steps=int(parts[2]),
 		num_workers=int(parts[3]),
+		gradient_checkpointing=gradient_checkpointing,
 	)
 	run.validate()
 	return run
@@ -242,6 +274,8 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--output-root", type=Path, required=True)
 	parser.add_argument("--run", action="append", type=_parse_run, required=True)
 	parser.add_argument("--world-size", type=int, default=8)
+	parser.add_argument("--checkpoint-every", type=int, default=100)
+	parser.add_argument("--max-checkpoints", type=int, choices=range(1, 5), default=4)
 	parser.add_argument("--required-idle-seconds", type=float, default=120.0)
 	parser.add_argument("--poll-seconds", type=float, default=5.0)
 	return parser.parse_args()
@@ -252,6 +286,12 @@ def main() -> int:
 	try:
 		run_queue(args, args.run)
 		return 0
+	except KeyboardInterrupt:
+		output_root = Path(args.output_root)
+		if output_root.exists():
+			_write_json(output_root / "status.json", {"status": "interrupted"})
+		print("baseline queue interrupted", file=sys.stderr, flush=True)
+		return 130
 	except Exception as error:
 		output_root = Path(args.output_root)
 		if output_root.exists():

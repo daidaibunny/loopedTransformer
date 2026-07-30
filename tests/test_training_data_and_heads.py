@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from looped_vl.baseline.data import build_coco_retrieval_inputs
 from looped_vl.models.warmup_heads import WarmupEmbeddingHead, split_slot_groups
 from looped_vl.training.data import build_training_pair, group_model_inputs_by_modality
 
@@ -33,6 +34,23 @@ def test_coco_pair_directions_are_deterministic_and_alternate() -> None:
 	assert image_to_text.query_input["image"] is not None
 	assert image_to_text.candidate_input == {"text": "a caption"}
 	assert text_to_image.semantic_target == "a caption"
+
+
+def test_recurrent_and_baseline_coco_directions_use_the_same_builder() -> None:
+	for position in range(4):
+		image = object()
+		recurrent = build_training_pair(
+			_sample(mixture_position=position, image=image),
+		)
+		baseline = build_coco_retrieval_inputs(
+			text="a caption",
+			image=image,
+			position=position,
+		)
+
+		assert recurrent.direction == baseline.direction
+		assert recurrent.query_input == baseline.query_input
+		assert recurrent.candidate_input == baseline.candidate_input
 
 
 @pytest.mark.parametrize("source", ["gqa_balanced", "clevr"])

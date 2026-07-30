@@ -24,11 +24,59 @@ def normalize_answer(answer: str) -> str:
 
 
 @dataclass(frozen=True)
+class CocoRetrievalInputs:
+	"""One deterministic COCO retrieval direction and its dual-tower inputs."""
+
+	direction: str
+	query_input: dict[str, Any]
+	candidate_input: dict[str, Any]
+
+
+def build_coco_retrieval_inputs(
+	*,
+	text: str,
+	image: Any,
+	position: int,
+) -> CocoRetrievalInputs:
+	"""Alternate COCO directions without duplicating or dropping training rows."""
+	if position < 0:
+		raise ValueError("COCO position cannot be negative")
+	if position % 2 == 0:
+		return CocoRetrievalInputs(
+			direction="text_to_image",
+			query_input={
+				"text": text,
+				"instruction": COCO_TEXT_TO_IMAGE_INSTRUCTION,
+			},
+			candidate_input={"image": image},
+		)
+	return CocoRetrievalInputs(
+		direction="image_to_text",
+		query_input={
+			"image": image,
+			"instruction": COCO_IMAGE_TO_TEXT_INSTRUCTION,
+		},
+		candidate_input={"text": text},
+	)
+
+
+def count_coco_retrieval_directions(row_count: int) -> dict[str, int]:
+	"""Return the exact deterministic direction counts without changing row count."""
+	if row_count < 0:
+		raise ValueError("COCO row count cannot be negative")
+	return {
+		"text_to_image": (row_count + 1) // 2,
+		"image_to_text": row_count // 2,
+	}
+
+
+@dataclass(frozen=True)
 class BaselinePairSample:
 	"""One query/candidate training pair from exactly one source dataset."""
 
 	sample_id: str
 	dataset: str
+	direction: str
 	image_id: str
 	query_input: dict[str, Any]
 	candidate_input: dict[str, Any]
@@ -81,12 +129,16 @@ class BaselineManifestDataset(Dataset[BaselinePairSample]):
 			image = source_image.convert("RGB")
 			image.load()
 		if dataset == "coco":
-			query_input = {
-				"text": str(record["query_text"]),
-				"instruction": COCO_TEXT_TO_IMAGE_INSTRUCTION,
-			}
-			candidate_input = {"image": image}
+			coco_inputs = build_coco_retrieval_inputs(
+				text=str(record["query_text"]),
+				image=image,
+				position=index,
+			)
+			direction = coco_inputs.direction
+			query_input = coco_inputs.query_input
+			candidate_input = coco_inputs.candidate_input
 		else:
+			direction = "visual_question_answering"
 			query_input = {
 				"text": str(record["query_text"]),
 				"image": image,
@@ -96,6 +148,7 @@ class BaselineManifestDataset(Dataset[BaselinePairSample]):
 		return BaselinePairSample(
 			sample_id=str(record["sample_id"]),
 			dataset=dataset,
+			direction=direction,
 			image_id=str(record["image_id"]),
 			query_input=query_input,
 			candidate_input=candidate_input,
@@ -112,6 +165,7 @@ def baseline_pair_collate(samples: list[BaselinePairSample]) -> dict[str, Any]:
 	return {
 		"samples": samples,
 		"sample_ids": [sample.sample_id for sample in samples],
+		"directions": [sample.direction for sample in samples],
 		"query_inputs": [sample.query_input for sample in samples],
 		"candidate_inputs": [sample.candidate_input for sample in samples],
 		"positive_ids": [sample.positive_id for sample in samples],

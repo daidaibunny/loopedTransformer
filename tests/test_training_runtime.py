@@ -15,6 +15,7 @@ from looped_vl.training.checkpointing import (
 	TrainingCursor,
 	capture_rng_state,
 	load_training_checkpoint,
+	prune_training_checkpoints,
 	rebase_training_cursor_batch_size,
 	restore_rng_state,
 	save_training_checkpoint,
@@ -166,6 +167,31 @@ def test_checkpoint_restores_gradient_scaler_state(tmp_path: Path) -> None:
 	assert restored_scaler.scale == 4096.0
 
 
+def test_checkpoint_retention_keeps_only_the_four_newest_files(tmp_path: Path) -> None:
+	checkpoint_root = tmp_path / "checkpoints"
+	checkpoint_root.mkdir()
+	for step in range(1, 7):
+		path = checkpoint_root / f"stage1_step{step:06d}.pt"
+		path.write_bytes(str(step).encode())
+		path.touch()
+
+	removed = prune_training_checkpoints(
+		checkpoint_root,
+		max_checkpoints=4,
+	)
+
+	assert [path.name for path in removed] == [
+		"stage1_step000001.pt",
+		"stage1_step000002.pt",
+	]
+	assert sorted(path.name for path in checkpoint_root.glob("*.pt")) == [
+		"stage1_step000003.pt",
+		"stage1_step000004.pt",
+		"stage1_step000005.pt",
+		"stage1_step000006.pt",
+	]
+
+
 def test_checkpoint_cursor_rebases_exact_sample_position_for_larger_batch() -> None:
 	cursor = TrainingCursor(
 		stage=1,
@@ -253,6 +279,7 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	assert args.runtime_precision == "bf16"
 	assert args.initial_gradient_scale == 65_536.0
 	assert args.semantic_gradient_checkpointing is False
+	assert args.max_checkpoints == 4
 
 
 def test_training_cli_requires_an_explicit_aligned_dataset_root(
