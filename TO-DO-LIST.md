@@ -19,12 +19,14 @@
 - [x] Implement four-pass Layers 13–20 recurrence with detached prefix K/V evidence.
 - [x] Implement the zero-output recurrent connector and EOS-conditioned late fusion.
 - [x] Implement Base, EOS-only, slots-only, full, slot-count, and loop-count variants.
-- [x] Implement warm-up heads, losses, Stage 1, and Stage 2 LoRA trainability allowlists.
+- [x] Supersede the original Stage 1/Stage 2 allowlists with one optimizer containing
+  warm-start and joint-only parameter groups.
 - [x] Implement deterministic paired training data, optimizer, scheduler, and full RNG resume.
 - [x] Add required per-step and per-recurrent-pass diagnostics.
 - [x] Pass unit, integration, equivalence, gradient, and two-GPU training smoke tests.
 - [x] Monitor both GPUs idle for three continuous minutes before the full launch.
-- [x] Launch the two-stage training in a unique tmux session and verify stable progress.
+- [x] Record the historical two-stage launch and prevent its checkpoints from resuming
+  under the new single-stage protocol.
 - [x] Add tests for modality-grouped padding, vectorized slot insertion, fused recurrent
   attention, and Pass-1 Key/Value reuse.
 - [x] Select attention by GPU capability: FlashAttention 2 on supported Ampere-or-newer
@@ -34,7 +36,7 @@
 - [x] Force DataLoader workers to use `spawn` so they cannot inherit and retain CUDA
   contexts after a rank failure.
 - [x] Skip multi-gigabyte optimizer checkpoints during disposable smoke benchmarks.
-- [x] Run optimized eight-V100 Stage 1 and Stage 2 smoke benchmarks at batch size 8.
+- [x] Record the historical eight-V100 two-stage smoke benchmarks at batch size 8.
 - [x] Add V100-safe FP16 automatic mixed precision with FP32 trainable parameters,
   gradient scaling, and resumable scaler state.
 - [x] Audit the full official COCO, GQA Balanced, and CLEVR splits on `8XV100`.
@@ -62,5 +64,11 @@
   at four files per experiment, including the final checkpoint.
 - [x] Average baseline loss and embedding norms over every microbatch and every rank,
   while skipping scheduler advancement after a non-finite FP16 optimizer step.
+- [x] Replace recurrent Stage 1/Stage 2 with one continuous one-epoch task whose
+  warm-start length is `ceil(0.35 * train_rows / optimizer_global_batch_size)`.
+- [x] Keep joint-only learning rates at zero during warm-start, discard their gradients
+  before AdamW, and smoothly activate them without restarting the optimizer.
+- [x] Remove the Qwen3-0.6B semantic decoder and its loss, data, checkpoint, and command
+  paths from recurrent training.
 - [x] Group baseline inputs by text/vision modality before Qwen preprocessing and restore
   their exact logical pair order before the contrastive loss.

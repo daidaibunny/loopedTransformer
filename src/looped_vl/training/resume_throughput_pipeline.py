@@ -53,27 +53,24 @@ def build_training_command(
 	max_additional_optimizer_steps: int,
 	num_workers: int,
 	prefetch_factor: int,
-	end_stage: int,
 ) -> list[str]:
-	"""Build one exact two-GPU Stage-1 benchmark or full-resume command."""
+	"""Build one exact eight-GPU benchmark or full-resume command."""
 	command = [
 		str(torchrun),
 		"--standalone",
-		"--nproc_per_node=2",
+		"--nproc_per_node=8",
 		"-m",
 		"looped_vl.training.train",
 		"--expected-world-size",
-		"2",
-		"--start-stage",
-		"1",
-		"--end-stage",
-		str(end_stage),
+		"8",
 		"--dataset-root",
 		str(dataset_root),
 		"--output-dir",
 		str(output_dir),
 		"--per-device-batch-size",
 		str(per_device_batch_size),
+		"--expected-contrastive-global-batch-size",
+		str(per_device_batch_size * 8),
 		"--num-workers",
 		str(num_workers),
 		"--prefetch-factor",
@@ -383,7 +380,6 @@ def run_pipeline(args: argparse.Namespace) -> None:
 			max_additional_optimizer_steps=args.training_benchmark_steps,
 			num_workers=args.num_workers,
 			prefetch_factor=args.prefetch_factor,
-			end_stage=1,
 		)
 		return_code = _run_logged(
 			command,
@@ -521,7 +517,6 @@ def run_pipeline(args: argparse.Namespace) -> None:
 			max_additional_optimizer_steps=0,
 			num_workers=args.num_workers,
 			prefetch_factor=args.prefetch_factor,
-			end_stage=2,
 		),
 		cwd=project_root,
 		environment=_environment("0,1"),

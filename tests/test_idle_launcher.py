@@ -19,10 +19,26 @@ def test_idle_window_requires_three_continuous_minutes_and_resets_on_busy() -> N
 
 
 def test_gpu_snapshot_requires_both_cards_zero_utilization_and_no_processes() -> None:
-	idle = parse_gpu_snapshot("0, 2, 0\n1, 2, 0\n", compute_process_count=0)
-	busy_memory = parse_gpu_snapshot("0, 200, 0\n1, 2, 0\n", compute_process_count=0)
-	busy_compute = parse_gpu_snapshot("0, 2, 10\n1, 2, 0\n", compute_process_count=0)
-	busy_process = parse_gpu_snapshot("0, 2, 0\n1, 2, 0\n", compute_process_count=1)
+	idle = parse_gpu_snapshot(
+		"0, 2, 0\n1, 2, 0\n",
+		compute_process_count=0,
+		expected_indexes=(0, 1),
+	)
+	busy_memory = parse_gpu_snapshot(
+		"0, 200, 0\n1, 2, 0\n",
+		compute_process_count=0,
+		expected_indexes=(0, 1),
+	)
+	busy_compute = parse_gpu_snapshot(
+		"0, 2, 10\n1, 2, 0\n",
+		compute_process_count=0,
+		expected_indexes=(0, 1),
+	)
+	busy_process = parse_gpu_snapshot(
+		"0, 2, 0\n1, 2, 0\n",
+		compute_process_count=1,
+		expected_indexes=(0, 1),
+	)
 
 	assert idle.is_idle is True
 	assert busy_memory.is_idle is False
@@ -39,6 +55,7 @@ def test_full_training_command_uses_per_device_batch_eight(tmp_path: Path) -> No
 
 	command = _training_command(args, tmp_path / "training", smoke=False)
 
+	assert command[command.index("--nproc_per_node=8")] == "--nproc_per_node=8"
 	assert command[command.index("--per-device-batch-size") + 1] == "8"
 	assert command[command.index("--dataset-root") + 1] == str(tmp_path / "coco")
 
@@ -54,3 +71,4 @@ def test_smoke_command_keeps_per_device_batch_one(tmp_path: Path) -> None:
 
 	assert command[command.index("--per-device-batch-size") + 1] == "1"
 	assert command[command.index("--dataset-root") + 1] == str(tmp_path / "coco")
+	assert command[command.index("--smoke-optimizer-steps") + 1] == "2"

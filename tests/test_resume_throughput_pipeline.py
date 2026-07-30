@@ -20,26 +20,26 @@ def test_training_benchmark_command_resumes_exact_checkpoint_with_batch_four(
 		torchrun=Path("/env/bin/torchrun"),
 		dataset_root=tmp_path / "coco",
 		output_dir=tmp_path / "batch4",
-		resume_checkpoint=tmp_path / "stage1_step000500.pt",
+		resume_checkpoint=tmp_path / "step000500.pt",
 		per_device_batch_size=4,
 		resume_per_device_batch_size=1,
 		code_commit="a" * 40,
 		max_additional_optimizer_steps=3,
 		num_workers=8,
 		prefetch_factor=4,
-		end_stage=1,
 	)
 
 	assert command[:4] == [
 		"/env/bin/torchrun",
 		"--standalone",
-		"--nproc_per_node=2",
+		"--nproc_per_node=8",
 		"-m",
 	]
 	assert command[command.index("--per-device-batch-size") + 1] == "4"
 	assert command[command.index("--resume-per-device-batch-size") + 1] == "1"
 	assert command[command.index("--max-additional-optimizer-steps") + 1] == "3"
-	assert command[command.index("--end-stage") + 1] == "1"
+	assert "--start-stage" not in command
+	assert "--end-stage" not in command
 	assert command[command.index("--dataset-root") + 1] == str(tmp_path / "coco")
 
 
@@ -57,7 +57,6 @@ def test_training_benchmark_command_can_start_from_initial_model(
 		max_additional_optimizer_steps=3,
 		num_workers=8,
 		prefetch_factor=4,
-		end_stage=1,
 	)
 
 	assert "--resume-checkpoint" not in command

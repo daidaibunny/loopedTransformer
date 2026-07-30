@@ -156,9 +156,18 @@ def load_training_checkpoint(
 	scheduler: torch.optim.lr_scheduler.LRScheduler,
 	rank: int,
 	gradient_scaler: GradientScaler | None = None,
+	expected_training_protocol: str | None = None,
 ) -> tuple[TrainingCursor, dict[str, Any]]:
 	"""Restore trainable values, optimizer, scheduler, cursor, and this rank's RNG."""
 	payload = torch.load(path, map_location="cpu", weights_only=False)
+	metadata = payload["metadata"]
+	if (
+		expected_training_protocol is not None
+		and metadata.get("training_protocol") != expected_training_protocol
+	):
+		raise ValueError(
+			"Checkpoint training protocol does not match the active single-stage run",
+		)
 	model_parameters = dict(model.named_parameters())
 	for name, value in payload["trainable_parameter_state"].items():
 		if name not in model_parameters:
@@ -178,4 +187,4 @@ def load_training_checkpoint(
 	if rank >= len(rank_rng_states):
 		raise ValueError(f"Checkpoint does not contain RNG state for rank {rank}")
 	restore_rng_state(rank_rng_states[rank])
-	return TrainingCursor(**payload["cursor"]), payload["metadata"]
+	return TrainingCursor(**payload["cursor"]), metadata

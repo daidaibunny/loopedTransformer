@@ -20,16 +20,19 @@ from looped_vl.training.checkpointing import (
 	restore_rng_state,
 	save_training_checkpoint,
 )
-from looped_vl.training.config import TrainingStageConfig
+from looped_vl.training.config import TrainingConfig
 from looped_vl.training.optimizer import build_optimizer_and_scheduler
 from looped_vl.training.reproducibility import seed_everything
-from looped_vl.training.step import compose_stage_loss
+from looped_vl.training.schedule import OneEpochTrainingPlan
+from looped_vl.training.step import compose_training_loss
 from looped_vl.training.train import (
 	_accumulate_metric_tensors,
+	_clear_parameter_gradients,
 	_finalize_metric_tensors,
 	_optimizer_step_limit,
 	_resolve_git_commit,
 	_should_save_checkpoint,
+	_training_phase,
 	_worker_loader_options,
 	parse_args,
 )
@@ -46,23 +49,21 @@ class _FakeGradientScaler:
 		self.scale = state_dict["scale"]
 
 
-def test_stage_configs_match_all_fixed_optimizer_values() -> None:
-	stage1 = TrainingStageConfig.from_yaml(Path("configs/stage1.yaml"))
-	stage2 = TrainingStageConfig.from_yaml(Path("configs/stage2.yaml"))
+def test_single_training_config_matches_optimizer_and_warm_start_protocol() -> None:
+	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
 
-	for stage, expected_number, expected_steps in ((stage1, 1, 2000), (stage2, 2, 3200)):
-		assert stage.stage == expected_number
-		assert stage.steps == expected_steps
-		assert stage.optimizer == "AdamW"
-		assert stage.learning_rate == 1e-5
-		assert stage.weight_decay == 0.01
-		assert stage.betas == (0.9, 0.95)
-		assert stage.eps == 1e-8
-		assert stage.effective_batch_size == 512
-		assert stage.gradient_clip_norm == 1.0
-		assert stage.precision == "bf16"
-		assert stage.lr_scheduler == "cosine"
-		assert stage.warmup_ratio == 0.03
+	assert config.optimizer == "AdamW"
+	assert config.learning_rate == 1e-5
+	assert config.weight_decay == 0.01
+	assert config.betas == (0.9, 0.95)
+	assert config.eps == 1e-8
+	assert config.effective_batch_size == 512
+	assert config.gradient_clip_norm == 1.0
+	assert config.precision == "bf16"
+	assert config.lr_scheduler == "cosine"
+	assert config.warmup_ratio == 0.03
+	assert config.warm_start_epoch_fraction == 0.35
+	assert config.joint_activation_warmup_ratio == 0.03
 
 
 def test_seed_42_reproduces_python_numpy_and_torch_streams() -> None:
@@ -95,8 +96,16 @@ def test_checkpoint_restores_trainable_values_optimizer_scheduler_and_cursor(
 ) -> None:
 	model = nn.Sequential(nn.Linear(3, 2), nn.Linear(2, 1))
 	model[1].requires_grad_(False)
-	stage = TrainingStageConfig.from_yaml(Path("configs/stage1.yaml"))
-	optimizer, scheduler = build_optimizer_and_scheduler(model, stage)
+	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
+	optimizer, scheduler = build_optimizer_and_scheduler(
+		model,
+		config,
+		warm_start_parameter_names=("0.weight", "0.bias"),
+		joint_parameter_names=(),
+		total_steps=10,
+		warm_start_steps=3,
+		joint_activation_steps=1,
+	)
 	cursor = TrainingCursor(
 		stage=1,
 		global_step=7,
@@ -133,8 +142,16 @@ def test_checkpoint_restores_trainable_values_optimizer_scheduler_and_cursor(
 
 def test_checkpoint_restores_gradient_scaler_state(tmp_path: Path) -> None:
 	model = nn.Linear(3, 2)
-	stage = TrainingStageConfig.from_yaml(Path("configs/stage1.yaml"))
-	optimizer, scheduler = build_optimizer_and_scheduler(model, stage)
+	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
+	optimizer, scheduler = build_optimizer_and_scheduler(
+		model,
+		config,
+		warm_start_parameter_names=("weight", "bias"),
+		joint_parameter_names=(),
+		total_steps=10,
+		warm_start_steps=3,
+		joint_activation_steps=1,
+	)
 	saved_scaler = _FakeGradientScaler(scale=4096.0)
 	restored_scaler = _FakeGradientScaler(scale=1.0)
 	checkpoint_path = tmp_path / "checkpoint-with-scaler.pt"
@@ -167,11 +184,53 @@ def test_checkpoint_restores_gradient_scaler_state(tmp_path: Path) -> None:
 	assert restored_scaler.scale == 4096.0
 
 
+def test_checkpoint_rejects_the_old_two_stage_protocol_before_loading(
+	tmp_path: Path,
+) -> None:
+	model = nn.Linear(3, 2)
+	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
+	optimizer, scheduler = build_optimizer_and_scheduler(
+		model,
+		config,
+		warm_start_parameter_names=("weight", "bias"),
+		joint_parameter_names=(),
+		total_steps=10,
+		warm_start_steps=3,
+		joint_activation_steps=1,
+	)
+	checkpoint_path = tmp_path / "old-protocol.pt"
+	save_training_checkpoint(
+		path=checkpoint_path,
+		model=model,
+		optimizer=optimizer,
+		scheduler=scheduler,
+		cursor=TrainingCursor(
+			stage=1,
+			global_step=3,
+			sampler_epoch=0,
+			batch_in_epoch=4,
+			gradient_accumulation_step=0,
+		),
+		rank_rng_states=[capture_rng_state()],
+		metadata={"training_protocol": "two_stage_v1"},
+	)
+
+	with pytest.raises(ValueError, match="single-stage"):
+		load_training_checkpoint(
+			path=checkpoint_path,
+			model=model,
+			optimizer=optimizer,
+			scheduler=scheduler,
+			rank=0,
+			expected_training_protocol="single_stage_warm_start_v1",
+		)
+
+
 def test_checkpoint_retention_keeps_only_the_four_newest_files(tmp_path: Path) -> None:
 	checkpoint_root = tmp_path / "checkpoints"
 	checkpoint_root.mkdir()
 	for step in range(1, 7):
-		path = checkpoint_root / f"stage1_step{step:06d}.pt"
+		path = checkpoint_root / f"step{step:06d}.pt"
 		path.write_bytes(str(step).encode())
 		path.touch()
 
@@ -181,14 +240,14 @@ def test_checkpoint_retention_keeps_only_the_four_newest_files(tmp_path: Path) -
 	)
 
 	assert [path.name for path in removed] == [
-		"stage1_step000001.pt",
-		"stage1_step000002.pt",
+		"step000001.pt",
+		"step000002.pt",
 	]
 	assert sorted(path.name for path in checkpoint_root.glob("*.pt")) == [
-		"stage1_step000003.pt",
-		"stage1_step000004.pt",
-		"stage1_step000005.pt",
-		"stage1_step000006.pt",
+		"step000003.pt",
+		"step000004.pt",
+		"step000005.pt",
+		"step000006.pt",
 	]
 
 
@@ -247,12 +306,12 @@ def test_checkpoint_cursor_rejects_inexact_or_partial_batch_rebase() -> None:
 
 
 def test_effective_batch_size_must_equal_512() -> None:
-	stage = TrainingStageConfig.from_yaml(Path("configs/stage1.yaml"))
-	assert stage.gradient_accumulation_steps(per_device_batch_size=1, world_size=2) == 256
-	assert stage.gradient_accumulation_steps(per_device_batch_size=4, world_size=2) == 64
-	assert stage.gradient_accumulation_steps(per_device_batch_size=8, world_size=2) == 32
+	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
+	assert config.gradient_accumulation_steps(per_device_batch_size=1, world_size=2) == 256
+	assert config.gradient_accumulation_steps(per_device_batch_size=4, world_size=2) == 64
+	assert config.gradient_accumulation_steps(per_device_batch_size=8, world_size=2) == 32
 	with pytest.raises(ValueError, match="divide"):
-		stage.gradient_accumulation_steps(per_device_batch_size=3, world_size=2)
+		config.gradient_accumulation_steps(per_device_batch_size=3, world_size=2)
 
 
 def test_training_cli_defaults_to_per_device_batch_eight(
@@ -278,8 +337,10 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	assert args.attention_implementation == "auto"
 	assert args.runtime_precision == "bf16"
 	assert args.initial_gradient_scale == 65_536.0
-	assert args.semantic_gradient_checkpointing is False
 	assert args.max_checkpoints == 4
+	assert args.training_config == Path("configs/train.yaml")
+	assert not hasattr(args, "start_stage")
+	assert not hasattr(args, "semantic_decoder_root")
 
 
 def test_training_cli_requires_an_explicit_aligned_dataset_root(
@@ -373,19 +434,78 @@ def test_metric_accumulation_stays_on_device_until_step_boundary() -> None:
 	assert _finalize_metric_tensors(accumulator, count=2) == {"loss": pytest.approx(3.0)}
 
 
-def test_stage_loss_weights_are_exact() -> None:
+def test_warm_start_and_joint_loss_weights_are_exact_without_decoder() -> None:
 	components = {
 		"final_infonce": torch.tensor(10.0),
 		"slot_infonce": torch.tensor(2.0),
-		"semantic_decoder_ce": torch.tensor(3.0),
 		"slot_diversity": torch.tensor(4.0),
 	}
 
-	stage1 = compose_stage_loss(stage=1, **components)
-	stage2 = compose_stage_loss(stage=2, **components)
+	warm_start = compose_training_loss(phase="warm_start", **components)
+	joint = compose_training_loss(phase="joint", **components)
 
-	assert stage1.item() == pytest.approx(2.0 + 3.0 + 0.05 * 4.0)
-	assert stage2.item() == pytest.approx(10.0 + 0.2 * 2.0 + 0.2 * 3.0 + 0.05 * 4.0)
+	assert warm_start.item() == pytest.approx(2.0 + 0.05 * 4.0)
+	assert joint.item() == pytest.approx(10.0 + 0.2 * 2.0 + 0.05 * 4.0)
+
+
+def test_joint_parameter_learning_rate_is_zero_then_smoothly_activates() -> None:
+	model = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 1))
+	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
+	optimizer, scheduler = build_optimizer_and_scheduler(
+		model,
+		config,
+		warm_start_parameter_names=("0.weight", "0.bias"),
+		joint_parameter_names=("1.weight", "1.bias"),
+		total_steps=20,
+		warm_start_steps=5,
+		joint_activation_steps=3,
+	)
+
+	assert optimizer.param_groups[1]["lr"] == 0.0
+	for _ in range(5):
+		optimizer.step()
+		scheduler.step()
+	assert optimizer.param_groups[1]["lr"] > 0.0
+	assert optimizer.param_groups[1]["lr"] <= config.learning_rate
+
+
+def test_warm_start_discards_joint_gradients_and_adamw_momentum() -> None:
+	model = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 1))
+	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
+	optimizer, _ = build_optimizer_and_scheduler(
+		model,
+		config,
+		warm_start_parameter_names=("0.weight", "0.bias"),
+		joint_parameter_names=("1.weight", "1.bias"),
+		total_steps=20,
+		warm_start_steps=5,
+		joint_activation_steps=3,
+	)
+	model(torch.ones(1, 2)).sum().backward()
+
+	_clear_parameter_gradients(model, ("1.weight", "1.bias"))
+	optimizer.step()
+
+	assert model[0].weight in optimizer.state
+	assert model[1].weight not in optimizer.state
+	assert model[1].bias not in optimizer.state
+
+
+def test_training_phase_transitions_without_a_second_formal_stage() -> None:
+	plan = OneEpochTrainingPlan(
+		start_batch=0,
+		end_batch=100,
+		optimizer_steps=20,
+		warm_start_optimizer_steps=5,
+		joint_optimizer_steps=15,
+		joint_activation_optimizer_steps=3,
+	)
+
+	assert _training_phase(0, plan) == "warm_start"
+	assert _training_phase(4, plan) == "warm_start"
+	assert _training_phase(5, plan) == "joint_activation"
+	assert _training_phase(7, plan) == "joint_activation"
+	assert _training_phase(8, plan) == "joint"
 
 
 def test_explicit_commit_allows_a_non_git_launch_directory(tmp_path: Path) -> None:

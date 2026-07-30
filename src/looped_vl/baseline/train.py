@@ -317,6 +317,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		raise ValueError("checkpoint_every must be positive")
 	if args.max_checkpoints <= 0 or args.max_checkpoints > 4:
 		raise ValueError("max_checkpoints must be between 1 and 4")
+	if args.initial_gradient_scale <= 0:
+		raise ValueError("initial_gradient_scale must be positive")
 	rank, world_size, local_rank, device = _initialize_distributed(
 		args.expected_world_size,
 	)
@@ -405,7 +407,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		total_steps=total_steps,
 		warmup_ratio=args.warmup_ratio,
 	)
-	scaler = torch.cuda.amp.GradScaler(enabled=True)
+	scaler = torch.cuda.amp.GradScaler(
+		enabled=True,
+		init_scale=args.initial_gradient_scale,
+	)
 	git_commit = _resolve_git_commit(Path(args.project_root))
 	checkpoint_metadata = {
 		"dataset": args.dataset,
@@ -420,6 +425,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"seed": args.seed,
 		"attention_implementation": args.attention_implementation,
 		"gradient_checkpointing": args.gradient_checkpointing,
+		"initial_gradient_scale": args.initial_gradient_scale,
 		"temperature": args.temperature,
 		"max_length": args.max_length,
 		"min_pixels": args.min_pixels,
@@ -474,6 +480,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"world_size": world_size,
 		"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
 		"runtime_precision": "fp16",
+		"initial_gradient_scale": args.initial_gradient_scale,
 		"attention_implementation": args.attention_implementation,
 		"gradient_checkpointing": args.gradient_checkpointing,
 		"per_device_batch_size": args.per_device_batch_size,
@@ -796,6 +803,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--warmup-ratio", type=float, default=0.02)
 	parser.add_argument("--temperature", type=float, default=0.02)
 	parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
+	parser.add_argument("--initial-gradient-scale", type=float, default=4096.0)
 	parser.add_argument("--seed", type=int, default=42)
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)

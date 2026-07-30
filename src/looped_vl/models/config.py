@@ -54,13 +54,11 @@ class RecurrentModelConfig:
 	lora_dropout: float = 0.0
 	lora_target_modules: tuple[str, ...] = REQUIRED_LORA_TARGETS
 	temperature: float = 0.02
-	stage1_slot_weight: float = 1.0
-	stage1_decoder_weight: float = 1.0
-	stage1_diversity_weight: float = 0.05
-	stage2_final_weight: float = 1.0
-	stage2_slot_weight: float = 0.2
-	stage2_decoder_weight: float = 0.2
-	stage2_diversity_weight: float = 0.05
+	warm_slot_weight: float = 1.0
+	warm_diversity_weight: float = 0.05
+	joint_final_weight: float = 1.0
+	joint_slot_weight: float = 0.2
+	joint_diversity_weight: float = 0.05
 
 	@property
 	def num_extra_loop_passes(self) -> int:
@@ -107,6 +105,14 @@ class RecurrentModelConfig:
 			raise ValueError("LoRA target modules do not match v1.0")
 		if self.temperature != 0.02:
 			raise ValueError("InfoNCE temperature must remain 0.02")
+		if (self.warm_slot_weight, self.warm_diversity_weight) != (1.0, 0.05):
+			raise ValueError("warm-start loss weights must remain 1.0 and 0.05")
+		if (
+			self.joint_final_weight,
+			self.joint_slot_weight,
+			self.joint_diversity_weight,
+		) != (1.0, 0.2, 0.05):
+			raise ValueError("joint loss weights must remain 1.0, 0.2, and 0.05")
 
 	def with_variant(
 		self,
@@ -170,13 +176,11 @@ class RecurrentModelConfig:
 			lora_dropout=float(lora["dropout"]),
 			lora_target_modules=tuple(lora["target_modules"]),
 			temperature=float(loss["temperature"]),
-			stage1_slot_weight=float(loss["stage1_slot_weight"]),
-			stage1_decoder_weight=float(loss["stage1_decoder_weight"]),
-			stage1_diversity_weight=float(loss["stage1_diversity_weight"]),
-			stage2_final_weight=float(loss["stage2_final_weight"]),
-			stage2_slot_weight=float(loss["stage2_slot_weight"]),
-			stage2_decoder_weight=float(loss["stage2_decoder_weight"]),
-			stage2_diversity_weight=float(loss["stage2_diversity_weight"]),
+			warm_slot_weight=float(loss["warm_slot_weight"]),
+			warm_diversity_weight=float(loss["warm_diversity_weight"]),
+			joint_final_weight=float(loss["joint_final_weight"]),
+			joint_slot_weight=float(loss["joint_slot_weight"]),
+			joint_diversity_weight=float(loss["joint_diversity_weight"]),
 		)
 		config.validate()
 		return config

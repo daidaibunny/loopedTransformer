@@ -11,7 +11,7 @@ from torch import nn
 from looped_vl.models.recurrent_qwen3vl_embedding import RecurrentQwen3VLEmbedding
 from looped_vl.training.losses import slot_diversity_loss
 from looped_vl.training.step import (
-	compose_stage_loss,
+	compose_training_loss,
 	distributed_multi_positive_info_nce_losses,
 )
 
@@ -114,10 +114,8 @@ class RecurrentTrainingModel(nn.Module):
 		self,
 		*,
 		local_batch_size: int,
-		semantic_targets: list[str],
 		positive_ids: list[str],
-		sources: list[str],
-		stage: int,
+		phase: str,
 		processed_batches: tuple[dict[str, torch.Tensor], ...],
 		original_indices: tuple[tuple[int, ...], ...],
 	) -> dict[str, Any]:
@@ -135,41 +133,29 @@ class RecurrentTrainingModel(nn.Module):
 		query_slot_embeddings = self.encoder.warmup_embedding_head(query_slots)
 		candidate_slot_embeddings = self.encoder.warmup_embedding_head(candidate_slots)
 		embedding_pairs = {
+			"final": (query_embeddings, candidate_embeddings),
 			"slot": (query_slot_embeddings, candidate_slot_embeddings),
 		}
-		if stage == 2:
-			embedding_pairs = {
-				"final": (query_embeddings, candidate_embeddings),
-				**embedding_pairs,
-			}
 		contrastive_losses = distributed_multi_positive_info_nce_losses(
 			embedding_pairs=embedding_pairs,
 			positive_ids=positive_ids,
 			temperature=self.encoder.config.temperature,
 		)
-		final_infonce = contrastive_losses.get("final", query_embeddings.new_zeros(()))
+		final_infonce = contrastive_losses["final"]
 		slot_infonce = contrastive_losses["slot"]
-		semantic_output = self.encoder.warmup_semantic_head(
-			query_slots,
-			semantic_targets,
-			sources,
-		)
 		diversity = 0.5 * (
 			slot_diversity_loss(query_slots) + slot_diversity_loss(candidate_slots)
 		)
-		total_loss = compose_stage_loss(
-			stage=stage,
+		total_loss = compose_training_loss(
+			phase=phase,
 			final_infonce=final_infonce,
 			slot_infonce=slot_infonce,
-			semantic_decoder_ce=semantic_output.loss,
 			slot_diversity=diversity,
 		)
 		return {
 			"total_loss": total_loss,
 			"final_infonce": final_infonce,
 			"slot_infonce": slot_infonce,
-			"semantic_decoder_ce": semantic_output.loss,
-			"semantic_token_count": semantic_output.token_count,
 			"slot_diversity": diversity,
 			"fusion_gate": output.diagnostics["fusion_gate"],
 			"late_fusion_attention_entropy": output.diagnostics[

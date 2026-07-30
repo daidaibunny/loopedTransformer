@@ -33,7 +33,7 @@ def test_coco_pair_directions_are_deterministic_and_alternate() -> None:
 	assert image_to_text.direction == "image_to_text"
 	assert image_to_text.query_input["image"] is not None
 	assert image_to_text.candidate_input == {"text": "a caption"}
-	assert text_to_image.semantic_target == "a caption"
+	assert not hasattr(text_to_image, "semantic_target")
 
 
 def test_recurrent_and_baseline_coco_directions_use_the_same_builder() -> None:
@@ -63,7 +63,7 @@ def test_reasoning_pair_uses_image_question_and_answer(source: str) -> None:
 	assert pair.query_input["text"] == "what color?"
 	assert pair.query_input["image"] is not None
 	assert pair.candidate_input == {"text": "red"}
-	assert pair.semantic_target == "red"
+	assert not hasattr(pair, "semantic_target")
 
 
 def test_slot_grouping_matches_every_required_k_value() -> None:

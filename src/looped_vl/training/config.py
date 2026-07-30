@@ -1,4 +1,4 @@
-"""Validated optimizer configuration for each one-epoch training stage."""
+"""Validated optimizer configuration for one continuous training run."""
 
 from __future__ import annotations
 
@@ -9,11 +9,9 @@ import yaml
 
 
 @dataclass(frozen=True)
-class TrainingStageConfig:
-	"""Optimization values plus a relative share of one dataset epoch."""
+class TrainingConfig:
+	"""Optimization values for a one-epoch run with an initial warm-start window."""
 
-	stage: int
-	schedule_weight: int
 	optimizer: str
 	learning_rate: float
 	weight_decay: float
@@ -24,16 +22,16 @@ class TrainingStageConfig:
 	precision: str
 	lr_scheduler: str
 	warmup_ratio: float
+	warm_start_epoch_fraction: float
+	joint_activation_warmup_ratio: float
 
 	@classmethod
-	def from_yaml(cls, path: str | Path) -> TrainingStageConfig:
-		"""Load and validate one stage file."""
+	def from_yaml(cls, path: str | Path) -> TrainingConfig:
+		"""Load and validate the single training configuration."""
 		value = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
 		if not isinstance(value, dict):
-			raise ValueError("Stage configuration must be a YAML mapping")
+			raise ValueError("Training configuration must be a YAML mapping")
 		config = cls(
-			stage=int(value["stage"]),
-			schedule_weight=int(value["schedule_weight"]),
 			optimizer=str(value["optimizer"]),
 			learning_rate=float(value["learning_rate"]),
 			weight_decay=float(value["weight_decay"]),
@@ -44,23 +42,16 @@ class TrainingStageConfig:
 			precision=str(value["precision"]),
 			lr_scheduler=str(value["lr_scheduler"]),
 			warmup_ratio=float(value["warmup_ratio"]),
+			warm_start_epoch_fraction=float(value["warm_start_epoch_fraction"]),
+			joint_activation_warmup_ratio=float(
+				value["joint_activation_warmup_ratio"],
+			),
 		)
 		config.validate()
 		return config
 
-	@property
-	def steps(self) -> int:
-		"""Return the legacy reference value, now used only as a schedule weight."""
-		return self.schedule_weight
-
 	def validate(self) -> None:
-		"""Enforce optimizer values and the original 2000:3200 stage ratio."""
-		expected_weights = {1: 2000, 2: 3200}
-		if (
-			self.stage not in expected_weights
-			or self.schedule_weight != expected_weights[self.stage]
-		):
-			raise ValueError("Stage 1/2 schedule weights must preserve ratio 2000:3200")
+		"""Enforce the fixed optimizer and dynamic warm-start protocol."""
 		if self.optimizer != "AdamW":
 			raise ValueError("optimizer must be AdamW")
 		if self.learning_rate != 1e-5 or self.weight_decay != 0.01:
@@ -75,6 +66,10 @@ class TrainingStageConfig:
 			raise ValueError("precision must remain bf16")
 		if self.lr_scheduler != "cosine" or self.warmup_ratio != 0.03:
 			raise ValueError("scheduler must be cosine with warmup ratio 0.03")
+		if self.warm_start_epoch_fraction != 0.35:
+			raise ValueError("warm-start window must cover exactly 0.35 epoch")
+		if self.joint_activation_warmup_ratio != 0.03:
+			raise ValueError("joint parameter activation warmup ratio must be 0.03")
 
 	def gradient_accumulation_steps(
 		self,

@@ -142,22 +142,20 @@ def distributed_symmetric_info_nce(
 	)
 
 
-def compose_stage_loss(
+def compose_training_loss(
 	*,
-	stage: int,
+	phase: str,
 	final_infonce: torch.Tensor,
 	slot_infonce: torch.Tensor,
-	semantic_decoder_ce: torch.Tensor,
 	slot_diversity: torch.Tensor,
 ) -> torch.Tensor:
-	"""Apply the fixed v1.0 Stage 1 or Stage 2 scalar loss weights."""
-	if stage == 1:
-		return slot_infonce + semantic_decoder_ce + 0.05 * slot_diversity
-	if stage == 2:
+	"""Apply warm-start or joint weights without changing optimizer ownership."""
+	if phase == "warm_start":
+		return slot_infonce + 0.05 * slot_diversity + 0.0 * final_infonce
+	if phase in {"joint_activation", "joint"}:
 		return (
 			final_infonce
 			+ 0.2 * slot_infonce
-			+ 0.2 * semantic_decoder_ce
 			+ 0.05 * slot_diversity
 		)
-	raise ValueError("stage must be 1 or 2")
+	raise ValueError("phase must be warm_start, joint_activation, or joint")

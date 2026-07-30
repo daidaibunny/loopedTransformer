@@ -43,7 +43,6 @@ class TinyRecurrentModel(nn.Module):
 		self.recurrent_connector = nn.Linear(4, 4)
 		self.late_fusion = nn.Linear(4, 4)
 		self.warmup_embedding_head = nn.Linear(4, 4)
-		self.warmup_semantic_head = nn.Linear(4, 4)
 
 
 def test_lora_zero_initialization_preserves_base_linear_output() -> None:
@@ -75,30 +74,30 @@ def test_lora_is_injected_only_into_required_modules_of_layers_13_to_20() -> Non
 	assert not isinstance(layers[12].self_attn.o_proj, LoRALinear)
 
 
-def test_stage_trainability_matches_strict_parameter_allowlists() -> None:
+def test_single_stage_trainability_has_explicit_warm_and_joint_groups() -> None:
 	model = TinyRecurrentModel()
 	inject_loop_layer_lora(model.base_embedding_model.layers, 12, 20, 2, 2, 0.0)
 
-	stage1 = configure_trainable_parameters(model, stage=1)
+	groups = configure_trainable_parameters(model)
 	assert all(
 		name.startswith(
 			(
 				"latent_slots",
 				"recurrent_connector",
 				"warmup_embedding_head",
-				"warmup_semantic_head",
 			)
 		)
-		for name in stage1
+		for name in groups.warm_start
 	)
-	assert not any("lora_" in name for name in stage1)
-
-	stage2 = configure_trainable_parameters(model, stage=2)
-	assert any(name.startswith("eos_delta") for name in stage2)
-	assert any(name.startswith("late_fusion") for name in stage2)
-	assert any("lora_" in name for name in stage2)
-	assert not any("o_proj" in name for name in stage2)
-	assert not any("layers.11" in name or "layers.20" in name for name in stage2)
+	assert not any("lora_" in name for name in groups.warm_start)
+	assert any(name.startswith("eos_delta") for name in groups.joint_only)
+	assert any(name.startswith("late_fusion") for name in groups.joint_only)
+	assert any("lora_" in name for name in groups.joint_only)
+	assert not any("o_proj" in name for name in groups.all)
+	assert not any("layers.11" in name or "layers.20" in name for name in groups.all)
+	assert set(groups.all) == {
+		name for name, parameter in model.named_parameters() if parameter.requires_grad
+	}
 
 
 def test_fp16_storage_promotes_only_trainable_parameters_to_fp32() -> None:

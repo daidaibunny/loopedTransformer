@@ -82,5 +82,6 @@ def test_baseline_cli_defaults_to_the_true_256_pair_batch_and_four_checkpoints(
 	assert args.per_device_batch_size == 32
 	assert args.gradient_accumulation_steps == 1
 	assert args.expected_contrastive_global_batch_size == 256
+	assert args.initial_gradient_scale == 4096.0
 	assert args.checkpoint_every == 100
 	assert args.max_checkpoints == 4

@@ -1,12 +1,3 @@
-stage: 2
-schedule_weight: 3200
-optimizer: AdamW
-learning_rate: 1.0e-5
-weight_decay: 0.01
-betas: [0.9, 0.95]
-eps: 1.0e-8
-effective_batch_size: 512
-gradient_clip_norm: 1.0
-precision: bf16
-lr_scheduler: cosine
-warmup_ratio: 0.03
+deprecated: true
+replacement: configs/train.yaml
+reason: training now uses one optimizer with a dynamic warm-start window

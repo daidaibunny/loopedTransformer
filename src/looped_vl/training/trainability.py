@@ -1,20 +1,34 @@
-"""Strict Stage 1 and Stage 2 trainable-parameter allowlists."""
+"""Strict parameter groups for warm-start and joint optimization."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import torch
 from torch import nn
 
-STAGE1_PREFIXES = (
+WARM_START_PREFIXES = (
 	"latent_slots",
 	"recurrent_connector.",
 	"warmup_embedding_head.",
-	"warmup_semantic_head.",
 )
-STAGE2_PREFIXES = STAGE1_PREFIXES + (
+JOINT_ONLY_PREFIXES = (
 	"eos_delta",
 	"late_fusion.",
 )
+
+
+@dataclass(frozen=True)
+class TrainableParameterGroups:
+	"""Names updated throughout training or only after the warm-start window."""
+
+	warm_start: tuple[str, ...]
+	joint_only: tuple[str, ...]
+
+	@property
+	def all(self) -> tuple[str, ...]:
+		"""Return every parameter owned by the single optimizer."""
+		return self.warm_start + self.joint_only
 
 
 def align_trainable_parameter_dtype(model: nn.Module, dtype: torch.dtype) -> tuple[str, ...]:
@@ -30,22 +44,27 @@ def align_trainable_parameter_dtype(model: nn.Module, dtype: torch.dtype) -> tup
 	return tuple(aligned_names)
 
 
-def configure_trainable_parameters(model: nn.Module, stage: int) -> tuple[str, ...]:
-	"""Freeze everything, then enable exactly the v1.0 parameter set for one stage."""
-	if stage not in (1, 2):
-		raise ValueError("stage must be 1 or 2")
+def configure_trainable_parameters(model: nn.Module) -> TrainableParameterGroups:
+	"""Freeze the backbone and enable both optimizer groups exactly once."""
 	model.requires_grad_(False)
-	allowed_prefixes = STAGE1_PREFIXES if stage == 1 else STAGE2_PREFIXES
-	trainable: list[str] = []
+	warm_start: list[str] = []
+	joint_only: list[str] = []
 	for name, parameter in model.named_parameters():
-		is_allowed_component = name.startswith(allowed_prefixes)
-		is_stage2_lora = stage == 2 and (".lora_a." in name or ".lora_b." in name)
-		if is_allowed_component or is_stage2_lora:
+		if name.startswith(WARM_START_PREFIXES):
 			parameter.requires_grad_(True)
-			trainable.append(name)
-	if not trainable:
-		raise RuntimeError(f"No trainable parameters were selected for Stage {stage}")
-	return tuple(trainable)
+			warm_start.append(name)
+			continue
+		if name.startswith(JOINT_ONLY_PREFIXES) or (
+			".lora_a." in name or ".lora_b." in name
+		):
+			parameter.requires_grad_(True)
+			joint_only.append(name)
+	if not warm_start or not joint_only:
+		raise RuntimeError("Warm-start and joint-only parameter groups must both be non-empty")
+	return TrainableParameterGroups(
+		warm_start=tuple(warm_start),
+		joint_only=tuple(joint_only),
+	)
 
 
 def audit_gradient_scope(

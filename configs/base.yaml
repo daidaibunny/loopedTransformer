@@ -28,8 +28,6 @@ fusion:
   fuse_after_final_decoder_norm: true
 
 lora:
-  enabled_stage1: false
-  enabled_stage2: true
   layer_start: 12
   layer_end: 20
   rank: 32
@@ -46,10 +44,8 @@ lora:
 
 loss:
   temperature: 0.02
-  stage1_slot_weight: 1.0
-  stage1_decoder_weight: 1.0
-  stage1_diversity_weight: 0.05
-  stage2_final_weight: 1.0
-  stage2_slot_weight: 0.2
-  stage2_decoder_weight: 0.2
-  stage2_diversity_weight: 0.05
+  warm_slot_weight: 1.0
+  warm_diversity_weight: 0.05
+  joint_final_weight: 1.0
+  joint_slot_weight: 0.2
+  joint_diversity_weight: 0.05

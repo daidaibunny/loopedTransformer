@@ -1,4 +1,4 @@
-"""Distributed Stage 1 then Stage 2 training for recurrent Qwen3-VL embeddings."""
+"""Distributed single-stage training for recurrent Qwen3-VL embeddings."""
 
 from __future__ import annotations
 
@@ -12,12 +12,13 @@ import sys
 import time
 from collections import Counter
 from contextlib import nullcontext
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.distributed as dist
+from torch import nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -39,10 +40,9 @@ from looped_vl.training.checkpointing import (
 	capture_rng_state,
 	load_training_checkpoint,
 	prune_training_checkpoints,
-	rebase_training_cursor_batch_size,
 	save_training_checkpoint,
 )
-from looped_vl.training.config import TrainingStageConfig
+from looped_vl.training.config import TrainingConfig
 from looped_vl.training.data import (
 	close_training_batch_images,
 	group_model_inputs_by_modality,
@@ -53,8 +53,8 @@ from looped_vl.training.optimizer import build_optimizer_and_scheduler
 from looped_vl.training.reproducibility import seed_everything
 from looped_vl.training.schedule import (
 	BatchOffsetSampler,
-	EpochStagePlan,
-	resolve_one_epoch_stage_plans,
+	OneEpochTrainingPlan,
+	resolve_one_epoch_training_plan,
 	resolve_parallel_batch_sizes,
 )
 from looped_vl.training.trainability import (
@@ -165,7 +165,6 @@ def _set_training_modes(model: RecurrentTrainingModel) -> None:
 	model.train()
 	model.encoder.base_embedding_model.eval()
 	model.encoder.warmup_embedding_head.train()
-	model.encoder.warmup_semantic_head.train()
 	model.encoder.recurrent_connector.train()
 	model.encoder.late_fusion.train()
 
@@ -192,9 +191,7 @@ def _save_checkpoint(
 	max_checkpoints: int,
 ) -> Path:
 	rank_rng_states = _gather_rank_rng_states(world_size)
-	path = output_dir / "checkpoints" / (
-		f"stage{cursor.stage}_step{cursor.global_step:06d}.pt"
-	)
+	path = output_dir / "checkpoints" / f"step{cursor.global_step:06d}.pt"
 	if rank == 0 and not path.exists():
 		save_training_checkpoint(
 			path=path,
@@ -267,11 +264,36 @@ def _should_save_checkpoint(
 	return global_step % checkpoint_every == 0 or global_step == optimizer_step_limit
 
 
-def _train_stage(
+def _training_phase(
+	global_step: int,
+	training_plan: OneEpochTrainingPlan,
+) -> str:
+	"""Return the loss and learning-rate phase for the next optimizer update."""
+	if global_step < training_plan.warm_start_optimizer_steps:
+		return "warm_start"
+	if global_step < (
+		training_plan.warm_start_optimizer_steps
+		+ training_plan.joint_activation_optimizer_steps
+	):
+		return "joint_activation"
+	return "joint"
+
+
+def _clear_parameter_gradients(
+	model: nn.Module,
+	parameter_names: tuple[str, ...],
+) -> None:
+	"""Prevent frozen-window gradients from creating AdamW momentum state."""
+	parameters = dict(model.named_parameters())
+	for name in parameter_names:
+		parameters[name].grad = None
+
+
+def _train_one_epoch(
 	*,
 	args: argparse.Namespace,
-	stage_config: TrainingStageConfig,
-	stage_plan: EpochStagePlan,
+	training_config: TrainingConfig,
+	training_plan: OneEpochTrainingPlan,
 	training_model: RecurrentTrainingModel,
 	processor: Any,
 	loader: DataLoader[dict[str, Any]],
@@ -283,20 +305,18 @@ def _train_stage(
 	output_dir: Path,
 	checkpoint_metadata: dict[str, Any],
 	resume_checkpoint: Path | None,
-	initial_data_cursor: TrainingCursor | None,
 	training_precision: TrainingPrecision,
 ) -> TrainingCursor:
-	if stage_plan.stage != stage_config.stage:
-		raise ValueError("Stage plan does not match the active stage configuration")
-	trainable_names = configure_trainable_parameters(training_model.encoder, stage_config.stage)
+	parameter_groups = configure_trainable_parameters(training_model.encoder)
+	trainable_names = parameter_groups.all
 	aligned_names = align_trainable_parameter_dtype(
 		training_model.encoder,
 		training_precision.trainable_parameter_dtype,
 	)
 	if set(aligned_names) != set(trainable_names):
-		raise RuntimeError("Trainable dtype alignment did not match the stage allowlist")
+		raise RuntimeError("Trainable dtype alignment did not match the optimizer allowlist")
 	_set_training_modes(training_model)
-	gradient_accumulation_steps = stage_config.gradient_accumulation_steps(
+	gradient_accumulation_steps = training_config.gradient_accumulation_steps(
 		args.per_device_batch_size,
 		world_size,
 	)
@@ -304,31 +324,29 @@ def _train_stage(
 		gradient_accumulation_steps = args.smoke_gradient_accumulation_steps
 	optimizer, scheduler = build_optimizer_and_scheduler(
 		training_model,
-		stage_config,
-		total_steps=stage_plan.optimizer_steps,
+		training_config,
+		warm_start_parameter_names=tuple(
+			f"encoder.{name}" for name in parameter_groups.warm_start
+		),
+		joint_parameter_names=tuple(
+			f"encoder.{name}" for name in parameter_groups.joint_only
+		),
+		total_steps=training_plan.optimizer_steps,
+		warm_start_steps=training_plan.warm_start_optimizer_steps,
+		joint_activation_steps=training_plan.joint_activation_optimizer_steps,
 	)
 	gradient_scaler = torch.cuda.amp.GradScaler(
 		enabled=training_precision.gradient_scaling_enabled,
 		init_scale=args.initial_gradient_scale,
 	)
 	cursor = TrainingCursor(
-		stage=stage_config.stage,
+		stage=0,
 		global_step=0,
 		sampler_epoch=0,
-		batch_in_epoch=stage_plan.start_batch,
+		batch_in_epoch=training_plan.start_batch,
 		gradient_accumulation_step=0,
-		processed_samples=(
-			initial_data_cursor.processed_samples
-			if initial_data_cursor is not None
-			else 0
-		),
+		processed_samples=0,
 	)
-	if (
-		initial_data_cursor is not None
-		and not args.smoke_optimizer_steps
-		and initial_data_cursor.batch_in_epoch != stage_plan.start_batch
-	):
-		raise ValueError("Previous stage did not finish at the next stage boundary")
 	if resume_checkpoint is not None:
 		cursor, resume_metadata = load_training_checkpoint(
 			path=resume_checkpoint,
@@ -337,9 +355,10 @@ def _train_stage(
 			scheduler=scheduler,
 			rank=rank,
 			gradient_scaler=gradient_scaler,
+			expected_training_protocol="single_stage_warm_start_v1",
 		)
-		if cursor.stage != stage_config.stage:
-			raise ValueError("Resume checkpoint stage does not match active stage")
+		if cursor.stage != 0:
+			raise ValueError("Resume checkpoint is not from single-stage training")
 		source_batch_size = args.resume_per_device_batch_size
 		if source_batch_size is None:
 			metadata_batch_size = resume_metadata.get("per_device_batch_size")
@@ -349,17 +368,17 @@ def _train_stage(
 				else args.per_device_batch_size
 			)
 		if source_batch_size != args.per_device_batch_size:
-			cursor = rebase_training_cursor_batch_size(
-				cursor,
-				source_per_device_batch_size=source_batch_size,
-				target_per_device_batch_size=args.per_device_batch_size,
+			raise ValueError(
+				"Single-stage exact resume requires the original per-device batch size",
 			)
+		if resume_metadata.get("training_plan") != asdict(training_plan):
+			raise ValueError("Resume checkpoint training plan does not match this run")
 	if cursor.sampler_epoch != 0:
 		raise ValueError("One-epoch training checkpoints must remain in sampler epoch zero")
-	if not stage_plan.start_batch <= cursor.batch_in_epoch <= stage_plan.end_batch:
-		raise ValueError("Checkpoint data cursor is outside the active stage batch range")
+	if not training_plan.start_batch <= cursor.batch_in_epoch <= training_plan.end_batch:
+		raise ValueError("Checkpoint data cursor is outside the one-epoch batch range")
 	optimizer_step_limit = _optimizer_step_limit(
-		configured_steps=stage_plan.optimizer_steps,
+		configured_steps=training_plan.optimizer_steps,
 		resumed_global_step=cursor.global_step,
 		smoke_optimizer_steps=args.smoke_optimizer_steps,
 		max_additional_optimizer_steps=args.max_additional_optimizer_steps,
@@ -379,10 +398,12 @@ def _train_stage(
 	)
 	if rank == 0:
 		_write_json(
-			output_dir / f"stage{stage_config.stage}_trainable_parameters.json",
+			output_dir / "trainable_parameters.json",
 			{
-				"stage": stage_config.stage,
-				"trainable_names": trainable_names,
+				"formal_training_stages": 1,
+				"warm_start_names": parameter_groups.warm_start,
+				"joint_only_names": parameter_groups.joint_only,
+				"trainable_names": parameter_groups.all,
 				"trainable_parameter_count": sum(
 					parameter.numel()
 					for parameter in training_model.parameters()
@@ -395,9 +416,12 @@ def _train_stage(
 				"optimizer_global_batch_size": (
 					args.per_device_batch_size * world_size * gradient_accumulation_steps
 				),
-				"epoch_batch_start": stage_plan.start_batch,
-				"epoch_batch_end": stage_plan.end_batch,
-				"optimizer_steps": stage_plan.optimizer_steps,
+				"epoch_batch_start": training_plan.start_batch,
+				"epoch_batch_end": training_plan.end_batch,
+				"optimizer_steps": training_plan.optimizer_steps,
+				"warm_start_optimizer_steps": (
+					training_plan.warm_start_optimizer_steps
+				),
 			},
 		)
 	optimizer.zero_grad(set_to_none=True)
@@ -405,7 +429,6 @@ def _train_stage(
 		"total_loss",
 		"final_infonce",
 		"slot_infonce",
-		"semantic_decoder_ce",
 		"slot_diversity",
 		"fusion_gate",
 		"late_fusion_attention_entropy",
@@ -423,14 +446,22 @@ def _train_stage(
 	epoch = 0
 	sampler.set_epoch(epoch)
 	start_batch = cursor.batch_in_epoch
-	sampler.set_batch_range(start_batch, stage_plan.end_batch)
+	sampler.set_batch_range(start_batch, training_plan.end_batch)
+	status_phase: str | None = None
 	for relative_batch_index, batch in enumerate(loader):
 		batch_index = start_batch + relative_batch_index
-		group_start = stage_plan.start_batch + (
-			(batch_index - stage_plan.start_batch) // gradient_accumulation_steps
+		phase = _training_phase(cursor.global_step, training_plan)
+		if rank == 0 and phase != status_phase:
+			_write_json(
+				output_dir / "status.json",
+				{"status": "training", "phase": phase, "global_step": cursor.global_step},
+			)
+			status_phase = phase
+		group_start = training_plan.start_batch + (
+			(batch_index - training_plan.start_batch) // gradient_accumulation_steps
 		) * gradient_accumulation_steps
 		group_end = min(
-			stage_plan.end_batch,
+			training_plan.end_batch,
 			group_start + gradient_accumulation_steps,
 		)
 		group_size = group_end - group_start
@@ -459,10 +490,8 @@ def _train_stage(
 			):
 				step_output = ddp_model(
 					local_batch_size=local_batch_size,
-					semantic_targets=batch["semantic_targets"],
 					positive_ids=batch["positive_ids"],
-					sources=batch["sources"],
-					stage=stage_config.stage,
+					phase=phase,
 					processed_batches=processed_batches,
 					original_indices=tuple(
 						group.original_indices
@@ -489,7 +518,7 @@ def _train_stage(
 		}
 		if not is_accumulation_boundary:
 			cursor = TrainingCursor(
-				stage=stage_config.stage,
+				stage=0,
 				global_step=cursor.global_step,
 				sampler_epoch=epoch,
 				batch_in_epoch=batch_index + 1,
@@ -497,17 +526,30 @@ def _train_stage(
 				processed_samples=cursor.processed_samples + contrastive_global_batch_size,
 			)
 			continue
+		if phase == "warm_start":
+			_clear_parameter_gradients(
+				training_model.encoder,
+				parameter_groups.joint_only,
+			)
 		gradient_scaler.unscale_(optimizer)
 		gradient_audit = None
-		if cursor.global_step == 0:
+		if cursor.global_step in {
+			0,
+			training_plan.warm_start_optimizer_steps,
+		}:
+			allowed_names = (
+				parameter_groups.warm_start
+				if phase == "warm_start"
+				else parameter_groups.all
+			)
 			gradient_audit = audit_gradient_scope(
 				training_model.encoder,
-				allowed_names=trainable_names,
+				allowed_names=allowed_names,
 			)
 			if rank == 0:
 				_write_json(
-					output_dir / f"stage{stage_config.stage}_gradient_audit.json",
-					gradient_audit,
+					output_dir / f"{phase}_gradient_audit.json",
+					{"phase": phase, **gradient_audit},
 				)
 		gradient_norm = torch.nn.utils.clip_grad_norm_(
 			(
@@ -515,7 +557,10 @@ def _train_stage(
 				for parameter in training_model.parameters()
 				if parameter.requires_grad
 			),
-			stage_config.gradient_clip_norm,
+			training_config.gradient_clip_norm,
+		)
+		used_learning_rates = tuple(
+			float(group["lr"]) for group in optimizer.param_groups
 		)
 		scale_before_step = gradient_scaler.get_scale()
 		gradient_scaler.step(optimizer)
@@ -533,7 +578,7 @@ def _train_stage(
 					batch_index,
 				)
 			cursor = TrainingCursor(
-				stage=stage_config.stage,
+				stage=0,
 				global_step=cursor.global_step,
 				sampler_epoch=epoch,
 				batch_in_epoch=batch_index + 1,
@@ -557,12 +602,16 @@ def _train_stage(
 		}
 		elapsed = time.perf_counter() - step_start
 		log_record = {
-			"stage": stage_config.stage,
+			"formal_training_stage": 1,
+			"phase": phase,
 			"global_step": global_step,
 			**averages,
 			**finalized_diagnostics,
 			"gradient_norm": float(gradient_norm.detach().float().item()),
-			"learning_rate": float(scheduler.get_last_lr()[0]),
+			"warm_start_learning_rate": used_learning_rates[0],
+			"joint_learning_rate": used_learning_rates[1],
+			"next_warm_start_learning_rate": float(scheduler.get_last_lr()[0]),
+			"next_joint_learning_rate": float(scheduler.get_last_lr()[1]),
 			"gradient_scale": float(gradient_scaler.get_scale()),
 			"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
 			"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
@@ -586,8 +635,8 @@ def _train_stage(
 		if rank == 0:
 			_append_json_line(output_dir / "train_metrics.jsonl", log_record)
 			LOGGER.info(
-				"stage=%d step=%d/%d loss=%.5f grad=%.5f samples/s=%.3f",
-				stage_config.stage,
+				"phase=%s step=%d/%d loss=%.5f grad=%.5f samples/s=%.3f",
+				phase,
 				global_step,
 				optimizer_step_limit,
 				averages["total_loss"],
@@ -595,7 +644,7 @@ def _train_stage(
 				accumulated_global_samples / elapsed,
 			)
 		cursor = TrainingCursor(
-			stage=stage_config.stage,
+			stage=0,
 			global_step=global_step,
 			sampler_epoch=epoch,
 			batch_in_epoch=batch_index + 1,
@@ -640,9 +689,7 @@ def _train_stage(
 
 
 def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
-	"""Run Stage 1 and Stage 2 under torchrun with immutable base checkpoints."""
-	if args.start_stage > args.end_stage:
-		raise ValueError("start_stage cannot be greater than end_stage")
+	"""Run one continuous epoch with a dynamic warm-start window."""
 	if args.checkpoint_every <= 0:
 		raise ValueError("checkpoint_every must be positive")
 	if args.max_checkpoints <= 0 or args.max_checkpoints > 4:
@@ -661,6 +708,12 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	if args.smoke_optimizer_steps and args.max_additional_optimizer_steps:
 		raise ValueError(
 			"smoke_optimizer_steps and max_additional_optimizer_steps are mutually exclusive",
+		)
+	if args.smoke_optimizer_steps and not (
+		0 < args.smoke_warm_start_steps < args.smoke_optimizer_steps
+	):
+		raise ValueError(
+			"smoke_warm_start_steps must leave at least one joint smoke step",
 		)
 	rank, world_size, local_rank, device = _initialize_distributed(args.expected_world_size)
 	logging.basicConfig(
@@ -682,12 +735,9 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	project_root = Path(args.project_root)
 	git_commit = _resolve_git_commit(project_root, args.code_commit)
 	model_config = RecurrentModelConfig.from_yaml(args.model_config)
+	training_config = TrainingConfig.from_yaml(args.training_config)
 	model_checkpoint_path = Path(args.model_root) / "model.safetensors"
-	semantic_checkpoint_path = Path(args.semantic_decoder_root) / "model.safetensors"
 	checkpoint_hash_before = checkpoint_sha256(model_checkpoint_path) if rank == 0 else None
-	semantic_checkpoint_hash = (
-		checkpoint_sha256(semantic_checkpoint_path) if rank == 0 else None
-	)
 	if rank == 0:
 		create_or_load_master_slot_initialization(
 			path=args.master_slot_path,
@@ -704,47 +754,45 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		config=model_config,
 		device=device,
 		enable_lora=True,
-		semantic_decoder_root=args.semantic_decoder_root,
 		dtype=training_precision.parameter_dtype,
 		attention_implementation=resolved_attention_implementation,
-		semantic_gradient_checkpointing=args.semantic_gradient_checkpointing,
 		max_length=args.max_length,
 		min_pixels=args.min_pixels,
 		max_pixels=args.max_pixels,
 	)
 	training_model = RecurrentTrainingModel(components.model)
 	loader, sampler = _build_loader(args, rank, world_size, generator)
-	stage_configs = {
-		1: TrainingStageConfig.from_yaml(args.stage1_config),
-		2: TrainingStageConfig.from_yaml(args.stage2_config),
-	}
-	gradient_accumulation_steps = stage_configs[1].gradient_accumulation_steps(
+	gradient_accumulation_steps = training_config.gradient_accumulation_steps(
 		args.per_device_batch_size,
 		world_size,
 	)
-	if (
-		stage_configs[2].gradient_accumulation_steps(
-			args.per_device_batch_size,
-			world_size,
-		)
-		!= gradient_accumulation_steps
-	):
-		raise ValueError("Stage 1 and Stage 2 must use the same accumulation size")
 	if args.smoke_optimizer_steps:
 		gradient_accumulation_steps = args.smoke_gradient_accumulation_steps
-	stage_plan_values = resolve_one_epoch_stage_plans(
-		loader_batches=len(loader),
-		gradient_accumulation_steps=gradient_accumulation_steps,
-		stage_step_weights={
-			stage: config.schedule_weight for stage, config in stage_configs.items()
-		},
-	)
-	stage_plans = {plan.stage: plan for plan in stage_plan_values}
 	parallel_batch_sizes = resolve_parallel_batch_sizes(
 		per_device_batch_size=args.per_device_batch_size,
 		world_size=world_size,
 		gradient_accumulation_steps=gradient_accumulation_steps,
 	)
+	training_plan = resolve_one_epoch_training_plan(
+		train_rows=len(loader.dataset),
+		loader_batches=len(loader),
+		gradient_accumulation_steps=gradient_accumulation_steps,
+		optimizer_global_batch_size=parallel_batch_sizes.optimizer_global_batch_size,
+		warm_start_epoch_fraction=training_config.warm_start_epoch_fraction,
+		joint_activation_warmup_ratio=training_config.joint_activation_warmup_ratio,
+	)
+	if args.smoke_optimizer_steps:
+		training_plan = replace(
+			training_plan,
+			warm_start_optimizer_steps=args.smoke_warm_start_steps,
+			joint_optimizer_steps=(
+				training_plan.optimizer_steps - args.smoke_warm_start_steps
+			),
+			joint_activation_optimizer_steps=min(
+				training_plan.joint_activation_optimizer_steps,
+				args.smoke_optimizer_steps - args.smoke_warm_start_steps,
+			),
+		)
 	if (
 		parallel_batch_sizes.contrastive_global_batch_size
 		!= args.expected_contrastive_global_batch_size
@@ -757,6 +805,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		)
 	manifest = {
 		"scope": "recurrent_latent_slot_qwen3vl_v1",
+		"training_protocol": "single_stage_warm_start_v1",
+		"formal_training_stages": 1,
 		"hostname": socket.gethostname(),
 		"git_commit": git_commit,
 		"command": sys.argv,
@@ -775,27 +825,20 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"resolved_backbone_attention_implementation": (
 			components.model.language_model.config._attn_implementation
 		),
-		"resolved_semantic_attention_implementation": (
-			components.model.warmup_semantic_head.decoder_model.config._attn_implementation
-		),
-		"semantic_gradient_checkpointing": args.semantic_gradient_checkpointing,
+		"semantic_decoder_enabled": False,
 		"modality_grouped_padding": True,
 		"ddp_gradient_as_bucket_view": True,
 		"ddp_static_graph": True,
 		"fused_adamw": True,
 		"seed": 42,
 		"model_config": asdict(model_config),
-		"stage_configs": {stage: asdict(config) for stage, config in stage_configs.items()},
+		"training_config": asdict(training_config),
 		"schedule": {
 			"epochs": 1,
-			"policy": "one_epoch_contiguous_stage_split",
-			"stage_step_weights": {
-				str(stage): config.schedule_weight
-				for stage, config in stage_configs.items()
-			},
-			"resolved_stage_plans": {
-				str(stage): asdict(plan) for stage, plan in stage_plans.items()
-			},
+			"policy": "single_optimizer_dynamic_warm_start",
+			"warm_start_formula": "ceil(0.35 * train_rows / optimizer_global_batch_size)",
+			"warm_start_basis": "project_loop_depth_estimate_not_lame_official_setting",
+			"resolved_training_plan": asdict(training_plan),
 			"loader_batches_per_rank": len(loader),
 			"distributed_sampler_total_rows": sampler.total_size,
 			"distributed_sampler_padding_rows": sampler.total_size - len(loader.dataset),
@@ -810,15 +853,14 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		),
 		"multi_positive_contrastive_loss": True,
 		"combined_contrastive_all_gather": True,
-		"stage1_final_infonce_computed": False,
+		"warm_start_final_infonce_weight": 0.0,
+		"joint_optimizer_state_during_warm_start": "no_grad_no_momentum",
 		"resume_per_device_batch_size": args.resume_per_device_batch_size,
 		"max_additional_optimizer_steps": args.max_additional_optimizer_steps,
 		"max_length": args.max_length,
 		"min_pixels": args.min_pixels,
 		"max_pixels": args.max_pixels,
 		"model_checkpoint_sha256_before": checkpoint_hash_before,
-		"semantic_decoder_checkpoint_sha256": semantic_checkpoint_hash,
-		"semantic_decoder_root": str(args.semantic_decoder_root),
 		"gpus": [
 			{
 				"rank": rank,
@@ -827,16 +869,19 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			}
 		],
 		"smoke_optimizer_steps": args.smoke_optimizer_steps,
+		"smoke_warm_start_steps": args.smoke_warm_start_steps,
 		"checkpoint_every": args.checkpoint_every,
 		"max_checkpoints": args.max_checkpoints,
 	}
 	all_manifests: list[dict[str, Any] | None] = [None for _ in range(world_size)]
 	dist.all_gather_object(all_manifests, manifest)
 	checkpoint_metadata = {
+		"training_protocol": manifest["training_protocol"],
 		"git_commit": manifest["git_commit"],
 		"model_checkpoint_sha256": checkpoint_hash_before,
-		"semantic_decoder_checkpoint_sha256": semantic_checkpoint_hash,
 		"model_config": manifest["model_config"],
+		"training_config": manifest["training_config"],
+		"training_plan": asdict(training_plan),
 		"per_device_batch_size": args.per_device_batch_size,
 		"world_size": world_size,
 	}
@@ -845,49 +890,37 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		_write_json(output_dir / "run_manifest.json", manifest)
 		_write_json(
 			output_dir / "status.json",
-			{"status": "training", "stage": args.start_stage},
+			{"status": "training", "phase": "warm_start"},
 		)
 	training_start = time.perf_counter()
-	final_cursor = None
-	for stage in range(args.start_stage, args.end_stage + 1):
-		if rank == 0:
-			_write_json(output_dir / "status.json", {"status": "training", "stage": stage})
-		final_cursor = _train_stage(
-			args=args,
-			stage_config=stage_configs[stage],
-			stage_plan=stage_plans[stage],
-			training_model=training_model,
-			processor=components.processor,
-			loader=loader,
-			sampler=sampler,
-			rank=rank,
-			world_size=world_size,
-			local_rank=local_rank,
-			device=device,
-			output_dir=output_dir,
-			checkpoint_metadata=checkpoint_metadata,
-			resume_checkpoint=args.resume_checkpoint if stage == args.start_stage else None,
-			initial_data_cursor=final_cursor,
-			training_precision=training_precision,
-		)
+	final_cursor = _train_one_epoch(
+		args=args,
+		training_config=training_config,
+		training_plan=training_plan,
+		training_model=training_model,
+		processor=components.processor,
+		loader=loader,
+		sampler=sampler,
+		rank=rank,
+		world_size=world_size,
+		local_rank=local_rank,
+		device=device,
+		output_dir=output_dir,
+		checkpoint_metadata=checkpoint_metadata,
+		resume_checkpoint=args.resume_checkpoint,
+		training_precision=training_precision,
+	)
 	checkpoint_hash_after = checkpoint_sha256(model_checkpoint_path) if rank == 0 else None
 	if rank == 0 and checkpoint_hash_after != checkpoint_hash_before:
 		raise RuntimeError("Original Qwen checkpoint changed during training")
-	semantic_checkpoint_hash_after = (
-		checkpoint_sha256(semantic_checkpoint_path) if rank == 0 else None
-	)
-	if rank == 0 and semantic_checkpoint_hash_after != semantic_checkpoint_hash:
-		raise RuntimeError("Original semantic decoder checkpoint changed during training")
 	result = None
 	if rank == 0:
 		result = {
 			"status": "passed",
-			"final_cursor": asdict(final_cursor) if final_cursor is not None else None,
+			"final_cursor": asdict(final_cursor),
 			"runtime_seconds": time.perf_counter() - training_start,
 			"model_checkpoint_sha256_before": checkpoint_hash_before,
 			"model_checkpoint_sha256_after": checkpoint_hash_after,
-			"semantic_decoder_checkpoint_sha256_before": semantic_checkpoint_hash,
-			"semantic_decoder_checkpoint_sha256_after": semantic_checkpoint_hash_after,
 		}
 		_write_json(output_dir / "training_result.json", result)
 		_write_json(output_dir / "status.json", {"status": "passed"})
@@ -897,37 +930,31 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 
 
 def parse_args() -> argparse.Namespace:
-	"""Parse the complete two-stage training command."""
+	"""Parse the complete single-stage training command."""
 	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument(
 		"--project-root",
 		type=Path,
-		default=Path("/mnt/afs/liyiwei/loopedTransformer"),
+		default=Path("/home/mnt/liyiwei/loopedTransformer"),
 	)
 	parser.add_argument("--code-commit")
 	parser.add_argument("--model-config", type=Path, default=Path("configs/base.yaml"))
-	parser.add_argument("--stage1-config", type=Path, default=Path("configs/stage1.yaml"))
-	parser.add_argument("--stage2-config", type=Path, default=Path("configs/stage2.yaml"))
+	parser.add_argument("--training-config", type=Path, default=Path("configs/train.yaml"))
 	parser.add_argument(
 		"--model-root",
 		type=Path,
-		default=Path("/mnt/afs/liyiwei/models/Qwen3-VL-Embedding-2B/base_original"),
-	)
-	parser.add_argument(
-		"--semantic-decoder-root",
-		type=Path,
-		default=Path("/mnt/afs/liyiwei/models/Qwen3-0.6B"),
+		default=Path("/home/mnt/liyiwei/models/Qwen3-VL-Embedding-2B/base_original"),
 	)
 	parser.add_argument(
 		"--master-slot-path",
 		type=Path,
-		default=Path("/mnt/afs/liyiwei/loopedTransformer/artifacts/master_slot_init_seed42.pt"),
+		default=Path(
+			"/home/mnt/liyiwei/loopedTransformer/artifacts/master_slot_init_seed42.pt",
+		),
 	)
 	parser.add_argument("--dataset-root", type=Path, required=True)
 	parser.add_argument("--output-dir", type=Path, required=True)
-	parser.add_argument("--expected-world-size", type=int, default=2)
-	parser.add_argument("--start-stage", type=int, choices=(1, 2), default=1)
-	parser.add_argument("--end-stage", type=int, choices=(1, 2), default=2)
+	parser.add_argument("--expected-world-size", type=int, default=8)
 	parser.add_argument("--per-device-batch-size", type=int, default=8)
 	parser.add_argument(
 		"--expected-contrastive-global-batch-size",
@@ -945,7 +972,6 @@ def parse_args() -> argparse.Namespace:
 		default="bf16",
 	)
 	parser.add_argument("--initial-gradient-scale", type=float, default=65_536.0)
-	parser.add_argument("--semantic-gradient-checkpointing", action="store_true")
 	parser.add_argument("--num-workers", type=int, default=2)
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--checkpoint-every", type=int, default=500)
@@ -957,6 +983,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)
 	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)
 	parser.add_argument("--smoke-optimizer-steps", type=int, default=0)
+	parser.add_argument("--smoke-warm-start-steps", type=int, default=1)
 	parser.add_argument("--smoke-gradient-accumulation-steps", type=int, default=1)
 	return parser.parse_args()
 

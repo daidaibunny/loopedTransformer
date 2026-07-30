@@ -1,4 +1,4 @@
-"""Check both GPUs once, run a two-GPU smoke, then launch full training."""
+"""Check eight GPUs once, run a smoke, then launch full training."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class GpuState:
 
 @dataclass(frozen=True)
 class GpuSnapshot:
-	"""Both assigned cards plus the global compute-process count."""
+	"""All assigned cards plus the global compute-process count."""
 
 	gpus: tuple[GpuState, ...]
 	compute_process_count: int
@@ -57,7 +57,7 @@ class ContinuousIdleWindow:
 def parse_gpu_snapshot(
 	gpu_output: str,
 	compute_process_count: int,
-	expected_indexes: tuple[int, ...] = (0, 1),
+	expected_indexes: tuple[int, ...] = tuple(range(8)),
 ) -> GpuSnapshot:
 	"""Parse the selected physical GPUs and apply the strict idle definition."""
 	gpus: list[GpuState] = []
@@ -87,7 +87,7 @@ def parse_gpu_snapshot(
 
 
 def query_gpu_snapshot(
-	expected_indexes: tuple[int, ...] = (0, 1),
+	expected_indexes: tuple[int, ...] = tuple(range(8)),
 ) -> GpuSnapshot:
 	"""Read the selected GPUs and every active compute process."""
 	gpu_result = subprocess.run(
@@ -132,7 +132,7 @@ def wait_for_idle_window(
 	required_seconds: float,
 	poll_seconds: float,
 	log_path: Path,
-	expected_indexes: tuple[int, ...] = (0, 1),
+	expected_indexes: tuple[int, ...] = tuple(range(8)),
 ) -> GpuSnapshot:
 	"""Block until every selected GPU satisfies the strict idle rule continuously."""
 	window = ContinuousIdleWindow(required_seconds)
@@ -176,11 +176,11 @@ def _training_command(
 	command = [
 		str(torchrun),
 		"--standalone",
-		"--nproc_per_node=2",
+		"--nproc_per_node=8",
 		"-m",
 		"looped_vl.training.train",
 		"--expected-world-size",
-		"2",
+		"8",
 		"--output-dir",
 		str(output_dir),
 		"--dataset-root",
@@ -195,14 +195,14 @@ def _training_command(
 	if smoke:
 		command.extend(
 			[
-				"--start-stage",
-				"1",
-				"--end-stage",
-				"2",
 				"--smoke-optimizer-steps",
+				"2",
+				"--smoke-warm-start-steps",
 				"1",
 				"--smoke-gradient-accumulation-steps",
 				"1",
+				"--expected-contrastive-global-batch-size",
+				"8",
 				"--num-workers",
 				"0",
 				"--checkpoint-every",
@@ -213,7 +213,7 @@ def _training_command(
 
 
 def run_wait_smoke_and_train(args: argparse.Namespace) -> None:
-	"""Perform immediate GPU checks, two-stage smoke, then the full run."""
+	"""Perform immediate GPU checks, one continuous smoke, then the full run."""
 	launcher_output = Path(args.launcher_output_dir)
 	if launcher_output.exists():
 		raise FileExistsError(f"Launcher output already exists: {launcher_output}")
@@ -233,12 +233,12 @@ def run_wait_smoke_and_train(args: argparse.Namespace) -> None:
 		},
 	)
 	if not passed_snapshot.is_idle:
-		raise RuntimeError("Both GPUs must be idle at submission time")
+		raise RuntimeError("All eight GPUs must be idle at submission time")
 	environment = os.environ.copy()
 	environment["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-	environment["CUDA_VISIBLE_DEVICES"] = "0,1"
+	environment["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
 	environment["PYTHONPATH"] = "src"
-	_write_json(status_path, {"status": "running_two_gpu_smoke"})
+	_write_json(status_path, {"status": "running_eight_gpu_smoke"})
 	smoke_command = _training_command(args, Path(args.smoke_output_dir), smoke=True)
 	smoke_result = subprocess.run(
 		smoke_command,
@@ -247,12 +247,12 @@ def run_wait_smoke_and_train(args: argparse.Namespace) -> None:
 		check=False,
 	)
 	if smoke_result.returncode != 0:
-		raise RuntimeError(f"Two-GPU smoke failed with exit code {smoke_result.returncode}")
+		raise RuntimeError(f"Eight-GPU smoke failed with exit code {smoke_result.returncode}")
 	smoke_status = json.loads(
 		(Path(args.smoke_output_dir) / "status.json").read_text(encoding="utf-8"),
 	)
 	if smoke_status.get("status") != "passed":
-		raise RuntimeError(f"Two-GPU smoke did not pass: {smoke_status}")
+		raise RuntimeError(f"Eight-GPU smoke did not pass: {smoke_status}")
 	_write_json(status_path, {"status": "checking_gpus_before_full_training"})
 	training_snapshot = query_gpu_snapshot()
 	_write_json(
@@ -267,7 +267,7 @@ def run_wait_smoke_and_train(args: argparse.Namespace) -> None:
 		},
 	)
 	if not training_snapshot.is_idle:
-		raise RuntimeError("Both GPUs must be idle before full training")
+		raise RuntimeError("All eight GPUs must be idle before full training")
 	_write_json(status_path, {"status": "running_full_training"})
 	training_command = _training_command(args, Path(args.train_output_dir), smoke=False)
 	training_result = subprocess.run(
@@ -287,7 +287,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--project-root",
 		type=Path,
-		default=Path("/mnt/afs/liyiwei/loopedTransformer"),
+		default=Path("/home/mnt/liyiwei/loopedTransformer"),
 	)
 	parser.add_argument("--launcher-output-dir", type=Path, required=True)
 	parser.add_argument("--smoke-output-dir", type=Path, required=True)

@@ -142,7 +142,6 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			attention_dim=config.fusion_attention_dim,
 		)
 		self.warmup_embedding_head = WarmupEmbeddingHead(config.hidden_size)
-		self.warmup_semantic_head: nn.Module = nn.Identity()
 		self.injected_lora_modules: tuple[str, ...] = ()
 		if enable_lora:
 			self.inject_lora()

@@ -1,4 +1,4 @@
-"""One-epoch scheduling shared by the two recurrent training stages."""
+"""One-epoch scheduling for continuous recurrent training."""
 
 from __future__ import annotations
 
@@ -12,17 +12,19 @@ from torch.utils.data import Sampler
 
 
 @dataclass(frozen=True)
-class EpochStagePlan:
-	"""One contiguous batch range trained under a single parameter scope."""
+class OneEpochTrainingPlan:
+	"""A full epoch with a warm-start prefix and continuous joint suffix."""
 
-	stage: int
 	start_batch: int
 	end_batch: int
 	optimizer_steps: int
+	warm_start_optimizer_steps: int
+	joint_optimizer_steps: int
+	joint_activation_optimizer_steps: int
 
 	@property
 	def loader_batches(self) -> int:
-		"""Return the number of per-rank DataLoader batches in this stage."""
+		"""Return the number of per-rank DataLoader batches in the epoch."""
 		return self.end_batch - self.start_batch
 
 
@@ -100,45 +102,45 @@ class BatchOffsetSampler(Sampler[int]):
 		return getattr(self.sampler, name)
 
 
-def resolve_one_epoch_stage_plans(
+def resolve_one_epoch_training_plan(
 	*,
+	train_rows: int,
 	loader_batches: int,
 	gradient_accumulation_steps: int,
-	stage_step_weights: dict[int, int],
-) -> tuple[EpochStagePlan, EpochStagePlan]:
-	"""Split one epoch into contiguous Stage 1 and Stage 2 optimizer groups."""
+	optimizer_global_batch_size: int,
+	warm_start_epoch_fraction: float,
+	joint_activation_warmup_ratio: float,
+) -> OneEpochTrainingPlan:
+	"""Resolve the dynamic warm-start prefix inside one continuous epoch."""
+	if train_rows <= 0:
+		raise ValueError("train_rows must be positive")
 	if loader_batches <= 0:
 		raise ValueError("loader_batches must be positive")
 	if gradient_accumulation_steps <= 0:
 		raise ValueError("gradient_accumulation_steps must be positive")
-	if set(stage_step_weights) != {1, 2}:
-		raise ValueError("stage_step_weights must contain exactly Stage 1 and Stage 2")
-	if any(weight <= 0 for weight in stage_step_weights.values()):
-		raise ValueError("stage step weights must be positive")
+	if optimizer_global_batch_size <= 0:
+		raise ValueError("optimizer_global_batch_size must be positive")
+	if not 0 < warm_start_epoch_fraction < 1:
+		raise ValueError("warm_start_epoch_fraction must be between zero and one")
+	if not 0 < joint_activation_warmup_ratio < 1:
+		raise ValueError("joint_activation_warmup_ratio must be between zero and one")
 	total_optimizer_steps = math.ceil(loader_batches / gradient_accumulation_steps)
 	if total_optimizer_steps < 2:
-		raise ValueError("One-epoch two-stage training needs at least two optimizer steps")
-	stage1_weight = stage_step_weights[1]
-	weight_total = sum(stage_step_weights.values())
-	stage1_steps = round(total_optimizer_steps * stage1_weight / weight_total)
-	stage1_steps = min(max(stage1_steps, 1), total_optimizer_steps - 1)
-	stage1_end_batch = min(
-		loader_batches,
-		stage1_steps * gradient_accumulation_steps,
+		raise ValueError("One-epoch training needs at least one joint optimizer step")
+	warm_start_steps = math.ceil(
+		warm_start_epoch_fraction * train_rows / optimizer_global_batch_size,
 	)
-	stage2_batches = loader_batches - stage1_end_batch
-	stage2_steps = math.ceil(stage2_batches / gradient_accumulation_steps)
-	return (
-		EpochStagePlan(
-			stage=1,
-			start_batch=0,
-			end_batch=stage1_end_batch,
-			optimizer_steps=stage1_steps,
-		),
-		EpochStagePlan(
-			stage=2,
-			start_batch=stage1_end_batch,
-			end_batch=loader_batches,
-			optimizer_steps=stage2_steps,
-		),
+	warm_start_steps = min(max(warm_start_steps, 1), total_optimizer_steps - 1)
+	joint_steps = total_optimizer_steps - warm_start_steps
+	joint_activation_steps = min(
+		joint_steps,
+		max(1, math.ceil(joint_steps * joint_activation_warmup_ratio)),
+	)
+	return OneEpochTrainingPlan(
+		start_batch=0,
+		end_batch=loader_batches,
+		optimizer_steps=total_optimizer_steps,
+		warm_start_optimizer_steps=warm_start_steps,
+		joint_optimizer_steps=joint_steps,
+		joint_activation_optimizer_steps=joint_activation_steps,
 	)

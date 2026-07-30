@@ -10,7 +10,7 @@ from looped_vl.baseline.losses import multi_positive_symmetric_info_nce
 from looped_vl.training.data import paired_training_collate
 from looped_vl.training.schedule import (
 	BatchOffsetSampler,
-	resolve_one_epoch_stage_plans,
+	resolve_one_epoch_training_plan,
 	resolve_parallel_batch_sizes,
 )
 from looped_vl.training.step import distributed_multi_positive_info_nce_losses
@@ -104,53 +104,56 @@ def test_recurrent_losses_match_independent_multi_positive_losses() -> None:
 		assert torch.isfinite(actual_gradient).all()
 
 
-def test_stage1_can_skip_unused_final_contrastive_loss() -> None:
-	query = torch.eye(2, requires_grad=True)
-	candidate = torch.eye(2, requires_grad=True)
-
-	losses = distributed_multi_positive_info_nce_losses(
-		embedding_pairs={"slot": (query, candidate)},
-		positive_ids=("first", "second"),
-		temperature=0.02,
-	)
-
-	assert set(losses) == {"slot"}
-
-
 @pytest.mark.parametrize(
-	("loader_batches", "expected_stage1_steps", "expected_stage2_steps"),
 	(
-		(8_856, 426, 681),
-		(14_735, 708, 1_134),
-		(10_938, 526, 842),
+		"train_rows",
+		"optimizer_global_batch_size",
+		"loader_batches",
+		"expected_warm_start_steps",
+	),
+	(
+		(100_000, 256, 1_563, 137),
+		(100_000, 512, 1_563, 69),
+		(566_747, 512, 8_856, 388),
+		(943_000, 512, 14_735, 645),
+		(699_989, 512, 10_938, 479),
 	),
 )
-def test_one_epoch_stage_plan_covers_every_batch_once(
+def test_warm_start_uses_fraction_of_rows_not_loop_count(
+	train_rows: int,
+	optimizer_global_batch_size: int,
 	loader_batches: int,
-	expected_stage1_steps: int,
-	expected_stage2_steps: int,
+	expected_warm_start_steps: int,
 ) -> None:
-	stage1, stage2 = resolve_one_epoch_stage_plans(
+	gradient_accumulation_steps = 4 if optimizer_global_batch_size == 256 else 8
+	plan = resolve_one_epoch_training_plan(
+		train_rows=train_rows,
 		loader_batches=loader_batches,
-		gradient_accumulation_steps=8,
-		stage_step_weights={1: 2_000, 2: 3_200},
+		gradient_accumulation_steps=gradient_accumulation_steps,
+		optimizer_global_batch_size=optimizer_global_batch_size,
+		warm_start_epoch_fraction=0.35,
+		joint_activation_warmup_ratio=0.03,
 	)
 
-	assert stage1.start_batch == 0
-	assert stage1.end_batch == stage2.start_batch
-	assert stage2.end_batch == loader_batches
-	assert stage1.optimizer_steps == expected_stage1_steps
-	assert stage2.optimizer_steps == expected_stage2_steps
-	assert stage1.end_batch - stage1.start_batch <= 8 * stage1.optimizer_steps
-	assert stage2.end_batch - stage2.start_batch <= 8 * stage2.optimizer_steps
+	assert plan.start_batch == 0
+	assert plan.end_batch == loader_batches
+	assert plan.optimizer_steps == loader_batches // gradient_accumulation_steps + (
+		loader_batches % gradient_accumulation_steps != 0
+	)
+	assert plan.warm_start_optimizer_steps == expected_warm_start_steps
+	assert plan.joint_optimizer_steps == plan.optimizer_steps - expected_warm_start_steps
+	assert plan.joint_activation_optimizer_steps >= 1
 
 
-def test_one_epoch_stage_plan_rejects_too_few_optimizer_groups() -> None:
-	with pytest.raises(ValueError, match="at least two optimizer steps"):
-		resolve_one_epoch_stage_plans(
-			loader_batches=3,
-			gradient_accumulation_steps=8,
-			stage_step_weights={1: 2_000, 2: 3_200},
+def test_one_epoch_training_plan_rejects_no_joint_training_window() -> None:
+	with pytest.raises(ValueError, match="joint optimizer step"):
+		resolve_one_epoch_training_plan(
+			train_rows=8,
+			loader_batches=1,
+			gradient_accumulation_steps=1,
+			optimizer_global_batch_size=8,
+			warm_start_epoch_fraction=0.35,
+			joint_activation_warmup_ratio=0.03,
 		)
 
 
@@ -173,7 +176,7 @@ def test_batch_offset_sampler_skips_indices_before_dataset_loading() -> None:
 	assert len(sampler) == 6
 
 
-def test_stage_batch_ranges_reconstruct_each_rank_one_epoch_stream() -> None:
+def test_resume_batch_range_preserves_each_rank_one_epoch_stream() -> None:
 	dataset = list(range(23))
 	for rank in range(2):
 		distributed = DistributedSampler(
@@ -187,14 +190,9 @@ def test_stage_batch_ranges_reconstruct_each_rank_one_epoch_stream() -> None:
 		distributed.set_epoch(0)
 		expected = list(distributed)
 		sampler = BatchOffsetSampler(distributed, batch_size=2)
-		stage1, stage2 = resolve_one_epoch_stage_plans(
-			loader_batches=6,
-			gradient_accumulation_steps=2,
-			stage_step_weights={1: 2_000, 2: 3_200},
-		)
-		sampler.set_batch_range(stage1.start_batch, stage1.end_batch)
-		stage1_indices = list(sampler)
-		sampler.set_batch_range(stage2.start_batch, stage2.end_batch)
-		stage2_indices = list(sampler)
+		sampler.set_batch_range(0, 3)
+		before_resume = list(sampler)
+		sampler.set_batch_range(3, 6)
+		after_resume = list(sampler)
 
-		assert stage1_indices + stage2_indices == expected
+		assert before_resume + after_resume == expected
