@@ -15,8 +15,8 @@
 - Use the official Git clone at `/mnt/afs/liyiwei/loopedTransformer` as the remote code root.
 - Use `/mnt/afs/likangle/reserach/LOCUS-MLLM/envs/LOCUS/bin/python`.
 - Run long jobs in uniquely named detached tmux sessions with separate logs.
-- Before a two-GPU training launch, verify both GPUs have no compute processes for three
-  continuous minutes. Restart the timer if either GPU becomes busy.
+- Before a two-GPU launch, inspect both GPUs once and submit immediately when neither GPU
+  has an active compute process. Do not impose a continuous idle waiting period.
 - After launch, poll both ranks, GPU use, progress logs, and checkpoints for several minutes.
 
 ## Data

@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from looped_vl.training.resume_throughput_pipeline import (
 	TrainingBenchmark,
 	build_frozen_evaluation_command,
 	build_training_command,
+	parse_args,
 	select_best_training_benchmark,
 	validate_resume_configuration,
 )
@@ -78,6 +80,32 @@ def test_resume_configuration_accepts_fresh_start() -> None:
 		latest_checkpoint_json=None,
 		source_tmux_session=None,
 	)
+
+
+def test_pipeline_cli_rejects_removed_continuous_idle_gate(
+	monkeypatch: pytest.MonkeyPatch,
+	tmp_path: Path,
+) -> None:
+	monkeypatch.setattr(
+		sys,
+		"argv",
+		[
+			"resume_throughput_pipeline",
+			"--pipeline-root",
+			str(tmp_path / "pipeline"),
+			"--code-commit",
+			"a" * 40,
+			"--full-frozen-output",
+			str(tmp_path / "frozen"),
+			"--training-output",
+			str(tmp_path / "training"),
+			"--required-idle-seconds",
+			"180",
+		],
+	)
+
+	with pytest.raises(SystemExit):
+		parse_args()
 
 
 def test_frozen_full_evaluation_command_does_not_apply_smoke_limit(tmp_path: Path) -> None:

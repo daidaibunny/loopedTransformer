@@ -349,19 +349,6 @@ def run_pipeline(args: argparse.Namespace) -> None:
 		)
 		_write_json(status_path, {"status": "stopping_source_training_at_checkpoint"})
 		_stop_source_training(args.source_tmux_session)
-	_write_json(
-		status_path,
-		{
-			"status": "waiting_for_idle_before_pipeline",
-			"training_mode": "resume" if is_resume else "fresh",
-			"required_idle_seconds": args.required_idle_seconds,
-		},
-	)
-	wait_for_idle_window(
-		required_seconds=args.required_idle_seconds,
-		poll_seconds=5.0,
-		log_path=pipeline_root / "gpu_idle_before_pipeline.jsonl",
-	)
 	_write_json(status_path, {"status": "running_architecture_acceptance"})
 	_run_architecture_acceptance(
 		python=Path(args.python),
@@ -570,7 +557,6 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--prefetch-factor", type=int, default=4)
 	parser.add_argument("--memory-limit-gib", type=int, default=72)
 	parser.add_argument("--poll-seconds", type=float, default=30.0)
-	parser.add_argument("--required-idle-seconds", type=float, default=180.0)
 	parser.add_argument("--code-commit", required=True)
 	parser.add_argument("--full-frozen-output", type=Path, required=True)
 	parser.add_argument(
