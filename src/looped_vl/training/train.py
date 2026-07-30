@@ -10,7 +10,7 @@ import socket
 import subprocess
 import sys
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
@@ -31,6 +31,7 @@ from looped_vl.training.checkpointing import (
 	TrainingCursor,
 	capture_rng_state,
 	load_training_checkpoint,
+	rebase_training_cursor_batch_size,
 	save_training_checkpoint,
 )
 from looped_vl.training.config import TrainingStageConfig
@@ -171,8 +172,44 @@ def _save_checkpoint(
 	return path
 
 
-def _mean_accumulator(accumulator: dict[str, float], count: int) -> dict[str, float]:
-	return {key: value / count for key, value in accumulator.items()}
+def _accumulate_metric_tensors(
+	accumulator: dict[str, torch.Tensor],
+	step_output: dict[str, Any],
+	keys: tuple[str, ...],
+) -> None:
+	"""Accumulate detached device scalars without synchronizing every microbatch."""
+	for key in keys:
+		value = step_output[key].detach().float()
+		accumulator[key] = accumulator.get(key, torch.zeros_like(value)) + value
+
+
+def _finalize_metric_tensors(
+	accumulator: dict[str, torch.Tensor],
+	count: int,
+) -> dict[str, float]:
+	"""Synchronize accumulated logging scalars once at the optimizer boundary."""
+	if count <= 0:
+		raise ValueError("Metric accumulator count must be positive")
+	return {
+		key: float((value / count).item())
+		for key, value in accumulator.items()
+	}
+
+
+def _optimizer_step_limit(
+	*,
+	configured_steps: int,
+	resumed_global_step: int,
+	smoke_optimizer_steps: int,
+	max_additional_optimizer_steps: int,
+) -> int:
+	"""Resolve an absolute stop step for fresh, smoke, or resumed benchmark runs."""
+	limit = configured_steps
+	if smoke_optimizer_steps:
+		limit = min(limit, smoke_optimizer_steps)
+	if max_additional_optimizer_steps:
+		limit = min(limit, resumed_global_step + max_additional_optimizer_steps)
+	return limit
 
 
 def _train_stage(
@@ -198,9 +235,7 @@ def _train_stage(
 		args.per_device_batch_size,
 		world_size,
 	)
-	optimizer_step_limit = stage_config.steps
 	if args.smoke_optimizer_steps:
-		optimizer_step_limit = min(optimizer_step_limit, args.smoke_optimizer_steps)
 		gradient_accumulation_steps = args.smoke_gradient_accumulation_steps
 	cursor = TrainingCursor(
 		stage=stage_config.stage,
@@ -210,7 +245,7 @@ def _train_stage(
 		gradient_accumulation_step=0,
 	)
 	if resume_checkpoint is not None:
-		cursor, _ = load_training_checkpoint(
+		cursor, resume_metadata = load_training_checkpoint(
 			path=resume_checkpoint,
 			model=training_model,
 			optimizer=optimizer,
@@ -219,6 +254,30 @@ def _train_stage(
 		)
 		if cursor.stage != stage_config.stage:
 			raise ValueError("Resume checkpoint stage does not match active stage")
+		source_batch_size = args.resume_per_device_batch_size
+		if source_batch_size is None:
+			metadata_batch_size = resume_metadata.get("per_device_batch_size")
+			source_batch_size = (
+				int(metadata_batch_size)
+				if metadata_batch_size is not None
+				else args.per_device_batch_size
+			)
+		if source_batch_size != args.per_device_batch_size:
+			cursor = rebase_training_cursor_batch_size(
+				cursor,
+				source_per_device_batch_size=source_batch_size,
+				target_per_device_batch_size=args.per_device_batch_size,
+			)
+	optimizer_step_limit = _optimizer_step_limit(
+		configured_steps=stage_config.steps,
+		resumed_global_step=cursor.global_step,
+		smoke_optimizer_steps=args.smoke_optimizer_steps,
+		max_additional_optimizer_steps=args.max_additional_optimizer_steps,
+	)
+	if cursor.global_step >= optimizer_step_limit:
+		raise ValueError(
+			"Resolved optimizer step limit must be greater than the resumed global step",
+		)
 	ddp_model = DistributedDataParallel(
 		training_model,
 		device_ids=[local_rank],
@@ -244,7 +303,18 @@ def _train_stage(
 			},
 		)
 	optimizer.zero_grad(set_to_none=True)
-	accumulator: dict[str, float] = defaultdict(float)
+	metric_keys = (
+		"total_loss",
+		"final_infonce",
+		"slot_infonce",
+		"semantic_decoder_ce",
+		"slot_diversity",
+		"fusion_gate",
+		"late_fusion_attention_entropy",
+		"slot_pairwise_cosine",
+		"connector_output_norm",
+	)
+	accumulator: dict[str, torch.Tensor] = {}
 	accumulated_batches = 0
 	source_counts: Counter[str] = Counter()
 	direction_counts: Counter[str] = Counter()
@@ -278,28 +348,17 @@ def _train_stage(
 				)
 				loss = step_output["total_loss"] / gradient_accumulation_steps
 				loss.backward()
-			for key in (
-				"total_loss",
-				"final_infonce",
-				"slot_infonce",
-				"semantic_decoder_ce",
-				"slot_diversity",
-				"fusion_gate",
-				"late_fusion_attention_entropy",
-				"slot_pairwise_cosine",
-				"connector_output_norm",
-			):
-				accumulator[key] += float(step_output[key].detach().float().item())
+			_accumulate_metric_tensors(accumulator, step_output, metric_keys)
 			accumulated_batches += 1
 			source_counts.update(batch["sources"])
 			direction_counts.update(batch["directions"])
 			latest_diagnostics = {
 				"recurrent_pass_cosine": [
-					float(value.detach().float().item())
+					value.detach().float()
 					for value in step_output["recurrent_pass_cosine"]
 				],
 				"recurrent_pass_relative_update": [
-					float(value.detach().float().item())
+					value.detach().float()
 					for value in step_output["recurrent_pass_relative_update"]
 				],
 			}
@@ -327,7 +386,11 @@ def _train_stage(
 				scheduler.step()
 				optimizer.zero_grad(set_to_none=True)
 				global_step = cursor.global_step + 1
-				averages = _mean_accumulator(accumulator, accumulated_batches)
+				averages = _finalize_metric_tensors(accumulator, accumulated_batches)
+				finalized_diagnostics = {
+					key: [float(value.item()) for value in values]
+					for key, values in latest_diagnostics.items()
+				}
 				elapsed = time.perf_counter() - step_start
 				global_samples = (
 					args.per_device_batch_size * world_size * accumulated_batches
@@ -336,7 +399,7 @@ def _train_stage(
 					"stage": stage_config.stage,
 					"global_step": global_step,
 					**averages,
-					**latest_diagnostics,
+					**finalized_diagnostics,
 					"gradient_norm": float(gradient_norm.detach().float().item()),
 					"learning_rate": float(scheduler.get_last_lr()[0]),
 					"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
@@ -372,7 +435,7 @@ def _train_stage(
 					batch_in_epoch=batch_index + 1,
 					gradient_accumulation_step=0,
 				)
-				accumulator = defaultdict(float)
+				accumulator = {}
 				accumulated_batches = 0
 				source_counts = Counter()
 				direction_counts = Counter()
@@ -427,6 +490,19 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		raise ValueError("start_stage cannot be greater than end_stage")
 	if args.checkpoint_every <= 0:
 		raise ValueError("checkpoint_every must be positive")
+	if args.resume_per_device_batch_size is not None and args.resume_checkpoint is None:
+		raise ValueError("resume_per_device_batch_size requires resume_checkpoint")
+	if (
+		args.resume_per_device_batch_size is not None
+		and args.resume_per_device_batch_size <= 0
+	):
+		raise ValueError("resume_per_device_batch_size must be positive")
+	if args.max_additional_optimizer_steps < 0:
+		raise ValueError("max_additional_optimizer_steps cannot be negative")
+	if args.smoke_optimizer_steps and args.max_additional_optimizer_steps:
+		raise ValueError(
+			"smoke_optimizer_steps and max_additional_optimizer_steps are mutually exclusive",
+		)
 	rank, world_size, local_rank, device = _initialize_distributed(args.expected_world_size)
 	logging.basicConfig(
 		level=logging.INFO,
@@ -490,6 +566,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"dataset_root": str(args.dataset_root),
 		"train_rows": len(loader.dataset),
 		"per_device_batch_size": args.per_device_batch_size,
+		"resume_per_device_batch_size": args.resume_per_device_batch_size,
+		"max_additional_optimizer_steps": args.max_additional_optimizer_steps,
 		"max_length": args.max_length,
 		"min_pixels": args.min_pixels,
 		"max_pixels": args.max_pixels,
@@ -512,6 +590,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"model_checkpoint_sha256": checkpoint_hash_before,
 		"semantic_decoder_checkpoint_sha256": semantic_checkpoint_hash,
 		"model_config": manifest["model_config"],
+		"per_device_batch_size": args.per_device_batch_size,
+		"world_size": world_size,
 	}
 	if rank == 0:
 		manifest["gpus"] = [item["gpus"][0] for item in all_manifests if item is not None]
@@ -605,6 +685,8 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--checkpoint-every", type=int, default=500)
 	parser.add_argument("--resume-checkpoint", type=Path)
+	parser.add_argument("--resume-per-device-batch-size", type=int)
+	parser.add_argument("--max-additional-optimizer-steps", type=int, default=0)
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)
 	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)

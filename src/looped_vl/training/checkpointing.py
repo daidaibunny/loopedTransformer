@@ -23,6 +23,31 @@ class TrainingCursor:
 	gradient_accumulation_step: int
 
 
+def rebase_training_cursor_batch_size(
+	cursor: TrainingCursor,
+	*,
+	source_per_device_batch_size: int,
+	target_per_device_batch_size: int,
+) -> TrainingCursor:
+	"""Preserve the next local sample when changing the per-device batch size."""
+	if source_per_device_batch_size <= 0 or target_per_device_batch_size <= 0:
+		raise ValueError("Per-device batch sizes must be positive")
+	if cursor.gradient_accumulation_step != 0:
+		raise ValueError("Batch-size rebase requires an optimizer accumulation boundary")
+	local_samples_consumed = cursor.batch_in_epoch * source_per_device_batch_size
+	if local_samples_consumed % target_per_device_batch_size:
+		raise ValueError(
+			"Consumed local sample count is not divisible by the target batch size",
+		)
+	return TrainingCursor(
+		stage=cursor.stage,
+		global_step=cursor.global_step,
+		sampler_epoch=cursor.sampler_epoch,
+		batch_in_epoch=local_samples_consumed // target_per_device_batch_size,
+		gradient_accumulation_step=0,
+	)
+
+
 def capture_rng_state() -> dict[str, Any]:
 	"""Capture Python, NumPy, CPU Torch, and every visible CUDA RNG state."""
 	return {

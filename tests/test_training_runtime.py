@@ -10,6 +10,7 @@ from looped_vl.training.checkpointing import (
 	TrainingCursor,
 	capture_rng_state,
 	load_training_checkpoint,
+	rebase_training_cursor_batch_size,
 	restore_rng_state,
 	save_training_checkpoint,
 )
@@ -17,7 +18,12 @@ from looped_vl.training.config import TrainingStageConfig
 from looped_vl.training.optimizer import build_optimizer_and_scheduler
 from looped_vl.training.reproducibility import seed_everything
 from looped_vl.training.step import compose_stage_loss
-from looped_vl.training.train import _resolve_git_commit
+from looped_vl.training.train import (
+	_accumulate_metric_tensors,
+	_finalize_metric_tensors,
+	_optimizer_step_limit,
+	_resolve_git_commit,
+)
 
 
 def test_stage_configs_match_all_fixed_optimizer_values() -> None:
@@ -105,11 +111,95 @@ def test_checkpoint_restores_trainable_values_optimizer_scheduler_and_cursor(
 	assert metadata == {"test": True}
 
 
+def test_checkpoint_cursor_rebases_exact_sample_position_for_larger_batch() -> None:
+	cursor = TrainingCursor(
+		stage=1,
+		global_step=500,
+		sampler_epoch=2,
+		batch_in_epoch=28000,
+		gradient_accumulation_step=0,
+	)
+
+	rebased = rebase_training_cursor_batch_size(
+		cursor,
+		source_per_device_batch_size=1,
+		target_per_device_batch_size=4,
+	)
+
+	assert rebased == TrainingCursor(
+		stage=1,
+		global_step=500,
+		sampler_epoch=2,
+		batch_in_epoch=7000,
+		gradient_accumulation_step=0,
+	)
+
+
+def test_checkpoint_cursor_rejects_inexact_or_partial_batch_rebase() -> None:
+	partial = TrainingCursor(
+		stage=1,
+		global_step=3,
+		sampler_epoch=0,
+		batch_in_epoch=5,
+		gradient_accumulation_step=1,
+	)
+	with pytest.raises(ValueError, match="accumulation boundary"):
+		rebase_training_cursor_batch_size(
+			partial,
+			source_per_device_batch_size=1,
+			target_per_device_batch_size=4,
+		)
+
+	inexact = TrainingCursor(
+		stage=1,
+		global_step=3,
+		sampler_epoch=0,
+		batch_in_epoch=5,
+		gradient_accumulation_step=0,
+	)
+	with pytest.raises(ValueError, match="not divisible"):
+		rebase_training_cursor_batch_size(
+			inexact,
+			source_per_device_batch_size=1,
+			target_per_device_batch_size=4,
+		)
+
+
 def test_effective_batch_size_must_equal_512() -> None:
 	stage = TrainingStageConfig.from_yaml(Path("configs/stage1.yaml"))
 	assert stage.gradient_accumulation_steps(per_device_batch_size=1, world_size=2) == 256
+	assert stage.gradient_accumulation_steps(per_device_batch_size=4, world_size=2) == 64
+	assert stage.gradient_accumulation_steps(per_device_batch_size=8, world_size=2) == 32
 	with pytest.raises(ValueError, match="divide"):
 		stage.gradient_accumulation_steps(per_device_batch_size=3, world_size=2)
+
+
+def test_additional_step_limit_is_relative_to_resumed_global_step() -> None:
+	assert _optimizer_step_limit(
+		configured_steps=2000,
+		resumed_global_step=500,
+		smoke_optimizer_steps=0,
+		max_additional_optimizer_steps=3,
+	) == 503
+	assert _optimizer_step_limit(
+		configured_steps=2000,
+		resumed_global_step=1999,
+		smoke_optimizer_steps=0,
+		max_additional_optimizer_steps=3,
+	) == 2000
+
+
+def test_metric_accumulation_stays_on_device_until_step_boundary() -> None:
+	accumulator: dict[str, torch.Tensor] = {}
+	first = {"loss": torch.tensor(2.0, requires_grad=True)}
+	second = {"loss": torch.tensor(4.0, requires_grad=True)}
+
+	_accumulate_metric_tensors(accumulator, first, ("loss",))
+	_accumulate_metric_tensors(accumulator, second, ("loss",))
+
+	assert accumulator["loss"].item() == pytest.approx(6.0)
+	assert accumulator["loss"].requires_grad is False
+	assert _finalize_metric_tensors(accumulator, count=2) == {"loss": pytest.approx(3.0)}
 
 
 def test_stage_loss_weights_are_exact() -> None:
