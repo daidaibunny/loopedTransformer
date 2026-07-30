@@ -23,7 +23,14 @@ def test_default_queue_contains_six_serial_single_dataset_experiments() -> None:
 		("recurrent", "gqa_balanced"),
 		("recurrent", "clevr"),
 	]
-	assert all(item.gradient_checkpointing for item in experiments)
+	assert [item.gradient_checkpointing for item in experiments] == [
+		True,
+		True,
+		True,
+		False,
+		True,
+		False,
+	]
 
 
 def test_baseline_and_recurrent_commands_share_checkpoint_and_test_contract(
