@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from torch import nn
 from looped_vl.evaluate_recurrent import (
 	build_loop_metric_series,
 	load_recurrent_inference_checkpoint,
+	parse_args,
 )
 
 
@@ -120,3 +122,35 @@ def test_loop_metric_series_reports_previous_and_r1_percentage_point_deltas() ->
 		"map": pytest.approx(4.0),
 		"p_at_1": pytest.approx(1.0),
 	}
+
+
+def test_recurrent_evaluation_uses_aligned_manifest_without_legacy_gqa_root(
+	monkeypatch: pytest.MonkeyPatch,
+	tmp_path: Path,
+) -> None:
+	monkeypatch.setattr(
+		sys,
+		"argv",
+		[
+			"evaluate-recurrent",
+			"--source",
+			"gqa_balanced",
+			"--dataset-root",
+			str(tmp_path / "gqa_balanced"),
+			"--model-root",
+			str(tmp_path / "model"),
+			"--master-slot-path",
+			str(tmp_path / "slots.pt"),
+			"--checkpoint",
+			str(tmp_path / "checkpoint.pt"),
+			"--output-dir",
+			str(tmp_path / "evaluation"),
+			"--expected-world-size",
+			"8",
+		],
+	)
+
+	args = parse_args()
+
+	assert args.dataset_root == tmp_path / "gqa_balanced"
+	assert not hasattr(args, "gqa_materialized_root")

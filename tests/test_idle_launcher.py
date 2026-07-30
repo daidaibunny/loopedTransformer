@@ -31,16 +31,26 @@ def test_gpu_snapshot_requires_both_cards_zero_utilization_and_no_processes() ->
 
 
 def test_full_training_command_uses_per_device_batch_eight(tmp_path: Path) -> None:
-	args = Namespace(num_workers=8, checkpoint_every=100)
+	args = Namespace(
+		num_workers=8,
+		checkpoint_every=100,
+		dataset_root=tmp_path / "coco",
+	)
 
 	command = _training_command(args, tmp_path / "training", smoke=False)
 
 	assert command[command.index("--per-device-batch-size") + 1] == "8"
+	assert command[command.index("--dataset-root") + 1] == str(tmp_path / "coco")
 
 
 def test_smoke_command_keeps_per_device_batch_one(tmp_path: Path) -> None:
-	args = Namespace(num_workers=8, checkpoint_every=100)
+	args = Namespace(
+		num_workers=8,
+		checkpoint_every=100,
+		dataset_root=tmp_path / "coco",
+	)
 
 	command = _training_command(args, tmp_path / "smoke", smoke=True)
 
 	assert command[command.index("--per-device-batch-size") + 1] == "1"
+	assert command[command.index("--dataset-root") + 1] == str(tmp_path / "coco")

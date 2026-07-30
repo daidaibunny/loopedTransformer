@@ -18,6 +18,7 @@ def test_training_benchmark_command_resumes_exact_checkpoint_with_batch_four(
 ) -> None:
 	command = build_training_command(
 		torchrun=Path("/env/bin/torchrun"),
+		dataset_root=tmp_path / "coco",
 		output_dir=tmp_path / "batch4",
 		resume_checkpoint=tmp_path / "stage1_step000500.pt",
 		per_device_batch_size=4,
@@ -39,6 +40,7 @@ def test_training_benchmark_command_resumes_exact_checkpoint_with_batch_four(
 	assert command[command.index("--resume-per-device-batch-size") + 1] == "1"
 	assert command[command.index("--max-additional-optimizer-steps") + 1] == "3"
 	assert command[command.index("--end-stage") + 1] == "1"
+	assert command[command.index("--dataset-root") + 1] == str(tmp_path / "coco")
 
 
 def test_training_benchmark_command_can_start_from_initial_model(
@@ -46,6 +48,7 @@ def test_training_benchmark_command_can_start_from_initial_model(
 ) -> None:
 	command = build_training_command(
 		torchrun=Path("/env/bin/torchrun"),
+		dataset_root=tmp_path / "coco",
 		output_dir=tmp_path / "batch4",
 		resume_checkpoint=None,
 		per_device_batch_size=4,
@@ -93,6 +96,8 @@ def test_pipeline_cli_rejects_removed_continuous_idle_gate(
 			"resume_throughput_pipeline",
 			"--pipeline-root",
 			str(tmp_path / "pipeline"),
+			"--dataset-root",
+			str(tmp_path / "coco"),
 			"--code-commit",
 			"a" * 40,
 			"--full-frozen-output",
@@ -119,6 +124,8 @@ def test_pipeline_cli_defaults_to_training_batch_eight(
 			"resume_throughput_pipeline",
 			"--pipeline-root",
 			str(tmp_path / "pipeline"),
+			"--dataset-root",
+			str(tmp_path / "coco"),
 			"--code-commit",
 			"a" * 40,
 			"--full-frozen-output",

@@ -236,16 +236,37 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	monkeypatch.setattr(
 		sys,
 		"argv",
-		["train", "--output-dir", str(tmp_path / "training")],
+		[
+			"train",
+			"--dataset-root",
+			str(tmp_path / "coco"),
+			"--output-dir",
+			str(tmp_path / "training"),
+		],
 	)
 
 	args = parse_args()
 
+	assert args.dataset_root == tmp_path / "coco"
 	assert args.per_device_batch_size == 8
 	assert args.attention_implementation == "auto"
 	assert args.runtime_precision == "bf16"
 	assert args.initial_gradient_scale == 65_536.0
 	assert args.semantic_gradient_checkpointing is False
+
+
+def test_training_cli_requires_an_explicit_aligned_dataset_root(
+	monkeypatch: pytest.MonkeyPatch,
+	tmp_path: Path,
+) -> None:
+	monkeypatch.setattr(
+		sys,
+		"argv",
+		["train", "--output-dir", str(tmp_path / "training")],
+	)
+
+	with pytest.raises(SystemExit):
+		parse_args()
 
 
 def test_training_workers_spawn_without_inheriting_cuda_context() -> None:

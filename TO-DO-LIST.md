@@ -50,5 +50,7 @@
 - [x] Implement the unmodified Qwen3-VL-Embedding-2B LoRA trainer and single-dataset test
   evaluator without using the 50:35:15 mixture.
 - [x] Materialize and validate the three full single-dataset manifests on `8XV100`.
-- [ ] Run eight-V100 smoke searches for COCO, GQA Balanced, and CLEVR.
-- [ ] Queue all three full LoRA train/test runs after a continuous two-minute idle window.
+- [x] Run eight-V100 smoke searches for COCO, GQA Balanced, and CLEVR.
+- [x] Queue all three full LoRA train/test runs after a continuous two-minute idle window.
+- [x] Make recurrent training, acceptance, and evaluation directly reuse the latest
+  baseline train/validation/test manifests and reject the older recurrent-only splits.

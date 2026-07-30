@@ -183,6 +183,8 @@ def _training_command(
 		"2",
 		"--output-dir",
 		str(output_dir),
+		"--dataset-root",
+		str(args.dataset_root),
 		"--per-device-batch-size",
 		"1" if smoke else "8",
 		"--num-workers",
@@ -290,6 +292,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--launcher-output-dir", type=Path, required=True)
 	parser.add_argument("--smoke-output-dir", type=Path, required=True)
 	parser.add_argument("--train-output-dir", type=Path, required=True)
+	parser.add_argument("--dataset-root", type=Path, required=True)
 	parser.add_argument("--num-workers", type=int, default=2)
 	parser.add_argument("--checkpoint-every", type=int, default=500)
 	return parser.parse_args()

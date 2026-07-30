@@ -42,7 +42,17 @@
   `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val10000_test10000`; it is not
   the input to the first single-dataset experiments.
 - The first experiments train and evaluate COCO, GQA Balanced, and CLEVR independently,
-  using each dataset's full official split rather than the 50:35:15 mixture.
+  using the frozen baseline manifests rather than the 50:35:15 mixture or the older
+  independently generated recurrent manifests.
+- The baseline manifests are the only split authority for both the unmodified LoRA
+  baseline and recurrent experiments:
+  - COCO uses the Karpathy 113,287/5,000/5,000 image-disjoint train/validation/test split.
+  - GQA Balanced uses official train/validation/testdev.
+  - CLEVR uses full official train and the seed-42 image-disjoint halves of official
+    validation for validation/test.
+- Recurrent training, acceptance, and evaluation must read those exact baseline Parquet
+  files directly. Do not copy rows into another recurrent dataset or use
+  `looped_vl_single_v1/{coco_full,gqa_balanced_full,clevr_full}`.
 - Keep the 50:35:15 mixture only for later mixed-dataset experiments and aggregate reports.
 - For the later mixed subset only, define split sizes by sample rows: 100,000 train,
   10,000 validation, and 10,000 test.
@@ -62,8 +72,9 @@
 ## Required evaluation metrics
 
 - Every evaluation report must pass `looped_vl.metrics.validate_evaluation_report`.
-- Report the weighted Mix result and complete per-dataset results for COCO, GQA Balanced,
-  and CLEVR. COCO must also report text-to-image and image-to-text separately.
+- For the first single-dataset experiments, report each dataset independently. COCO must
+  report text-to-image and image-to-text separately.
+- Report the weighted Mix result only for later mixed-dataset experiments.
 - Required metrics are mAP, P@1/5/10/20, R@1/5/10/20, MRR, and nDCG@10.
 - Use percentage values from 0 to 100. Aggregate COCO directions equally, then aggregate
   datasets with fixed weights COCO:GQA Balanced:CLEVR = 50:35:15.

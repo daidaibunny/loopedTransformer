@@ -22,10 +22,10 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from looped_vl.data import DEFAULT_DATASET_ROOT, LoopedVLMixtureDataset
 from looped_vl.models.config import RecurrentModelConfig
 from looped_vl.models.latent_slot_inserter import create_or_load_master_slot_initialization
 from looped_vl.models.loading import load_recurrent_components
+from looped_vl.recurrent_data import RecurrentAlignedDataset
 from looped_vl.runtime import (
 	ATTENTION_IMPLEMENTATIONS,
 	RUNTIME_PRECISIONS,
@@ -129,11 +129,7 @@ def _build_loader(
 	world_size: int,
 	generator: torch.Generator,
 ) -> tuple[DataLoader[dict[str, Any]], DistributedSampler[Any]]:
-	dataset = LoopedVLMixtureDataset(
-		args.dataset_root,
-		"train",
-		args.gqa_materialized_root,
-	)
+	dataset = RecurrentAlignedDataset(args.dataset_root, "train")
 	sampler = DistributedSampler(
 		dataset,
 		num_replicas=world_size,
@@ -805,12 +801,7 @@ def parse_args() -> argparse.Namespace:
 		type=Path,
 		default=Path("/mnt/afs/liyiwei/loopedTransformer/artifacts/master_slot_init_seed42.pt"),
 	)
-	parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
-	parser.add_argument(
-		"--gqa-materialized-root",
-		type=Path,
-		default=Path("/mnt/afs/liyiwei/datasets/gqa_hf_full/materialized_balanced"),
-	)
+	parser.add_argument("--dataset-root", type=Path, required=True)
 	parser.add_argument("--output-dir", type=Path, required=True)
 	parser.add_argument("--expected-world-size", type=int, default=2)
 	parser.add_argument("--start-stage", type=int, choices=(1, 2), default=1)

@@ -11,9 +11,9 @@ from typing import Any
 import torch
 from torch.nn import functional as F
 
-from looped_vl.data import DEFAULT_DATASET_ROOT, LoopedVLMixtureDataset
 from looped_vl.models.config import RecurrentModelConfig
 from looped_vl.models.loading import load_recurrent_components
+from looped_vl.recurrent_data import RecurrentAlignedDataset
 from looped_vl.runtime import (
 	ATTENTION_IMPLEMENTATIONS,
 	RUNTIME_PRECISIONS,
@@ -36,7 +36,7 @@ def _json_value(value: Any) -> Any:
 
 
 def _prepare_sample(
-	dataset: LoopedVLMixtureDataset,
+	dataset: RecurrentAlignedDataset,
 	index: int,
 ) -> tuple[dict[str, Any], Any]:
 	sample = dataset[index]
@@ -71,11 +71,7 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 		config = base_config.with_variant(num_latent_slots=0, num_total_loop_passes=1)
 	else:
 		config = base_config
-	dataset = LoopedVLMixtureDataset(
-		args.dataset_root,
-		args.split,
-		args.gqa_materialized_root,
-	)
+	dataset = RecurrentAlignedDataset(args.dataset_root, args.split)
 	model_input, sample = _prepare_sample(dataset, args.index)
 	checkpoint_path = Path(args.model_root) / "model.safetensors"
 	checkpoint_hash_before = checkpoint_sha256(checkpoint_path)
@@ -169,12 +165,7 @@ def parse_args() -> argparse.Namespace:
 		type=Path,
 		default=Path("/mnt/afs/liyiwei/loopedTransformer/artifacts/master_slot_init_seed42.pt"),
 	)
-	parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET_ROOT)
-	parser.add_argument(
-		"--gqa-materialized-root",
-		type=Path,
-		default=Path("/mnt/afs/liyiwei/datasets/gqa_hf_full/materialized_balanced"),
-	)
+	parser.add_argument("--dataset-root", type=Path, required=True)
 	parser.add_argument("--split", choices=("train", "validation"), default="train")
 	parser.add_argument("--index", type=int, default=17)
 	parser.add_argument("--enable-lora", action="store_true")

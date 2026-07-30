@@ -11,13 +11,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-import pyarrow.parquet as pq
 import torch
 import torch.distributed as dist
 from torch import nn
 from torch.utils.data import DataLoader
 
-from looped_vl.data import LoopedVLMixtureDataset
 from looped_vl.evaluate_frozen import (
 	COCO_IMAGE_TO_TEXT_INSTRUCTION,
 	COCO_TEXT_TO_IMAGE_INSTRUCTION,
@@ -36,6 +34,7 @@ from looped_vl.evaluate_frozen import (
 )
 from looped_vl.models.config import RecurrentModelConfig
 from looped_vl.models.loading import load_recurrent_components
+from looped_vl.recurrent_data import RecurrentAlignedDataset, load_aligned_records
 from looped_vl.runtime import (
 	ATTENTION_IMPLEMENTATIONS,
 	RUNTIME_PRECISIONS,
@@ -141,31 +140,12 @@ def _load_rows(
 	split: str,
 	max_rows: int,
 ) -> list[dict[str, Any]]:
-	paths = sorted((dataset_root / split).glob("*.parquet"))
-	if not paths:
-		raise FileNotFoundError(f"No Parquet manifests under {dataset_root / split}")
-	columns = [
-		"sample_id",
-		"source",
-		"source_split",
-		"image_storage",
-		"image_path",
-		"image_id",
-		"text",
-		"answer",
-	]
-	rows: list[dict[str, Any]] = []
-	for path in paths:
-		for batch in pq.ParquetFile(path).iter_batches(columns=columns, batch_size=8192):
-			rows.extend(batch.to_pylist())
-			if max_rows and len(rows) >= max_rows:
-				return rows[:max_rows]
-	return rows
+	return load_aligned_records(dataset_root, split, max_rows)
 
 
 def _build_groups(
 	rows: list[dict[str, Any]],
-	dataset: LoopedVLMixtureDataset,
+	dataset: RecurrentAlignedDataset,
 	source: str,
 ) -> tuple[dict[str, list[EncodingItem]], dict[str, Any]]:
 	if not rows:
@@ -439,11 +419,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	runtime_dtype = resolve_torch_dtype(args.runtime_precision)
 	model_config = RecurrentModelConfig.from_yaml(args.model_config)
 	dataset_root = Path(args.dataset_root)
-	dataset = LoopedVLMixtureDataset(
-		dataset_root,
-		args.split,
-		args.gqa_materialized_root,
-	)
+	dataset = RecurrentAlignedDataset(dataset_root, args.split)
 	rows = _load_rows(dataset_root, args.split, args.max_rows)
 	groups, relevance = _build_groups(rows, dataset, args.source)
 	base_checkpoint_path = Path(args.model_root) / "model.safetensors"
@@ -548,7 +524,6 @@ def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument("--source", choices=("coco", "gqa_balanced", "clevr"), required=True)
 	parser.add_argument("--dataset-root", type=Path, required=True)
-	parser.add_argument("--gqa-materialized-root", type=Path, required=True)
 	parser.add_argument("--model-root", type=Path, required=True)
 	parser.add_argument("--master-slot-path", type=Path, required=True)
 	parser.add_argument("--model-config", type=Path, default=Path("configs/base.yaml"))

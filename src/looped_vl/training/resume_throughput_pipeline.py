@@ -44,6 +44,7 @@ def _write_json(path: Path, value: Any) -> None:
 def build_training_command(
 	*,
 	torchrun: Path,
+	dataset_root: Path,
 	output_dir: Path,
 	resume_checkpoint: Path | None,
 	per_device_batch_size: int,
@@ -67,6 +68,8 @@ def build_training_command(
 		"1",
 		"--end-stage",
 		str(end_stage),
+		"--dataset-root",
+		str(dataset_root),
 		"--output-dir",
 		str(output_dir),
 		"--per-device-batch-size",
@@ -254,6 +257,7 @@ def _run_architecture_acceptance(
 	python: Path,
 	project_root: Path,
 	pipeline_root: Path,
+	dataset_root: Path,
 ) -> None:
 	for mode in ("base_equivalence", "full_forward"):
 		output_path = pipeline_root / "acceptance" / f"{mode}.json"
@@ -265,6 +269,8 @@ def _run_architecture_acceptance(
 			mode,
 			"--output-json",
 			str(output_path),
+			"--dataset-root",
+			str(dataset_root),
 		]
 		if mode == "full_forward":
 			command.append("--enable-lora")
@@ -354,6 +360,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
 		python=Path(args.python),
 		project_root=project_root,
 		pipeline_root=pipeline_root,
+		dataset_root=Path(args.dataset_root),
 	)
 
 	torchrun = Path(args.python).with_name("torchrun")
@@ -367,6 +374,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
 		)
 		command = build_training_command(
 			torchrun=torchrun,
+			dataset_root=Path(args.dataset_root),
 			output_dir=output_dir,
 			resume_checkpoint=checkpoint_path,
 			per_device_batch_size=batch_size,
@@ -504,6 +512,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
 	training_return_code = _run_logged(
 		build_training_command(
 			torchrun=torchrun,
+			dataset_root=Path(args.dataset_root),
 			output_dir=training_output,
 			resume_checkpoint=checkpoint_path,
 			per_device_batch_size=best_training.per_device_batch_size,
@@ -544,6 +553,7 @@ def parse_args() -> argparse.Namespace:
 		default=Path("/mnt/afs/likangle/reserach/LOCUS-MLLM/envs/LOCUS/bin/python"),
 	)
 	parser.add_argument("--pipeline-root", type=Path, required=True)
+	parser.add_argument("--dataset-root", type=Path, required=True)
 	parser.add_argument("--source-tmux-session")
 	parser.add_argument("--resume-checkpoint", type=Path)
 	parser.add_argument("--latest-checkpoint-json", type=Path)
