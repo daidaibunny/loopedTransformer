@@ -89,9 +89,16 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 	)
 	components.model.eval()
 	processed = components.processor.prepare([model_input], device=device)
+	return_all_loop_embeddings = args.mode == "full_forward"
 	with torch.inference_mode():
-		output = components.model(**processed)
-		repeated_output = components.model(**processed)
+		output = components.model(
+			**processed,
+			return_all_loop_embeddings=return_all_loop_embeddings,
+		)
+		repeated_output = components.model(
+			**processed,
+			return_all_loop_embeddings=return_all_loop_embeddings,
+		)
 	if not torch.equal(output.embeddings, repeated_output.embeddings):
 		raise RuntimeError("Repeated forward output changed under the fixed seed")
 	if output.embeddings.shape != (1, config.hidden_size):
@@ -133,6 +140,32 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 			)
 		result["official_max_absolute_error"] = max_absolute_error
 	else:
+		if output.loop_embeddings is None:
+			raise RuntimeError("Full recurrent acceptance did not return per-pass embeddings")
+		if len(output.loop_embeddings) != config.num_total_loop_passes:
+			raise RuntimeError(
+				"Full recurrent acceptance returned "
+				f"{len(output.loop_embeddings)} pass embeddings; "
+				f"expected {config.num_total_loop_passes}",
+			)
+		if not torch.equal(output.embeddings, output.loop_embeddings[-1]):
+			raise RuntimeError(
+				"Final recurrent embedding differs from the final pass embedding",
+			)
+		for pass_number, pass_embedding in enumerate(output.loop_embeddings, start=1):
+			if pass_embedding.shape != (1, config.hidden_size):
+				raise RuntimeError(
+					f"Pass {pass_number} has unexpected shape {pass_embedding.shape}",
+				)
+			if not torch.isfinite(pass_embedding).all():
+				raise RuntimeError(f"Pass {pass_number} contains non-finite values")
+			pass_norm_error = (
+				pass_embedding.float().norm(dim=-1) - 1
+			).abs().max().item()
+			if pass_norm_error >= 5e-3:
+				raise RuntimeError(
+					f"Pass {pass_number} norm error is too large: {pass_norm_error}",
+				)
 		expected_dynamic_tokens = config.num_latent_slots + 1
 		expected_counts = (expected_dynamic_tokens,) * config.num_extra_loop_passes
 		if tuple(output.diagnostics["extra_pass_dynamic_token_counts"]) != expected_counts:

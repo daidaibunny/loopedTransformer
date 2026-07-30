@@ -244,6 +244,17 @@ def _encode_group(
 				output = model(**processed, return_all_loop_embeddings=True)
 			if output.loop_embeddings is None:
 				raise RuntimeError("Recurrent model did not return per-loop embeddings")
+			expected_passes = model.config.num_total_loop_passes
+			if len(output.loop_embeddings) != expected_passes:
+				raise RuntimeError(
+					"Recurrent model returned "
+					f"{len(output.loop_embeddings)} loop embeddings; "
+					f"expected {expected_passes}",
+				)
+			if not torch.equal(output.embeddings, output.loop_embeddings[-1]):
+				raise RuntimeError(
+					"Final retrieval embedding does not equal the last loop-pass embedding",
+				)
 			for pass_number, embeddings in enumerate(output.loop_embeddings, start=1):
 				validate_embeddings(embeddings, len(batch["global_indices"]))
 				embedding_chunks[pass_number].append(embeddings.float().cpu())

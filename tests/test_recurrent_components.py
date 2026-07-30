@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -55,6 +56,71 @@ class _ProjectionCaptureLayer(torch.nn.Module):
 		)
 		attention.v_proj(hidden_states)
 		return hidden_states + 1
+
+
+class _RecordedAddLayer(torch.nn.Module):
+	def __init__(self, delta: torch.Tensor) -> None:
+		super().__init__()
+		self.register_buffer("delta", delta)
+		self.inputs: list[torch.Tensor] = []
+
+	def forward(self, hidden_states: torch.Tensor, **_kwargs: object) -> torch.Tensor:
+		self.inputs.append(hidden_states.detach().clone())
+		return hidden_states + self.delta
+
+
+class _TinyLanguageModel(torch.nn.Module):
+	def __init__(self) -> None:
+		super().__init__()
+		self.config = SimpleNamespace()
+		self.prefix_layer = _RecordedAddLayer(torch.tensor([1.0, 0.0]))
+		self.loop_layer = torch.nn.Identity()
+		self.suffix_layer = _RecordedAddLayer(torch.tensor([0.0, 1.0]))
+		self.layers = torch.nn.ModuleList(
+			(self.prefix_layer, self.loop_layer, self.suffix_layer),
+		)
+		self.norm = torch.nn.Identity()
+
+	def rotary_emb(
+		self,
+		hidden_states: torch.Tensor,
+		_position_ids: torch.Tensor,
+	) -> tuple[torch.Tensor, torch.Tensor]:
+		return torch.ones_like(hidden_states), torch.zeros_like(hidden_states)
+
+
+class _TinyMultimodalModel(torch.nn.Module):
+	def __init__(self) -> None:
+		super().__init__()
+		self.language_model = _TinyLanguageModel()
+
+
+class _TinyEmbeddingModel(torch.nn.Module):
+	def __init__(self) -> None:
+		super().__init__()
+		self.model = _TinyMultimodalModel()
+
+
+class _IdentityConnector(torch.nn.Module):
+	def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+		return hidden_states
+
+
+class _IdentitySlotFusion(torch.nn.Module):
+	def forward(
+		self,
+		eos_hidden_state: torch.Tensor,
+		slot_hidden_states: torch.Tensor,
+	) -> SimpleNamespace:
+		return SimpleNamespace(
+			fused_embedding=eos_hidden_state,
+			attention_weights=torch.ones(
+				eos_hidden_state.shape[0],
+				slot_hidden_states.shape[1],
+			),
+			attention_entropy=eos_hidden_state.new_zeros(eos_hidden_state.shape[0]),
+			gate=eos_hidden_state.new_zeros(()),
+		)
 
 
 def test_base_configuration_matches_v1_specification() -> None:
@@ -286,6 +352,90 @@ def test_pass_one_prefix_cache_reuses_projected_key_and_value() -> None:
 	assert cache.value.shape == (2, 2, 3, 4)
 	assert cache.key.requires_grad is False
 	assert cache.value.requires_grad is False
+
+
+def test_each_reported_pass_runs_its_loop_count_then_the_shared_suffix(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	model = RecurrentQwen3VLEmbedding.__new__(RecurrentQwen3VLEmbedding)
+	torch.nn.Module.__init__(model)
+	model.config = SimpleNamespace(
+		loop_start_layer=1,
+		loop_end_layer=2,
+		num_extra_loop_passes=2,
+		num_total_loop_passes=3,
+		num_latent_slots=1,
+	)
+	model.base_embedding_model = _TinyEmbeddingModel()
+	model.recurrent_connector = _IdentityConnector()
+	model.late_fusion = _IdentitySlotFusion()
+	full_loop_calls: list[torch.Tensor] = []
+	dynamic_loop_calls: list[torch.Tensor] = []
+
+	def fake_full_loop(
+		**kwargs: object,
+	) -> tuple[torch.Tensor, SimpleNamespace]:
+		hidden_states = kwargs["hidden_states"]
+		assert isinstance(hidden_states, torch.Tensor)
+		full_loop_calls.append(hidden_states.detach().clone())
+		cache = SimpleNamespace(
+			key=hidden_states.new_zeros((1, 1, 2, 2)),
+			value=hidden_states.new_zeros((1, 1, 2, 2)),
+		)
+		return hidden_states + torch.tensor([1.0, 0.0]), cache
+
+	def fake_dynamic_loop(**kwargs: object) -> torch.Tensor:
+		hidden_states = kwargs["dynamic_hidden_states"]
+		assert isinstance(hidden_states, torch.Tensor)
+		dynamic_loop_calls.append(hidden_states.detach().clone())
+		return hidden_states + torch.tensor([1.0, 0.0])
+
+	monkeypatch.setattr(
+		"looped_vl.models.recurrent_qwen3vl_embedding.create_causal_mask",
+		lambda **_kwargs: torch.zeros(1, 1, 4, 4),
+	)
+	monkeypatch.setattr(
+		model,
+		"_run_full_layer_and_capture_prefix",
+		fake_full_loop,
+	)
+	monkeypatch.setattr(model, "_run_dynamic_layer", fake_dynamic_loop)
+	augmented = SimpleNamespace(
+		attention_mask=torch.ones(1, 4, dtype=torch.long),
+		prefix_lengths=torch.tensor([2]),
+		slot_positions=torch.tensor([[2]]),
+		eos_positions=torch.tensor([3]),
+	)
+
+	output = model._run_recurrent_decoder(
+		hidden_states=torch.zeros(1, 4, 2),
+		augmented=augmented,
+		position_ids=torch.arange(4).view(1, 1, 4),
+		visual_position_mask=None,
+		deepstack_visual_embeddings=None,
+		return_all_loop_embeddings=True,
+	)
+
+	assert output.loop_embeddings is not None
+	assert len(output.loop_embeddings) == 3
+	expected = (
+		torch.nn.functional.normalize(torch.tensor([[2.0, 1.0]]), dim=-1),
+		torch.nn.functional.normalize(torch.tensor([[4.0, 1.0]]), dim=-1),
+		torch.nn.functional.normalize(torch.tensor([[6.0, 1.0]]), dim=-1),
+	)
+	for actual, expected_embedding in zip(output.loop_embeddings, expected, strict=True):
+		assert torch.allclose(actual, expected_embedding)
+	assert torch.equal(output.embeddings, output.loop_embeddings[-1])
+	assert len(full_loop_calls) == 1
+	assert len(dynamic_loop_calls) == 2
+	suffix_inputs = model.language_model.suffix_layer.inputs
+	assert len(suffix_inputs) == 3
+	for suffix_input in suffix_inputs:
+		assert torch.equal(
+			suffix_input[:, :2],
+			torch.tensor([[[2.0, 0.0], [2.0, 0.0]]]),
+		)
+	assert [value[0, 3, 0].item() for value in suffix_inputs] == [2.0, 4.0, 6.0]
 
 
 def test_slot_losses_cover_k1_and_symmetric_contrastive_learning() -> None:
