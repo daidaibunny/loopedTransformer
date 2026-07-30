@@ -1,4 +1,5 @@
 import random
+import subprocess
 import sys
 from pathlib import Path
 
@@ -298,3 +299,35 @@ def test_explicit_commit_allows_a_non_git_launch_directory(tmp_path: Path) -> No
 
 	with pytest.raises(RuntimeError, match="not a Git checkout"):
 		_resolve_git_commit(tmp_path, None)
+
+
+def test_explicit_commit_must_match_a_git_checkout(tmp_path: Path) -> None:
+	subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+	(tmp_path / "tracked.txt").write_text("content\n", encoding="utf-8")
+	subprocess.run(["git", "-C", str(tmp_path), "add", "tracked.txt"], check=True)
+	subprocess.run(
+		[
+			"git",
+			"-C",
+			str(tmp_path),
+			"-c",
+			"user.name=Test",
+			"-c",
+			"user.email=test@example.com",
+			"commit",
+			"-q",
+			"-m",
+			"test",
+		],
+		check=True,
+	)
+	head = subprocess.run(
+		["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+		check=True,
+		capture_output=True,
+		text=True,
+	).stdout.strip()
+
+	assert _resolve_git_commit(tmp_path, head) == head
+	with pytest.raises(ValueError, match="does not match"):
+		_resolve_git_commit(tmp_path, "a" * 40)

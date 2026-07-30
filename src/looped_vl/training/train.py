@@ -70,7 +70,7 @@ def _resolve_git_commit(project_root: Path, explicit_commit: str | None) -> str:
 			character not in "0123456789abcdef" for character in explicit_commit.lower()
 		):
 			raise ValueError("code_commit must be a full 40-character hexadecimal commit")
-		return explicit_commit.lower()
+		explicit_commit = explicit_commit.lower()
 	try:
 		result = subprocess.run(
 			["git", "rev-parse", "HEAD"],
@@ -80,10 +80,17 @@ def _resolve_git_commit(project_root: Path, explicit_commit: str | None) -> str:
 			text=True,
 		)
 	except subprocess.CalledProcessError as error:
+		if explicit_commit is not None:
+			return explicit_commit
 		raise RuntimeError(
 			f"Training project root is not a Git checkout: {project_root}",
 		) from error
-	return result.stdout.strip()
+	resolved_commit = result.stdout.strip()
+	if explicit_commit is not None and explicit_commit != resolved_commit:
+		raise ValueError(
+			f"Explicit code commit {explicit_commit} does not match checkout {resolved_commit}",
+		)
+	return resolved_commit
 
 
 def _initialize_distributed(expected_world_size: int) -> tuple[int, int, int, torch.device]:
