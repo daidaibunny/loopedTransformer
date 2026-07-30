@@ -94,6 +94,17 @@ def _initialize_distributed(expected_world_size: int) -> tuple[int, int, int, to
 	return rank, world_size, local_rank, device
 
 
+def _worker_loader_options(num_workers: int, prefetch_factor: int) -> dict[str, Any]:
+	"""Build worker options that never fork an initialized CUDA process."""
+	if num_workers <= 0:
+		return {}
+	return {
+		"multiprocessing_context": "spawn",
+		"persistent_workers": True,
+		"prefetch_factor": prefetch_factor,
+	}
+
+
 def _build_loader(
 	args: argparse.Namespace,
 	rank: int,
@@ -124,9 +135,7 @@ def _build_loader(
 		"pin_memory": False,
 		"generator": generator,
 	}
-	if args.num_workers > 0:
-		loader_kwargs["prefetch_factor"] = args.prefetch_factor
-		loader_kwargs["persistent_workers"] = True
+	loader_kwargs.update(_worker_loader_options(args.num_workers, args.prefetch_factor))
 	return DataLoader(**loader_kwargs), sampler
 
 

@@ -30,6 +30,8 @@
   throughput, and frozen evaluation.
 - [x] Add safe training optimizations: homogeneous modality batches, fused AdamW, static
   gradient buckets, target-token caching, and optional semantic gradient checkpointing.
+- [x] Force DataLoader workers to use `spawn` so they cannot inherit and retain CUDA
+  contexts after a rank failure.
 - [ ] Run the optimized two-GPU Stage 1 and Stage 2 smoke benchmarks at batch size 8.
 - [ ] Estimate one 100,000-row training epoch; create a 50,000-row train subset only if the
   measured upper estimate exceeds one hour.

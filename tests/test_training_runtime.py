@@ -27,6 +27,7 @@ from looped_vl.training.train import (
 	_finalize_metric_tensors,
 	_optimizer_step_limit,
 	_resolve_git_commit,
+	_worker_loader_options,
 	parse_args,
 )
 
@@ -194,6 +195,15 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	assert args.per_device_batch_size == 8
 	assert args.attention_implementation == "flash_attention_2"
 	assert args.semantic_gradient_checkpointing is False
+
+
+def test_training_workers_spawn_without_inheriting_cuda_context() -> None:
+	assert _worker_loader_options(num_workers=0, prefetch_factor=4) == {}
+	assert _worker_loader_options(num_workers=8, prefetch_factor=4) == {
+		"multiprocessing_context": "spawn",
+		"persistent_workers": True,
+		"prefetch_factor": 4,
+	}
 
 
 def test_dynamic_scaled_dot_product_attention_matches_explicit_attention() -> None:
