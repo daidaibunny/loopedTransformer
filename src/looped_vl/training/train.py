@@ -26,6 +26,12 @@ from looped_vl.data import DEFAULT_DATASET_ROOT, LoopedVLMixtureDataset
 from looped_vl.models.config import RecurrentModelConfig
 from looped_vl.models.latent_slot_inserter import create_or_load_master_slot_initialization
 from looped_vl.models.loading import load_recurrent_components
+from looped_vl.runtime import (
+	ATTENTION_IMPLEMENTATIONS,
+	RUNTIME_PRECISIONS,
+	resolve_attention_implementation,
+	resolve_torch_dtype,
+)
 from looped_vl.smoke import checkpoint_sha256
 from looped_vl.training.checkpointing import (
 	TrainingCursor,
@@ -549,6 +555,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		format=f"%(asctime)s %(levelname)s [rank {rank}] %(message)s",
 	)
 	generator = seed_everything(42)
+	resolved_attention_implementation = resolve_attention_implementation(
+		args.attention_implementation,
+	)
+	runtime_dtype = resolve_torch_dtype(args.runtime_precision)
 	output_dir = Path(args.output_dir)
 	if rank == 0:
 		if output_dir.exists():
@@ -582,7 +592,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		device=device,
 		enable_lora=True,
 		semantic_decoder_root=args.semantic_decoder_root,
-		attention_implementation=args.attention_implementation,
+		dtype=runtime_dtype,
+		attention_implementation=resolved_attention_implementation,
 		semantic_gradient_checkpointing=args.semantic_gradient_checkpointing,
 		max_length=args.max_length,
 		min_pixels=args.min_pixels,
@@ -601,8 +612,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"command": sys.argv,
 		"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
 		"world_size": world_size,
-		"precision": "bf16",
-		"attention_implementation": args.attention_implementation,
+		"specification_precision": "bf16",
+		"runtime_precision": args.runtime_precision,
+		"requested_attention_implementation": args.attention_implementation,
+		"resolved_attention_implementation": resolved_attention_implementation,
 		"resolved_backbone_attention_implementation": (
 			components.model.language_model.config._attn_implementation
 		),
@@ -737,8 +750,13 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--per-device-batch-size", type=int, default=8)
 	parser.add_argument(
 		"--attention-implementation",
-		choices=("flash_attention_2", "sdpa", "eager"),
-		default="flash_attention_2",
+		choices=ATTENTION_IMPLEMENTATIONS,
+		default="auto",
+	)
+	parser.add_argument(
+		"--runtime-precision",
+		choices=RUNTIME_PRECISIONS,
+		default="bf16",
 	)
 	parser.add_argument("--semantic-gradient-checkpointing", action="store_true")
 	parser.add_argument("--num-workers", type=int, default=2)

@@ -31,7 +31,7 @@ def load_recurrent_components(
 	*,
 	enable_lora: bool,
 	dtype: torch.dtype = torch.bfloat16,
-	attention_implementation: str = "flash_attention_2",
+	attention_implementation: str = "sdpa",
 	max_length: int = 8192,
 	min_pixels: int = 4 * 32 * 32,
 	max_pixels: int = 1800 * 32 * 32,

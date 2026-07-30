@@ -14,6 +14,12 @@ from torch.nn import functional as F
 from looped_vl.data import DEFAULT_DATASET_ROOT, LoopedVLMixtureDataset
 from looped_vl.models.config import RecurrentModelConfig
 from looped_vl.models.loading import load_recurrent_components
+from looped_vl.runtime import (
+	ATTENTION_IMPLEMENTATIONS,
+	RUNTIME_PRECISIONS,
+	resolve_attention_implementation,
+	resolve_torch_dtype,
+)
 from looped_vl.smoke import checkpoint_sha256
 
 LOGGER = logging.getLogger(__name__)
@@ -56,6 +62,10 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 	torch.manual_seed(42)
 	torch.cuda.manual_seed_all(42)
 	device = torch.device("cuda", 0)
+	resolved_attention_implementation = resolve_attention_implementation(
+		args.attention_implementation,
+	)
+	runtime_dtype = resolve_torch_dtype(args.runtime_precision)
 	base_config = RecurrentModelConfig.from_yaml(args.config)
 	if args.mode == "base_equivalence":
 		config = base_config.with_variant(num_latent_slots=0, num_total_loop_passes=1)
@@ -75,7 +85,8 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 		config=config,
 		device=device,
 		enable_lora=args.enable_lora,
-		attention_implementation=args.attention_implementation,
+		dtype=runtime_dtype,
+		attention_implementation=resolved_attention_implementation,
 		max_length=args.max_length,
 		min_pixels=args.min_pixels,
 		max_pixels=args.max_pixels,
@@ -169,8 +180,13 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--enable-lora", action="store_true")
 	parser.add_argument(
 		"--attention-implementation",
-		choices=("flash_attention_2", "sdpa", "eager"),
-		default="flash_attention_2",
+		choices=ATTENTION_IMPLEMENTATIONS,
+		default="auto",
+	)
+	parser.add_argument(
+		"--runtime-precision",
+		choices=RUNTIME_PRECISIONS,
+		default="bf16",
 	)
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)

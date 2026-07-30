@@ -22,6 +22,12 @@ from looped_vl.data import (
 	mixture_collate,
 	select_source_balanced_indices,
 )
+from looped_vl.runtime import (
+	ATTENTION_IMPLEMENTATIONS,
+	RUNTIME_PRECISIONS,
+	resolve_attention_implementation,
+	resolve_torch_dtype,
+)
 
 LOGGER = logging.getLogger("smoke")
 
@@ -75,6 +81,10 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 		)
 	torch.manual_seed(args.seed)
 	torch.cuda.manual_seed_all(args.seed)
+	resolved_attention_implementation = resolve_attention_implementation(
+		args.attention_implementation,
+	)
+	runtime_dtype = resolve_torch_dtype(args.runtime_precision)
 
 	model_root = Path(args.model_root)
 	checkpoint_path = model_root / "model.safetensors"
@@ -105,8 +115,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 		max_length=args.max_length,
 		min_pixels=args.min_pixels,
 		max_pixels=args.max_pixels,
-		torch_dtype=torch.bfloat16,
-		attn_implementation=args.attention_implementation,
+		torch_dtype=runtime_dtype,
+		attn_implementation=resolved_attention_implementation,
 	)
 	freeze_model(embedder.model)
 	assert_model_frozen(embedder.model)
@@ -164,7 +174,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 		"max_length": args.max_length,
 		"min_pixels": args.min_pixels,
 		"max_pixels": args.max_pixels,
-		"attention_implementation": args.attention_implementation,
+		"runtime_precision": args.runtime_precision,
+		"requested_attention_implementation": args.attention_implementation,
+		"resolved_attention_implementation": resolved_attention_implementation,
 		"seed": args.seed,
 	}
 
@@ -193,8 +205,13 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--max-pixels", type=int, default=512 * 512)
 	parser.add_argument(
 		"--attention-implementation",
-		choices=("flash_attention_2", "sdpa", "eager"),
-		default="flash_attention_2",
+		choices=ATTENTION_IMPLEMENTATIONS,
+		default="auto",
+	)
+	parser.add_argument(
+		"--runtime-precision",
+		choices=RUNTIME_PRECISIONS,
+		default="bf16",
 	)
 	parser.add_argument("--output-json")
 	return parser.parse_args()

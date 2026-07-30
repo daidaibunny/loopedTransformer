@@ -194,7 +194,8 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	args = parse_args()
 
 	assert args.per_device_batch_size == 8
-	assert args.attention_implementation == "flash_attention_2"
+	assert args.attention_implementation == "auto"
+	assert args.runtime_precision == "bf16"
 	assert args.semantic_gradient_checkpointing is False
 
 

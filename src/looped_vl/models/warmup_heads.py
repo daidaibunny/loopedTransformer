@@ -72,7 +72,7 @@ class WarmupSemanticDecoderHead(nn.Module):
 		device: torch.device,
 		dtype: torch.dtype,
 		encoder_hidden_size: int = 2048,
-		attention_implementation: str = "flash_attention_2",
+		attention_implementation: str = "sdpa",
 		gradient_checkpointing: bool = False,
 	) -> WarmupSemanticDecoderHead:
 		"""Load the local Qwen3-0.6B training-only semantic decoder."""

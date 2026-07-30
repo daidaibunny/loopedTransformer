@@ -28,6 +28,12 @@ from looped_vl.metrics import (
 	aggregate_mixture_metrics,
 	validate_evaluation_report,
 )
+from looped_vl.runtime import (
+	ATTENTION_IMPLEMENTATIONS,
+	RUNTIME_PRECISIONS,
+	resolve_attention_implementation,
+	resolve_torch_dtype,
+)
 from looped_vl.smoke import (
 	assert_model_frozen,
 	checkpoint_sha256,
@@ -551,6 +557,10 @@ def run_distributed_evaluation(args: argparse.Namespace) -> dict[str, Any] | Non
 	)
 	torch.manual_seed(args.seed + rank)
 	torch.cuda.manual_seed_all(args.seed + rank)
+	resolved_attention_implementation = resolve_attention_implementation(
+		args.attention_implementation,
+	)
+	runtime_dtype = resolve_torch_dtype(args.runtime_precision)
 
 	output_dir = Path(args.output_dir)
 	if rank == 0:
@@ -592,8 +602,8 @@ def run_distributed_evaluation(args: argparse.Namespace) -> dict[str, Any] | Non
 		max_length=args.max_length,
 		min_pixels=args.min_pixels,
 		max_pixels=args.max_pixels,
-		torch_dtype=torch.bfloat16,
-		attn_implementation=args.attention_implementation,
+		torch_dtype=runtime_dtype,
+		attn_implementation=resolved_attention_implementation,
 	)
 	freeze_model(embedder.model)
 	assert_model_frozen(embedder.model)
@@ -693,11 +703,12 @@ def run_distributed_evaluation(args: argparse.Namespace) -> dict[str, Any] | Non
 				"model_root": str(model_root),
 				"parameter_count": parameter_count,
 				"trainable_parameter_count": trainable_parameter_count,
-				"precision": "bfloat16",
+				"runtime_precision": args.runtime_precision,
 				"max_length": args.max_length,
 				"min_pixels": args.min_pixels,
 				"max_pixels": args.max_pixels,
-				"attention_implementation": args.attention_implementation,
+				"requested_attention_implementation": args.attention_implementation,
+				"resolved_attention_implementation": resolved_attention_implementation,
 				"checkpoint_sha256_before": checkpoint_hash_before,
 				"checkpoint_sha256_after": checkpoint_hash_after,
 			},
@@ -762,8 +773,13 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)
 	parser.add_argument(
 		"--attention-implementation",
-		choices=("flash_attention_2", "sdpa", "eager"),
-		default="flash_attention_2",
+		choices=ATTENTION_IMPLEMENTATIONS,
+		default="auto",
+	)
+	parser.add_argument(
+		"--runtime-precision",
+		choices=RUNTIME_PRECISIONS,
+		default="bf16",
 	)
 	return parser.parse_args()
 
