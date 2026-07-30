@@ -1,4 +1,4 @@
-"""Evaluate one trained recurrent model on one full official validation split."""
+"""Evaluate one trained recurrent model on one full held-out test split."""
 
 from __future__ import annotations
 
@@ -229,10 +229,16 @@ def _encode_group(
 		"shuffle": False,
 		"num_workers": args.num_workers,
 		"collate_fn": encoding_collate,
-		"pin_memory": False,
+		"pin_memory": True,
 	}
 	if args.num_workers:
-		loader_options["prefetch_factor"] = args.prefetch_factor
+		loader_options.update(
+			{
+				"multiprocessing_context": "spawn",
+				"persistent_workers": True,
+				"prefetch_factor": args.prefetch_factor,
+			},
+		)
 	loader = DataLoader(**loader_options)
 	index_chunks: list[torch.Tensor] = []
 	embedding_chunks: dict[int, list[torch.Tensor]] = defaultdict(list)
@@ -489,7 +495,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 		)
 		report = {
 			"status": "passed",
-			"scope": "single_dataset_full_official_validation",
+			"scope": "single_dataset_recurrent_test",
 			"source": args.source,
 			"metric_scale": METRIC_SCALE,
 			"loop_passes": loop_metrics,
@@ -540,7 +546,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--model-config", type=Path, default=Path("configs/base.yaml"))
 	parser.add_argument("--checkpoint", type=Path, required=True)
 	parser.add_argument("--output-dir", type=Path, required=True)
-	parser.add_argument("--split", choices=("validation",), default="validation")
+	parser.add_argument("--split", choices=("test",), default="test")
 	parser.add_argument("--expected-world-size", type=int, required=True)
 	parser.add_argument("--batch-size", type=int, default=1)
 	parser.add_argument("--num-workers", type=int, default=2)
@@ -559,7 +565,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--runtime-precision",
 		choices=RUNTIME_PRECISIONS,
-		default="bf16",
+		default="fp16",
 	)
 	return parser.parse_args()
 

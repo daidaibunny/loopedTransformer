@@ -15,10 +15,13 @@ from looped_vl.training.checkpointing import (
 	TrainingCursor,
 	capture_rng_state,
 	load_training_checkpoint,
+	prepare_training_output_directory,
 	prune_training_checkpoints,
 	rebase_training_cursor_batch_size,
 	restore_rng_state,
 	save_training_checkpoint,
+	truncate_metric_log,
+	validate_checkpoint_metadata,
 )
 from looped_vl.training.config import TrainingConfig
 from looped_vl.training.optimizer import build_optimizer_and_scheduler
@@ -336,11 +339,57 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	assert args.per_device_batch_size == 8
 	assert args.attention_implementation == "auto"
 	assert args.runtime_precision == "fp16"
-	assert args.initial_gradient_scale == 65_536.0
+	assert args.initial_gradient_scale == 4096.0
+	assert args.checkpoint_every == 100
 	assert args.max_checkpoints == 4
 	assert args.training_config == Path("configs/train.yaml")
 	assert not hasattr(args, "start_stage")
 	assert not hasattr(args, "semantic_decoder_root")
+
+
+def test_training_output_directory_supports_exact_in_place_resume(tmp_path: Path) -> None:
+	output_dir = tmp_path / "training"
+	prepare_training_output_directory(output_dir, resume_checkpoint=None)
+	checkpoint = output_dir / "checkpoints" / "step000100.pt"
+	checkpoint.write_bytes(b"checkpoint")
+
+	mode = prepare_training_output_directory(
+		output_dir,
+		resume_checkpoint=checkpoint,
+	)
+
+	assert mode == "resume"
+	with pytest.raises(ValueError, match="belong"):
+		prepare_training_output_directory(
+			output_dir,
+			resume_checkpoint=tmp_path / "outside.pt",
+		)
+
+
+def test_resume_metadata_and_metric_log_reject_or_remove_drift(tmp_path: Path) -> None:
+	validate_checkpoint_metadata(
+		{"dataset_root": "/data/coco", "world_size": 8},
+		expected={"dataset_root": "/data/coco", "world_size": 8},
+	)
+	with pytest.raises(ValueError, match="world_size"):
+		validate_checkpoint_metadata(
+			{"dataset_root": "/data/coco", "world_size": 2},
+			expected={"dataset_root": "/data/coco", "world_size": 8},
+		)
+	metrics = tmp_path / "train_metrics.jsonl"
+	metrics.write_text(
+		'{"global_step": 99, "loss": 2.0}\n'
+		'{"global_step": 100, "loss": 1.0}\n'
+		'{"global_step": 101, "loss": 0.5}\n',
+		encoding="utf-8",
+	)
+
+	truncate_metric_log(metrics, maximum_global_step=100)
+
+	assert metrics.read_text(encoding="utf-8").splitlines() == [
+		'{"global_step": 99, "loss": 2.0}',
+		'{"global_step": 100, "loss": 1.0}',
+	]
 
 
 def test_training_cli_requires_an_explicit_aligned_dataset_root(

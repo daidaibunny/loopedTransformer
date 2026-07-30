@@ -155,5 +155,8 @@ class RecurrentInputProcessor:
 		)
 		result = {key: value for key, value in processed.items() if isinstance(value, torch.Tensor)}
 		if device is not None:
-			result = {key: value.to(device) for key, value in result.items()}
+			result = {
+				key: value.to(device=device, non_blocking=True)
+				for key, value in result.items()
+			}
 		return result

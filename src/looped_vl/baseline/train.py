@@ -43,10 +43,14 @@ from looped_vl.training.checkpointing import (
 	TrainingCursor,
 	capture_rng_state,
 	load_training_checkpoint,
+	prepare_training_output_directory,
 	prune_training_checkpoints,
 	save_training_checkpoint,
+	truncate_metric_log,
+	validate_checkpoint_metadata,
 )
 from looped_vl.training.data import group_model_inputs_by_modality
+from looped_vl.training.schedule import BatchOffsetSampler
 
 LOGGER = logging.getLogger("baseline_train")
 
@@ -208,17 +212,10 @@ def _save_baseline_checkpoint(
 	return path
 
 
-def _validate_resume_metadata(
-	metadata: dict[str, Any],
-	*,
-	expected: dict[str, Any],
-) -> None:
-	"""Reject a checkpoint whose fixed data/model/distributed identity has changed."""
-	for key, value in expected.items():
-		if metadata.get(key) != value:
-			raise ValueError(
-				f"Resume checkpoint {key} mismatch: {metadata.get(key)!r} != {value!r}",
-			)
+def _validate_epoch_count(epochs: int) -> None:
+	"""Keep every formal baseline run to one complete dataset pass."""
+	if epochs != 1:
+		raise ValueError("Baseline training must use exactly one epoch")
 
 
 def _build_loader(
@@ -227,13 +224,13 @@ def _build_loader(
 	rank: int,
 	world_size: int,
 	generator: torch.Generator,
-) -> tuple[DataLoader[dict[str, Any]], DistributedSampler[Any]]:
+) -> tuple[DataLoader[dict[str, Any]], BatchOffsetSampler]:
 	dataset = BaselineManifestDataset(
 		args.dataset_root,
 		"train",
 		max_rows=args.max_train_rows,
 	)
-	sampler = DistributedSampler(
+	distributed_sampler = DistributedSampler(
 		dataset,
 		num_replicas=world_size,
 		rank=rank,
@@ -241,6 +238,7 @@ def _build_loader(
 		seed=args.seed,
 		drop_last=False,
 	)
+	sampler = BatchOffsetSampler(distributed_sampler, args.per_device_batch_size)
 	loader_kwargs: dict[str, Any] = {
 		"dataset": dataset,
 		"batch_size": args.per_device_batch_size,
@@ -313,6 +311,7 @@ def _resolve_git_commit(project_root: Path) -> str:
 def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	if args.dataset not in BASELINE_DATASETS:
 		raise ValueError(args.dataset)
+	_validate_epoch_count(args.epochs)
 	if args.checkpoint_every <= 0:
 		raise ValueError("checkpoint_every must be positive")
 	if args.max_checkpoints <= 0 or args.max_checkpoints > 4:
@@ -338,22 +337,13 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	output_dir = Path(args.output_dir)
 	resume_checkpoint = Path(args.resume_checkpoint) if args.resume_checkpoint else None
 	if rank == 0:
-		if resume_checkpoint is None:
-			if output_dir.exists():
-				raise FileExistsError(f"Training output already exists: {output_dir}")
-			(output_dir / "checkpoints").mkdir(parents=True)
+		output_mode = prepare_training_output_directory(
+			output_dir,
+			resume_checkpoint=resume_checkpoint,
+		)
+		if output_mode == "fresh":
 			_write_json(output_dir / "status.json", {"status": "initializing"})
 		else:
-			if not output_dir.is_dir():
-				raise FileNotFoundError(
-					f"Resume output directory does not exist: {output_dir}",
-				)
-			if not resume_checkpoint.is_file():
-				raise FileNotFoundError(
-					f"Resume checkpoint does not exist: {resume_checkpoint}",
-				)
-			if not resume_checkpoint.resolve().is_relative_to(output_dir.resolve()):
-				raise ValueError("Resume checkpoint must belong to the output directory")
 			_write_json(
 				output_dir / "status.json",
 				{"status": "resuming", "checkpoint": str(resume_checkpoint)},
@@ -448,7 +438,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			rank=rank,
 			gradient_scaler=scaler,
 		)
-		_validate_resume_metadata(
+		validate_checkpoint_metadata(
 			resume_metadata,
 			expected=checkpoint_metadata,
 		)
@@ -456,6 +446,11 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			raise ValueError("Baseline resume requires a complete optimizer-step checkpoint")
 		if cursor.global_step >= total_steps:
 			raise ValueError("Resume checkpoint already reached the configured training limit")
+		if rank == 0:
+			truncate_metric_log(
+				output_dir / "train_metrics.jsonl",
+				maximum_global_step=cursor.global_step,
+			)
 	ddp_model = DistributedDataParallel(
 		training_model,
 		device_ids=[local_rank],
@@ -547,22 +542,23 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	metric_accumulator: dict[str, torch.Tensor] = {}
 	direction_counts: Counter[str] = Counter()
 	torch.cuda.reset_peak_memory_stats(device)
+	full_loader_batches = len(loader)
 	for epoch in range(cursor.sampler_epoch, args.epochs):
 		sampler.set_epoch(epoch)
-		for batch_index, batch in enumerate(loader):
-			if epoch == cursor.sampler_epoch and batch_index < cursor.batch_in_epoch:
-				close_baseline_batch_images(batch)
-				continue
+		start_batch = cursor.batch_in_epoch if epoch == cursor.sampler_epoch else 0
+		sampler.set_batch_range(start_batch, full_loader_batches)
+		for relative_batch_index, batch in enumerate(loader):
+			batch_index = start_batch + relative_batch_index
 			group_start = (
 				batch_index // args.gradient_accumulation_steps
 			) * args.gradient_accumulation_steps
 			group_size = min(
 				args.gradient_accumulation_steps,
-				len(loader) - group_start,
+				full_loader_batches - group_start,
 			)
 			is_boundary = (
 				(batch_index + 1) % args.gradient_accumulation_steps == 0
-				or batch_index + 1 == len(loader)
+				or batch_index + 1 == full_loader_batches
 			)
 			try:
 				input_groups = group_model_inputs_by_modality(
@@ -631,20 +627,11 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 						"Skipped non-finite FP16 optimizer step at data batch %d",
 						batch_index,
 					)
-				cursor = TrainingCursor(
-					stage=0,
-					global_step=global_step,
-					sampler_epoch=epoch,
-					batch_in_epoch=batch_index + 1,
-					gradient_accumulation_step=0,
-					processed_samples=total_samples,
+				raise FloatingPointError(
+					"Non-finite FP16 gradients skipped an optimizer step; "
+					"resume from the latest checkpoint instead of silently "
+					"losing samples",
 				)
-				log_start = time.perf_counter()
-				log_samples = 0
-				metric_samples = 0
-				metric_accumulator = {}
-				direction_counts = Counter()
-				continue
 			scheduler.step()
 			global_step += 1
 			cursor = TrainingCursor(
@@ -733,6 +720,12 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			batch_in_epoch=0,
 			gradient_accumulation_step=0,
 			processed_samples=total_samples,
+		)
+	if not args.max_optimizer_steps and (
+		cursor.batch_in_epoch != full_loader_batches or global_step != full_total_steps
+	):
+		raise RuntimeError(
+			"Baseline one-epoch run did not consume every batch with one optimizer update",
 		)
 	dist.barrier()
 	if rank == 0 and not args.skip_adapter_save:

@@ -153,4 +153,6 @@ def test_recurrent_evaluation_uses_aligned_manifest_without_legacy_gqa_root(
 	args = parse_args()
 
 	assert args.dataset_root == tmp_path / "gqa_balanced"
+	assert args.split == "test"
+	assert args.runtime_precision == "fp16"
 	assert not hasattr(args, "gqa_materialized_root")

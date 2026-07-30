@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 import re
 from dataclasses import asdict, dataclass
@@ -35,6 +36,74 @@ class TrainingCursor:
 	batch_in_epoch: int
 	gradient_accumulation_step: int
 	processed_samples: int = 0
+
+
+def prepare_training_output_directory(
+	output_dir: str | Path,
+	*,
+	resume_checkpoint: str | Path | None,
+) -> str:
+	"""Create a fresh output or validate an in-place checkpoint resume."""
+	output = Path(output_dir)
+	if resume_checkpoint is None:
+		if output.exists():
+			raise FileExistsError(f"Training output already exists: {output}")
+		(output / "checkpoints").mkdir(parents=True)
+		return "fresh"
+	checkpoint = Path(resume_checkpoint)
+	if not output.is_dir():
+		raise FileNotFoundError(f"Resume output directory does not exist: {output}")
+	if not checkpoint.resolve().is_relative_to(output.resolve()):
+		raise ValueError("Resume checkpoint must belong to the output directory")
+	if not checkpoint.is_file():
+		raise FileNotFoundError(f"Resume checkpoint does not exist: {checkpoint}")
+	return "resume"
+
+
+def validate_checkpoint_metadata(
+	metadata: dict[str, Any],
+	*,
+	expected: dict[str, Any],
+) -> None:
+	"""Reject a checkpoint whose fixed data, model, or runtime identity changed."""
+	for key, value in expected.items():
+		if metadata.get(key) != value:
+			raise ValueError(
+				f"Resume checkpoint {key} mismatch: {metadata.get(key)!r} != {value!r}",
+			)
+
+
+def truncate_metric_log(path: str | Path, *, maximum_global_step: int) -> int:
+	"""Atomically remove log records written after the resumed checkpoint."""
+	if maximum_global_step < 0:
+		raise ValueError("maximum_global_step cannot be negative")
+	target = Path(path)
+	if not target.is_file():
+		return 0
+	kept_lines: list[str] = []
+	removed = 0
+	for line_number, line in enumerate(
+		target.read_text(encoding="utf-8").splitlines(),
+		start=1,
+	):
+		if not line.strip():
+			continue
+		record = json.loads(line)
+		if "global_step" not in record:
+			raise ValueError(f"Metric log line {line_number} has no global_step")
+		if int(record["global_step"]) <= maximum_global_step:
+			kept_lines.append(line)
+		else:
+			removed += 1
+	temporary = target.with_suffix(target.suffix + ".resume.tmp")
+	if temporary.exists():
+		raise FileExistsError(f"Temporary metric log already exists: {temporary}")
+	temporary.write_text(
+		"".join(f"{line}\n" for line in kept_lines),
+		encoding="utf-8",
+	)
+	temporary.replace(target)
+	return removed
 
 
 def rebase_training_cursor_batch_size(

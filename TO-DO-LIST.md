@@ -72,3 +72,13 @@
   paths from recurrent training.
 - [x] Group baseline inputs by text/vision modality before Qwen preprocessing and restore
   their exact logical pair order before the contrastive loss.
+- [x] Cross-audit baseline and recurrent runs as source-pure one-epoch training followed
+  directly by held-out test, with no validation-based selection.
+- [x] Unify exact in-place resume, metric-log rollback, 100-step checkpoint cadence, and
+  rolling retention of at most four checkpoint files for both trainers.
+- [x] Make recurrent loss and diagnostic logs sample-weighted across every microbatch and
+  every distributed rank, and fail instead of silently losing a non-finite update.
+- [x] Add one restartable queue for the three baseline and three recurrent train/test
+  experiments, with no idle-time gate and no validation command.
+- [ ] Re-run final eight-V100 safety smokes on the unified commit and launch the six-run
+  serial queue.
