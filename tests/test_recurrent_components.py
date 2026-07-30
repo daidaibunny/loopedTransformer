@@ -14,7 +14,47 @@ from looped_vl.models.recurrent_decoder_block import (
 	build_dynamic_attention_mask,
 	detach_prefix_key_values,
 )
+from looped_vl.models.recurrent_qwen3vl_embedding import RecurrentQwen3VLEmbedding
 from looped_vl.training.losses import slot_diversity_loss, symmetric_info_nce
+
+
+class _CountingLinear(torch.nn.Linear):
+	def __init__(self, features: int) -> None:
+		super().__init__(features, features, bias=False)
+		self.call_count = 0
+
+	def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+		self.call_count += 1
+		return super().forward(inputs)
+
+
+class _ProjectionCaptureAttention(torch.nn.Module):
+	def __init__(self, features: int, head_dim: int) -> None:
+		super().__init__()
+		self.head_dim = head_dim
+		self.k_proj = _CountingLinear(features)
+		self.v_proj = _CountingLinear(features)
+		self.k_norm = torch.nn.Identity()
+
+
+class _ProjectionCaptureLayer(torch.nn.Module):
+	def __init__(self, features: int, head_dim: int) -> None:
+		super().__init__()
+		self.self_attn = _ProjectionCaptureAttention(features, head_dim)
+
+	def forward(self, hidden_states: torch.Tensor, **_kwargs: object) -> torch.Tensor:
+		batch_size, sequence_length, _ = hidden_states.shape
+		attention = self.self_attn
+		attention.k_norm(
+			attention.k_proj(hidden_states).view(
+				batch_size,
+				sequence_length,
+				-1,
+				attention.head_dim,
+			),
+		)
+		attention.v_proj(hidden_states)
+		return hidden_states + 1
 
 
 def test_base_configuration_matches_v1_specification() -> None:
@@ -89,6 +129,34 @@ def test_slots_are_inserted_immediately_before_each_last_valid_token() -> None:
 	assert augmented.prefix_lengths.tolist() == [2, 4]
 	assert augmented.slot_positions.tolist() == [[2, 3], [4, 5]]
 	assert augmented.eos_positions.tolist() == [4, 6]
+
+
+def test_slot_insertion_handles_zero_slots_and_extra_trailing_padding() -> None:
+	input_ids = torch.tensor(
+		[
+			[10, 99, 0, 0],
+			[20, 21, 99, 0],
+		],
+	)
+	attention_mask = torch.tensor(
+		[
+			[1, 1, 0, 0],
+			[1, 1, 1, 0],
+		],
+	)
+
+	augmented = augment_before_last_valid_token(
+		input_ids=input_ids,
+		attention_mask=attention_mask,
+		num_latent_slots=0,
+		latent_placeholder_id=777,
+		pad_token_id=0,
+	)
+
+	assert torch.equal(augmented.input_ids, input_ids)
+	assert torch.equal(augmented.attention_mask, attention_mask)
+	assert augmented.slot_positions.shape == (2, 0)
+	assert augmented.eos_positions.tolist() == [1, 2]
 
 
 def test_master_slot_initialization_is_seeded_once_and_sliced(tmp_path: Path) -> None:
@@ -184,6 +252,31 @@ def test_prefix_key_value_cache_is_detached() -> None:
 	assert detached_value.requires_grad is False
 	assert detached_key.grad_fn is None
 	assert detached_value.grad_fn is None
+
+
+def test_pass_one_prefix_cache_reuses_projected_key_and_value() -> None:
+	layer = _ProjectionCaptureLayer(features=8, head_dim=4)
+	hidden_states = torch.randn(2, 6, 8, requires_grad=True)
+	cos = torch.ones(2, 6, 4)
+	sin = torch.zeros(2, 6, 4)
+
+	output, cache = RecurrentQwen3VLEmbedding._run_full_layer_and_capture_prefix(
+		layer=layer,
+		hidden_states=hidden_states,
+		position_embeddings=(cos, sin),
+		max_prefix_length=3,
+		attention_mask=None,
+		position_ids=torch.arange(6).expand(2, -1),
+		cache_position=torch.arange(6),
+	)
+
+	assert torch.equal(output, hidden_states + 1)
+	assert layer.self_attn.k_proj.call_count == 1
+	assert layer.self_attn.v_proj.call_count == 1
+	assert cache.key.shape == (2, 2, 3, 4)
+	assert cache.value.shape == (2, 2, 3, 4)
+	assert cache.key.requires_grad is False
+	assert cache.value.requires_grad is False
 
 
 def test_slot_losses_cover_k1_and_symmetric_contrastive_learning() -> None:

@@ -24,3 +24,12 @@
 - [x] Pass unit, integration, equivalence, gradient, and two-GPU training smoke tests.
 - [x] Monitor both GPUs idle for three continuous minutes before the full launch.
 - [x] Launch the two-stage training in a unique tmux session and verify stable progress.
+- [x] Add tests for modality-grouped padding, vectorized slot insertion, fused recurrent
+  attention, and Pass-1 Key/Value reuse.
+- [x] Make FlashAttention 2 the explicit default for backbone, semantic decoder, smoke,
+  throughput, and frozen evaluation.
+- [x] Add safe training optimizations: homogeneous modality batches, fused AdamW, static
+  gradient buckets, target-token caching, and optional semantic gradient checkpointing.
+- [ ] Run the optimized two-GPU Stage 1 and Stage 2 smoke benchmarks at batch size 8.
+- [ ] Estimate one 100,000-row training epoch; create a 50,000-row train subset only if the
+  measured upper estimate exceeds one hour.

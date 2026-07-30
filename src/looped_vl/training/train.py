@@ -35,7 +35,11 @@ from looped_vl.training.checkpointing import (
 	save_training_checkpoint,
 )
 from looped_vl.training.config import TrainingStageConfig
-from looped_vl.training.data import close_training_batch_images, paired_training_collate
+from looped_vl.training.data import (
+	close_training_batch_images,
+	group_model_inputs_by_modality,
+	paired_training_collate,
+)
 from looped_vl.training.model import RecurrentTrainingModel
 from looped_vl.training.optimizer import build_optimizer_and_scheduler
 from looped_vl.training.reproducibility import seed_everything
@@ -284,6 +288,8 @@ def _train_stage(
 		output_device=local_rank,
 		broadcast_buffers=False,
 		find_unused_parameters=False,
+		gradient_as_bucket_view=True,
+		static_graph=True,
 	)
 	if rank == 0:
 		_write_json(
@@ -328,8 +334,14 @@ def _train_stage(
 				close_training_batch_images(batch)
 				continue
 			try:
-				combined_inputs = batch["query_inputs"] + batch["candidate_inputs"]
-				processed_inputs = processor.prepare(combined_inputs, device=device)
+				input_groups = group_model_inputs_by_modality(
+					batch["query_inputs"],
+					batch["candidate_inputs"],
+				)
+				processed_batches = tuple(
+					processor.prepare(list(group.model_inputs), device=device)
+					for group in input_groups
+				)
 			finally:
 				close_training_batch_images(batch)
 			is_accumulation_boundary = (
@@ -344,7 +356,11 @@ def _train_stage(
 					semantic_targets=batch["semantic_targets"],
 					sources=batch["sources"],
 					stage=stage_config.stage,
-					**processed_inputs,
+					processed_batches=processed_batches,
+					original_indices=tuple(
+						group.original_indices
+						for group in input_groups
+					),
 				)
 				loss = step_output["total_loss"] / gradient_accumulation_steps
 				loss.backward()
@@ -542,6 +558,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		device=device,
 		enable_lora=True,
 		semantic_decoder_root=args.semantic_decoder_root,
+		attention_implementation=args.attention_implementation,
+		semantic_gradient_checkpointing=args.semantic_gradient_checkpointing,
 		max_length=args.max_length,
 		min_pixels=args.min_pixels,
 		max_pixels=args.max_pixels,
@@ -560,6 +578,18 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
 		"world_size": world_size,
 		"precision": "bf16",
+		"attention_implementation": args.attention_implementation,
+		"resolved_backbone_attention_implementation": (
+			components.model.language_model.config._attn_implementation
+		),
+		"resolved_semantic_attention_implementation": (
+			components.model.warmup_semantic_head.decoder_model.config._attn_implementation
+		),
+		"semantic_gradient_checkpointing": args.semantic_gradient_checkpointing,
+		"modality_grouped_padding": True,
+		"ddp_gradient_as_bucket_view": True,
+		"ddp_static_graph": True,
+		"fused_adamw": True,
 		"seed": 42,
 		"model_config": asdict(model_config),
 		"stage_configs": {stage: asdict(config) for stage, config in stage_configs.items()},
@@ -681,6 +711,12 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--start-stage", type=int, choices=(1, 2), default=1)
 	parser.add_argument("--end-stage", type=int, choices=(1, 2), default=2)
 	parser.add_argument("--per-device-batch-size", type=int, default=8)
+	parser.add_argument(
+		"--attention-implementation",
+		choices=("flash_attention_2", "sdpa", "eager"),
+		default="flash_attention_2",
+	)
+	parser.add_argument("--semantic-gradient-checkpointing", action="store_true")
 	parser.add_argument("--num-workers", type=int, default=2)
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--checkpoint-every", type=int, default=500)

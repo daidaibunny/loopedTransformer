@@ -24,6 +24,7 @@ def build_optimizer_and_scheduler(
 		weight_decay=config.weight_decay,
 		betas=config.betas,
 		eps=config.eps,
+		fused=parameters[0].is_cuda,
 	)
 	warmup_steps = max(1, round(config.steps * config.warmup_ratio))
 

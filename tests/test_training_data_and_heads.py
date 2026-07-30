@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from looped_vl.models.warmup_heads import WarmupEmbeddingHead, split_slot_groups
-from looped_vl.training.data import build_training_pair
+from looped_vl.training.data import build_training_pair, group_model_inputs_by_modality
 
 
 def _sample(**overrides: object) -> SimpleNamespace:
@@ -72,3 +72,24 @@ def test_warmup_embedding_head_outputs_unit_normalized_vectors() -> None:
 
 	assert embeddings.shape == (3, 32)
 	assert torch.allclose(embeddings.norm(dim=-1), torch.ones(3), atol=1e-6)
+
+
+def test_model_inputs_are_grouped_by_modality_and_keep_original_indices() -> None:
+	image_a = object()
+	image_b = object()
+	query_inputs = [
+		{"text": "caption"},
+		{"text": "question", "image": image_a},
+	]
+	candidate_inputs = [
+		{"image": image_b},
+		{"text": "answer"},
+	]
+
+	groups = group_model_inputs_by_modality(query_inputs, candidate_inputs)
+
+	assert [group.name for group in groups] == ["text", "vision"]
+	assert groups[0].original_indices == (0, 3)
+	assert groups[0].model_inputs == (query_inputs[0], candidate_inputs[1])
+	assert groups[1].original_indices == (1, 2)
+	assert groups[1].model_inputs == (query_inputs[1], candidate_inputs[0])

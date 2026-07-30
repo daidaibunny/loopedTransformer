@@ -48,6 +48,26 @@ class RecurrentEmbeddingOutput:
 	diagnostics: dict[str, Any]
 
 
+def _dynamic_scaled_dot_product_attention(
+	*,
+	query: torch.Tensor,
+	key: torch.Tensor,
+	value: torch.Tensor,
+	attention_mask: torch.Tensor,
+	scale: float,
+) -> torch.Tensor:
+	"""Use PyTorch's fused attention dispatcher for the recurrent query block."""
+	return F.scaled_dot_product_attention(
+		query,
+		key,
+		value,
+		attn_mask=attention_mask,
+		dropout_p=0.0,
+		is_causal=False,
+		scale=scale,
+	)
+
+
 def _gather_sequence_positions(
 	hidden_states: torch.Tensor,
 	positions: torch.Tensor,
@@ -379,26 +399,30 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 
 		dynamic_positions = self._dynamic_positions(augmented)
 		dynamic_base = _gather_sequence_positions(hidden_states, dynamic_positions)
+		max_prefix_length = sequence_length - dynamic_positions.shape[1]
 		prefix_caches: list[PrefixKeyValue] = []
 		for layer_index in range(self.config.loop_start_layer, self.config.loop_end_layer):
 			layer = language_model.layers[layer_index]
 			if self.config.num_extra_loop_passes:
-				prefix_caches.append(
-					self._cache_prefix_key_value(
-						layer=layer,
-						hidden_states=hidden_states,
-						position_embeddings=position_embeddings,
-						prefix_lengths=augmented.prefix_lengths,
-					),
+				hidden_states, prefix_cache = self._run_full_layer_and_capture_prefix(
+					layer=layer,
+					hidden_states=hidden_states,
+					position_embeddings=position_embeddings,
+					max_prefix_length=max_prefix_length,
+					attention_mask=causal_mask,
+					position_ids=text_position_ids,
+					cache_position=cache_position,
 				)
-			hidden_states = layer(
-				hidden_states,
-				attention_mask=causal_mask,
-				position_ids=text_position_ids,
-				past_key_values=None,
-				cache_position=cache_position,
-				position_embeddings=position_embeddings,
-			)
+				prefix_caches.append(prefix_cache)
+			else:
+				hidden_states = layer(
+					hidden_states,
+					attention_mask=causal_mask,
+					position_ids=text_position_ids,
+					past_key_values=None,
+					cache_position=cache_position,
+					position_embeddings=position_embeddings,
+				)
 		pass_one_full_hidden_states = hidden_states
 		dynamic_output = _gather_sequence_positions(hidden_states, dynamic_positions)
 
@@ -406,7 +430,6 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			position_embeddings,
 			dynamic_positions,
 		)
-		max_prefix_length = int(augmented.prefix_lengths.max().item())
 		prefix_mask = (
 			torch.arange(max_prefix_length, device=hidden_states.device)[None, :]
 			< augmented.prefix_lengths[:, None]
@@ -512,26 +535,53 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			},
 		)
 
-	def _cache_prefix_key_value(
-		self,
+	@staticmethod
+	def _run_full_layer_and_capture_prefix(
 		layer: nn.Module,
 		hidden_states: torch.Tensor,
 		position_embeddings: tuple[torch.Tensor, torch.Tensor],
-		prefix_lengths: torch.Tensor,
-	) -> PrefixKeyValue:
-		"""Project, rotate, slice, and detach the Pass-1 prefix K/V for one layer."""
-		normalized = layer.input_layernorm(hidden_states)
+		max_prefix_length: int,
+		attention_mask: torch.Tensor | None,
+		position_ids: torch.Tensor,
+		cache_position: torch.Tensor,
+	) -> tuple[torch.Tensor, PrefixKeyValue]:
+		"""Reuse Pass-1 projections when constructing the detached prefix cache."""
 		attention = layer.self_attn
-		batch_size, sequence_length, _ = normalized.shape
-		key = attention.k_norm(
-			attention.k_proj(normalized).view(
-				batch_size,
-				sequence_length,
-				-1,
-				attention.head_dim,
-			),
-		).transpose(1, 2)
-		value = attention.v_proj(normalized).view(
+		captured: dict[str, torch.Tensor] = {}
+
+		def capture_key(
+			_module: nn.Module,
+			_inputs: tuple[torch.Tensor, ...],
+			output: torch.Tensor,
+		) -> None:
+			captured["key"] = output
+
+		def capture_value(
+			_module: nn.Module,
+			_inputs: tuple[torch.Tensor, ...],
+			output: torch.Tensor,
+		) -> None:
+			captured["value"] = output
+
+		key_hook = attention.k_norm.register_forward_hook(capture_key)
+		value_hook = attention.v_proj.register_forward_hook(capture_value)
+		try:
+			output_hidden_states = layer(
+				hidden_states,
+				attention_mask=attention_mask,
+				position_ids=position_ids,
+				past_key_values=None,
+				cache_position=cache_position,
+				position_embeddings=position_embeddings,
+			)
+		finally:
+			key_hook.remove()
+			value_hook.remove()
+		if set(captured) != {"key", "value"}:
+			raise RuntimeError("Pass-1 attention did not expose both prefix projections")
+		batch_size, sequence_length, _ = hidden_states.shape
+		key = captured["key"].transpose(1, 2)
+		value = captured["value"].view(
 			batch_size,
 			sequence_length,
 			-1,
@@ -540,12 +590,11 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		cos, sin = position_embeddings
 		dummy_query = key
 		_, rotated_key = apply_rotary_pos_emb(dummy_query, key, cos, sin)
-		max_prefix_length = int(prefix_lengths.max().item())
 		prefix_key, prefix_value = detach_prefix_key_values(
 			rotated_key[:, :, :max_prefix_length],
 			value[:, :, :max_prefix_length],
 		)
-		return PrefixKeyValue(key=prefix_key, value=prefix_value)
+		return output_hidden_states, PrefixKeyValue(key=prefix_key, value=prefix_value)
 
 	@staticmethod
 	def _gather_dynamic_position_embeddings(
@@ -580,10 +629,13 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		value = torch.cat((prefix_key_value.value, value), dim=2)
 		repeated_key = repeat_kv(key, attention.num_key_value_groups)
 		repeated_value = repeat_kv(value, attention.num_key_value_groups)
-		weights = torch.matmul(query, repeated_key.transpose(2, 3)) * attention.scaling
-		weights = weights + attention_mask
-		weights = torch.softmax(weights, dim=-1, dtype=torch.float32).to(query.dtype)
-		attention_output = torch.matmul(weights, repeated_value)
+		attention_output = _dynamic_scaled_dot_product_attention(
+			query=query,
+			key=repeated_key,
+			value=repeated_value,
+			attention_mask=attention_mask,
+			scale=attention.scaling,
+		)
 		attention_output = attention_output.transpose(1, 2).reshape(
 			batch_size,
 			token_count,

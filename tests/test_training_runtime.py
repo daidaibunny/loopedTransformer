@@ -7,6 +7,9 @@ import pytest
 import torch
 from torch import nn
 
+from looped_vl.models.recurrent_qwen3vl_embedding import (
+	_dynamic_scaled_dot_product_attention,
+)
 from looped_vl.training.checkpointing import (
 	TrainingCursor,
 	capture_rng_state,
@@ -189,6 +192,33 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	args = parse_args()
 
 	assert args.per_device_batch_size == 8
+	assert args.attention_implementation == "flash_attention_2"
+	assert args.semantic_gradient_checkpointing is False
+
+
+def test_dynamic_scaled_dot_product_attention_matches_explicit_attention() -> None:
+	torch.manual_seed(7)
+	query = torch.randn(2, 4, 3, 8)
+	key = torch.randn(2, 4, 7, 8)
+	value = torch.randn(2, 4, 7, 8)
+	mask = torch.zeros(2, 1, 3, 7)
+	mask[:, :, 0, 5:] = torch.finfo(mask.dtype).min
+	scale = 8**-0.5
+	weights = torch.softmax(
+		(query @ key.transpose(2, 3) * scale + mask).float(),
+		dim=-1,
+	).to(query.dtype)
+	expected = weights @ value
+
+	actual = _dynamic_scaled_dot_product_attention(
+		query=query,
+		key=key,
+		value=value,
+		attention_mask=mask,
+		scale=scale,
+	)
+
+	assert torch.allclose(actual, expected, atol=1e-5, rtol=1e-5)
 
 
 def test_additional_step_limit_is_relative_to_resumed_global_step() -> None:

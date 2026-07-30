@@ -75,6 +75,7 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 		config=config,
 		device=device,
 		enable_lora=args.enable_lora,
+		attention_implementation=args.attention_implementation,
 		max_length=args.max_length,
 		min_pixels=args.min_pixels,
 		max_pixels=args.max_pixels,
@@ -166,6 +167,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--split", choices=("train", "validation"), default="train")
 	parser.add_argument("--index", type=int, default=17)
 	parser.add_argument("--enable-lora", action="store_true")
+	parser.add_argument(
+		"--attention-implementation",
+		choices=("flash_attention_2", "sdpa", "eager"),
+		default="flash_attention_2",
+	)
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)
 	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)

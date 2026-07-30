@@ -37,44 +37,24 @@ def augment_before_last_valid_token(
 	prefix_lengths = valid_lengths - 1
 	batch_size, old_width = input_ids.shape
 	new_width = old_width + num_latent_slots
-	augmented_ids = torch.full(
-		(batch_size, new_width),
-		pad_token_id,
-		dtype=input_ids.dtype,
-		device=input_ids.device,
-	)
-	augmented_mask = torch.zeros(
-		(batch_size, new_width),
-		dtype=attention_mask.dtype,
-		device=attention_mask.device,
-	)
-	slot_positions = torch.empty(
-		(batch_size, num_latent_slots),
-		dtype=torch.long,
-		device=input_ids.device,
-	)
 	eos_positions = prefix_lengths + num_latent_slots
-	for batch_index in range(batch_size):
-		prefix_length = int(prefix_lengths[batch_index].item())
-		valid_length = int(valid_lengths[batch_index].item())
-		augmented_ids[batch_index, :prefix_length] = input_ids[
-			batch_index,
-			:prefix_length,
-		]
-		if num_latent_slots:
-			positions = torch.arange(
-				prefix_length,
-				prefix_length + num_latent_slots,
-				device=input_ids.device,
-			)
-			slot_positions[batch_index] = positions
-			augmented_ids[batch_index, positions] = latent_placeholder_id
-		new_eos_position = int(eos_positions[batch_index].item())
-		augmented_ids[batch_index, new_eos_position] = input_ids[
-			batch_index,
-			valid_length - 1,
-		]
-		augmented_mask[batch_index, : valid_length + num_latent_slots] = 1
+	new_positions = torch.arange(new_width, device=input_ids.device)[None, :]
+	prefix_boundary = prefix_lengths[:, None]
+	slot_boundary = prefix_boundary + num_latent_slots
+	source_positions = torch.where(
+		new_positions < prefix_boundary,
+		new_positions,
+		new_positions - num_latent_slots,
+	).clamp(min=0, max=old_width - 1)
+	augmented_ids = input_ids.gather(1, source_positions.expand(batch_size, -1))
+	slot_offsets = torch.arange(num_latent_slots, device=input_ids.device)[None, :]
+	slot_positions = prefix_boundary + slot_offsets
+	if num_latent_slots:
+		slot_mask = (new_positions >= prefix_boundary) & (new_positions < slot_boundary)
+		augmented_ids = augmented_ids.masked_fill(slot_mask, latent_placeholder_id)
+	valid_augmented_mask = new_positions < (valid_lengths + num_latent_slots)[:, None]
+	augmented_ids = augmented_ids.masked_fill(~valid_augmented_mask, pad_token_id)
+	augmented_mask = valid_augmented_mask.to(attention_mask.dtype)
 	return AugmentedSequence(
 		input_ids=augmented_ids,
 		attention_mask=augmented_mask,

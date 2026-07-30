@@ -28,6 +28,15 @@ class TrainingPair:
 	image: Image.Image
 
 
+@dataclass(frozen=True)
+class ModalityInputGroup:
+	"""Inputs sharing a padding profile plus their positions in the combined towers."""
+
+	name: str
+	original_indices: tuple[int, ...]
+	model_inputs: tuple[dict[str, Any], ...]
+
+
 def build_training_pair(sample: MixtureSample | Any) -> TrainingPair:
 	"""Map one mixture row to the exact v1.0 dual-tower training structure."""
 	if sample.source == "coco":
@@ -84,6 +93,34 @@ def paired_training_collate(samples: list[MixtureSample]) -> dict[str, Any]:
 		"sample_ids": [pair.sample_id for pair in pairs],
 		"reasoning_depths": [pair.reasoning_depth for pair in pairs],
 	}
+
+
+def group_model_inputs_by_modality(
+	query_inputs: list[dict[str, Any]],
+	candidate_inputs: list[dict[str, Any]],
+) -> tuple[ModalityInputGroup, ...]:
+	"""Separate pure text from visual rows without changing their logical batch order."""
+	if len(query_inputs) != len(candidate_inputs):
+		raise ValueError("Query and candidate input counts must match")
+	combined_inputs = query_inputs + candidate_inputs
+	grouped: list[ModalityInputGroup] = []
+	for name, has_vision in (("text", False), ("vision", True)):
+		indexed_inputs = tuple(
+			(index, model_input)
+			for index, model_input in enumerate(combined_inputs)
+			if ("image" in model_input or "video" in model_input) is has_vision
+		)
+		if indexed_inputs:
+			grouped.append(
+				ModalityInputGroup(
+					name=name,
+					original_indices=tuple(index for index, _ in indexed_inputs),
+					model_inputs=tuple(model_input for _, model_input in indexed_inputs),
+				),
+			)
+	if sum(len(group.model_inputs) for group in grouped) != len(combined_inputs):
+		raise RuntimeError("Modality grouping lost one or more model inputs")
+	return tuple(grouped)
 
 
 def close_training_batch_images(batch: dict[str, Any]) -> None:

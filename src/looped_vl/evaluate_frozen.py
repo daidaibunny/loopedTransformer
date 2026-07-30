@@ -593,7 +593,7 @@ def run_distributed_evaluation(args: argparse.Namespace) -> dict[str, Any] | Non
 		min_pixels=args.min_pixels,
 		max_pixels=args.max_pixels,
 		torch_dtype=torch.bfloat16,
-		attn_implementation="sdpa",
+		attn_implementation=args.attention_implementation,
 	)
 	freeze_model(embedder.model)
 	assert_model_frozen(embedder.model)
@@ -697,6 +697,7 @@ def run_distributed_evaluation(args: argparse.Namespace) -> dict[str, Any] | Non
 				"max_length": args.max_length,
 				"min_pixels": args.min_pixels,
 				"max_pixels": args.max_pixels,
+				"attention_implementation": args.attention_implementation,
 				"checkpoint_sha256_before": checkpoint_hash_before,
 				"checkpoint_sha256_after": checkpoint_hash_after,
 			},
@@ -759,6 +760,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)
 	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)
+	parser.add_argument(
+		"--attention-implementation",
+		choices=("flash_attention_2", "sdpa", "eager"),
+		default="flash_attention_2",
+	)
 	return parser.parse_args()
 
 

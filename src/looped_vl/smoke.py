@@ -106,7 +106,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 		min_pixels=args.min_pixels,
 		max_pixels=args.max_pixels,
 		torch_dtype=torch.bfloat16,
-		attn_implementation="sdpa",
+		attn_implementation=args.attention_implementation,
 	)
 	freeze_model(embedder.model)
 	assert_model_frozen(embedder.model)
@@ -164,6 +164,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 		"max_length": args.max_length,
 		"min_pixels": args.min_pixels,
 		"max_pixels": args.max_pixels,
+		"attention_implementation": args.attention_implementation,
 		"seed": args.seed,
 	}
 
@@ -190,6 +191,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--max-length", type=int, default=1024)
 	parser.add_argument("--min-pixels", type=int, default=64 * 64)
 	parser.add_argument("--max-pixels", type=int, default=512 * 512)
+	parser.add_argument(
+		"--attention-implementation",
+		choices=("flash_attention_2", "sdpa", "eager"),
+		default="flash_attention_2",
+	)
 	parser.add_argument("--output-json")
 	return parser.parse_args()
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,7 +46,7 @@ class SemanticDecoderOutput:
 	"""Token-level semantic supervision result."""
 
 	loss: torch.Tensor
-	token_count: int
+	token_count: torch.Tensor
 
 
 class WarmupSemanticDecoderHead(nn.Module):
@@ -62,6 +63,7 @@ class WarmupSemanticDecoderHead(nn.Module):
 		self.tokenizer = tokenizer
 		self.slot_projector = nn.Linear(encoder_hidden_size, decoder_hidden_size, bias=True)
 		self.decoder_model.config.use_cache = False
+		self._target_token_cache: OrderedDict[tuple[str, str], tuple[int, ...]] = OrderedDict()
 
 	@classmethod
 	def from_pretrained(
@@ -70,15 +72,18 @@ class WarmupSemanticDecoderHead(nn.Module):
 		device: torch.device,
 		dtype: torch.dtype,
 		encoder_hidden_size: int = 2048,
+		attention_implementation: str = "flash_attention_2",
+		gradient_checkpointing: bool = False,
 	) -> WarmupSemanticDecoderHead:
 		"""Load the local Qwen3-0.6B training-only semantic decoder."""
 		tokenizer = AutoTokenizer.from_pretrained(str(model_root), padding_side="right")
 		decoder_model = AutoModelForCausalLM.from_pretrained(
 			str(model_root),
 			dtype=dtype,
-			attn_implementation="sdpa",
+			attn_implementation=attention_implementation,
 		).to(device)
-		decoder_model.gradient_checkpointing_enable()
+		if gradient_checkpointing:
+			decoder_model.gradient_checkpointing_enable()
 		return cls(
 			decoder_model=decoder_model,
 			tokenizer=tokenizer,
@@ -141,7 +146,7 @@ class WarmupSemanticDecoderHead(nn.Module):
 			target_ids.reshape(-1),
 			ignore_index=-100,
 		)
-		return SemanticDecoderOutput(loss=loss, token_count=int(target_mask.sum().item()))
+		return SemanticDecoderOutput(loss=loss, token_count=target_mask.sum())
 
 	def _tokenize_targets(
 		self,
@@ -152,12 +157,23 @@ class WarmupSemanticDecoderHead(nn.Module):
 		encoded: list[list[int]] = []
 		for target, source in zip(targets, sources, strict=True):
 			max_length = 64 if source == "coco" else 32
-			token_ids = self.tokenizer.encode(
-				target,
-				add_special_tokens=False,
-				truncation=True,
-				max_length=max_length,
-			)
+			cache_key = (source, target)
+			cached_ids = self._target_token_cache.get(cache_key)
+			if cached_ids is None:
+				cached_ids = tuple(
+					self.tokenizer.encode(
+						target,
+						add_special_tokens=False,
+						truncation=True,
+						max_length=max_length,
+					),
+				)
+				self._target_token_cache[cache_key] = cached_ids
+				if len(self._target_token_cache) > 65_536:
+					self._target_token_cache.popitem(last=False)
+			else:
+				self._target_token_cache.move_to_end(cache_key)
+			token_ids = list(cached_ids)
 			if not token_ids:
 				raise ValueError(f"Semantic target tokenized to empty text for {source}")
 			encoded.append(token_ids)

@@ -31,11 +31,12 @@ def load_recurrent_components(
 	*,
 	enable_lora: bool,
 	dtype: torch.dtype = torch.bfloat16,
-	attention_implementation: str = "sdpa",
+	attention_implementation: str = "flash_attention_2",
 	max_length: int = 8192,
 	min_pixels: int = 4 * 32 * 32,
 	max_pixels: int = 1800 * 32 * 32,
 	semantic_decoder_root: str | Path | None = None,
+	semantic_gradient_checkpointing: bool = False,
 ) -> LoadedRecurrentComponents:
 	"""Load local weights without ever writing into the original checkpoint directory."""
 	model_path = Path(model_root)
@@ -78,5 +79,7 @@ def load_recurrent_components(
 			device=device,
 			dtype=dtype,
 			encoder_hidden_size=config.hidden_size,
+			attention_implementation=attention_implementation,
+			gradient_checkpointing=semantic_gradient_checkpointing,
 		)
 	return LoadedRecurrentComponents(model=model, processor=processor)
