@@ -27,18 +27,18 @@
 - [x] Launch the two-stage training in a unique tmux session and verify stable progress.
 - [x] Add tests for modality-grouped padding, vectorized slot insertion, fused recurrent
   attention, and Pass-1 Key/Value reuse.
-- [x] Make FlashAttention 2 the explicit default for backbone, semantic decoder, smoke,
-  throughput, and frozen evaluation.
+- [x] Select attention by GPU capability: FlashAttention 2 on supported Ampere-or-newer
+  GPUs and PyTorch scaled dot-product attention on V100.
 - [x] Add safe training optimizations: homogeneous modality batches, fused AdamW, static
   gradient buckets, target-token caching, and optional semantic gradient checkpointing.
 - [x] Force DataLoader workers to use `spawn` so they cannot inherit and retain CUDA
   contexts after a rank failure.
 - [x] Skip multi-gigabyte optimizer checkpoints during disposable smoke benchmarks.
-- [ ] Run the optimized two-GPU Stage 1 and Stage 2 smoke benchmarks at batch size 8.
-- [ ] Estimate one 100,000-row training epoch; create a 50,000-row train subset only if the
-  measured upper estimate exceeds one hour.
-- [ ] Audit the full official COCO, GQA Balanced, and CLEVR splits on `8XV100`.
-- [ ] Profile one-dataset training on eight V100 GPUs and compare the measured COCO epoch
+- [x] Run optimized eight-V100 Stage 1 and Stage 2 smoke benchmarks at batch size 8.
+- [x] Add V100-safe FP16 automatic mixed precision with FP32 trainable parameters,
+  gradient scaling, and resumable scaler state.
+- [x] Audit the full official COCO, GQA Balanced, and CLEVR splits on `8XV100`.
+- [x] Profile one-dataset training on eight V100 GPUs and compare the measured COCO epoch
   time with the reported 20-minute reference.
 - [ ] Train and evaluate COCO, GQA Balanced, and CLEVR independently on their full splits.
 - [ ] Report retrieval metrics after recurrent passes 1, 2, 3, and 4, including the change
@@ -49,6 +49,6 @@
   official Qwen LoRA configuration, and the eight-GPU idle queue.
 - [x] Implement the unmodified Qwen3-VL-Embedding-2B LoRA trainer and single-dataset test
   evaluator without using the 50:35:15 mixture.
-- [ ] Materialize and validate the three full single-dataset manifests on `8XV100`.
+- [x] Materialize and validate the three full single-dataset manifests on `8XV100`.
 - [ ] Run eight-V100 smoke searches for COCO, GQA Balanced, and CLEVR.
 - [ ] Queue all three full LoRA train/test runs after a continuous two-minute idle window.
