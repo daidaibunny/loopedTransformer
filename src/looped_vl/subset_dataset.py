@@ -12,6 +12,8 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from looped_vl.data import DEFAULT_TEST_SAMPLES, DEFAULT_VALIDATION_SAMPLES
+
 EXPECTED_BLOCK_COUNTS = {"coco": 10, "gqa_balanced": 7, "clevr": 3}
 INTERLEAVE_BLOCK_SIZE = sum(EXPECTED_BLOCK_COUNTS.values())
 
@@ -119,8 +121,8 @@ def build_prefix_subset(
 	source_root: str | Path,
 	output_root: str | Path,
 	train_samples: int,
-	validation_samples: int = 25_000,
-	test_samples: int = 25_000,
+	validation_samples: int = DEFAULT_VALIDATION_SAMPLES,
+	test_samples: int = DEFAULT_TEST_SAMPLES,
 ) -> dict[str, Any]:
 	"""Build train, validation, and disjoint test splits from a parent mixture."""
 	requested_counts = {
@@ -271,8 +273,12 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--source-root", type=Path, required=True)
 	parser.add_argument("--output-root", type=Path, required=True)
 	parser.add_argument("--train-samples", type=int, default=100_000)
-	parser.add_argument("--validation-samples", type=int, default=25_000)
-	parser.add_argument("--test-samples", type=int, default=25_000)
+	parser.add_argument(
+		"--validation-samples",
+		type=int,
+		default=DEFAULT_VALIDATION_SAMPLES,
+	)
+	parser.add_argument("--test-samples", type=int, default=DEFAULT_TEST_SAMPLES)
 	return parser.parse_args()
 
 

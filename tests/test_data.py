@@ -20,7 +20,7 @@ from looped_vl.data import (
 def test_default_dataset_root_uses_100k_experiment_train_split() -> None:
 	actual_root = DEFAULT_DATASET_ROOT
 	expected_root = Path(
-		"/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val25000_test25000",
+		"/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val10000_test10000",
 	)
 	assert actual_root == expected_root
 

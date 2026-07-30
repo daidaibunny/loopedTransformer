@@ -1,10 +1,19 @@
 import json
+from inspect import signature
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from looped_vl.subset_dataset import build_prefix_subset
+
+
+def test_subset_defaults_define_splits_by_sample_count() -> None:
+	parameters = signature(build_prefix_subset).parameters
+
+	assert parameters["train_samples"].default is parameters["train_samples"].empty
+	assert parameters["validation_samples"].default == 10_000
+	assert parameters["test_samples"].default == 10_000
 
 
 def _write_split(path: Path, repetitions: int) -> None:

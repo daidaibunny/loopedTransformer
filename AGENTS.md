@@ -25,8 +25,9 @@
 ## Data
 
 - Dataset root:
-  `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val25000_test25000`.
+  `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val10000_test10000`.
 - Parent full dataset: `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1`.
+- Define split sizes by sample rows: 100,000 train, 10,000 validation, and 10,000 test.
 - Resolve COCO and CLEVR with `image_path`.
 - Resolve GQA Balanced from its materialized image cache by `image_id`.
 - Preserve the exact source ratio in train, validation, and test.

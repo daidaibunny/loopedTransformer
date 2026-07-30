@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
-from looped_vl.throughput import summarize_timings
+from looped_vl.throughput import parse_args, summarize_timings
+
+
+def test_throughput_defaults_use_10k_validation_and_test_samples(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	monkeypatch.setattr(sys, "argv", ["looped-vl-throughput"])
+
+	args = parse_args()
+
+	assert args.validation_samples == 10_000
+	assert args.test_samples == 10_000
 
 
 def test_summarize_timings_projects_train_and_full_dataset_runtime() -> None:

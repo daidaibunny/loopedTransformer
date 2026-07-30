@@ -15,7 +15,13 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
-from looped_vl.data import DEFAULT_DATASET_ROOT, LoopedVLMixtureDataset, mixture_collate
+from looped_vl.data import (
+	DEFAULT_DATASET_ROOT,
+	DEFAULT_TEST_SAMPLES,
+	DEFAULT_VALIDATION_SAMPLES,
+	LoopedVLMixtureDataset,
+	mixture_collate,
+)
 from looped_vl.smoke import (
 	assert_model_frozen,
 	checkpoint_sha256,
@@ -273,8 +279,12 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--num-workers", type=int, default=4)
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--seed", type=int, default=20260729)
-	parser.add_argument("--validation-samples", type=int, default=25_000)
-	parser.add_argument("--test-samples", type=int, default=25_000)
+	parser.add_argument(
+		"--validation-samples",
+		type=int,
+		default=DEFAULT_VALIDATION_SAMPLES,
+	)
+	parser.add_argument("--test-samples", type=int, default=DEFAULT_TEST_SAMPLES)
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=64 * 64)
 	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)

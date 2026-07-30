@@ -14,8 +14,12 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 SOURCE_ORDER = ("coco", "gqa_balanced", "clevr")
+DEFAULT_TRAIN_SAMPLES = 100_000
+DEFAULT_VALIDATION_SAMPLES = 10_000
+DEFAULT_TEST_SAMPLES = 10_000
 DEFAULT_DATASET_ROOT = Path(
-	"/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val25000_test25000",
+	f"/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train{DEFAULT_TRAIN_SAMPLES}"
+	f"_val{DEFAULT_VALIDATION_SAMPLES}_test{DEFAULT_TEST_SAMPLES}",
 )
 SOURCE_INSTRUCTIONS = {
 	"coco": "Represent the image and caption for multimodal retrieval.",
