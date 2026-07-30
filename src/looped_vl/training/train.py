@@ -286,6 +286,7 @@ def _train_stage(
 	optimizer, scheduler = build_optimizer_and_scheduler(training_model, stage_config)
 	gradient_scaler = torch.cuda.amp.GradScaler(
 		enabled=training_precision.gradient_scaling_enabled,
+		init_scale=args.initial_gradient_scale,
 	)
 	gradient_accumulation_steps = stage_config.gradient_accumulation_steps(
 		args.per_device_batch_size,
@@ -603,6 +604,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		raise ValueError("resume_per_device_batch_size must be positive")
 	if args.max_additional_optimizer_steps < 0:
 		raise ValueError("max_additional_optimizer_steps cannot be negative")
+	if args.initial_gradient_scale <= 0:
+		raise ValueError("initial_gradient_scale must be positive")
 	if args.smoke_optimizer_steps and args.max_additional_optimizer_steps:
 		raise ValueError(
 			"smoke_optimizer_steps and max_additional_optimizer_steps are mutually exclusive",
@@ -677,6 +680,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"autocast_dtype": str(training_precision.autocast_dtype),
 		"autocast_enabled": training_precision.autocast_enabled,
 		"gradient_scaling_enabled": training_precision.gradient_scaling_enabled,
+		"initial_gradient_scale": args.initial_gradient_scale,
 		"requested_attention_implementation": args.attention_implementation,
 		"resolved_attention_implementation": resolved_attention_implementation,
 		"resolved_backbone_attention_implementation": (
@@ -822,6 +826,7 @@ def parse_args() -> argparse.Namespace:
 		choices=RUNTIME_PRECISIONS,
 		default="bf16",
 	)
+	parser.add_argument("--initial-gradient-scale", type=float, default=65_536.0)
 	parser.add_argument("--semantic-gradient-checkpointing", action="store_true")
 	parser.add_argument("--num-workers", type=int, default=2)
 	parser.add_argument("--prefetch-factor", type=int, default=2)

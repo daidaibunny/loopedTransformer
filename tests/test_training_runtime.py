@@ -244,6 +244,7 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	assert args.per_device_batch_size == 8
 	assert args.attention_implementation == "auto"
 	assert args.runtime_precision == "bf16"
+	assert args.initial_gradient_scale == 65_536.0
 	assert args.semantic_gradient_checkpointing is False
 
 
