@@ -1,4 +1,4 @@
-"""Two-GPU Stage 1 then Stage 2 training for recurrent Qwen3-VL embeddings."""
+"""Distributed Stage 1 then Stage 2 training for recurrent Qwen3-VL embeddings."""
 
 from __future__ import annotations
 
@@ -29,8 +29,9 @@ from looped_vl.models.loading import load_recurrent_components
 from looped_vl.runtime import (
 	ATTENTION_IMPLEMENTATIONS,
 	RUNTIME_PRECISIONS,
+	TrainingPrecision,
 	resolve_attention_implementation,
-	resolve_torch_dtype,
+	resolve_training_precision,
 )
 from looped_vl.smoke import checkpoint_sha256
 from looped_vl.training.checkpointing import (
@@ -179,6 +180,7 @@ def _save_checkpoint(
 	rank: int,
 	world_size: int,
 	metadata: dict[str, Any],
+	gradient_scaler: torch.cuda.amp.GradScaler,
 ) -> Path:
 	rank_rng_states = _gather_rank_rng_states(world_size)
 	path = output_dir / "checkpoints" / (
@@ -193,6 +195,7 @@ def _save_checkpoint(
 			cursor=cursor,
 			rank_rng_states=rank_rng_states,
 			metadata=metadata,
+			gradient_scaler=gradient_scaler,
 		)
 	dist.barrier()
 	return path
@@ -266,10 +269,14 @@ def _train_stage(
 	output_dir: Path,
 	checkpoint_metadata: dict[str, Any],
 	resume_checkpoint: Path | None,
+	training_precision: TrainingPrecision,
 ) -> TrainingCursor:
 	trainable_names = configure_trainable_parameters(training_model.encoder, stage_config.stage)
 	_set_training_modes(training_model)
 	optimizer, scheduler = build_optimizer_and_scheduler(training_model, stage_config)
+	gradient_scaler = torch.cuda.amp.GradScaler(
+		enabled=training_precision.gradient_scaling_enabled,
+	)
 	gradient_accumulation_steps = stage_config.gradient_accumulation_steps(
 		args.per_device_batch_size,
 		world_size,
@@ -290,6 +297,7 @@ def _train_stage(
 			optimizer=optimizer,
 			scheduler=scheduler,
 			rank=rank,
+			gradient_scaler=gradient_scaler,
 		)
 		if cursor.stage != stage_config.stage:
 			raise ValueError("Resume checkpoint stage does not match active stage")
@@ -386,19 +394,24 @@ def _train_stage(
 				nullcontext() if is_accumulation_boundary else ddp_model.no_sync()
 			)
 			with synchronization_context:
-				step_output = ddp_model(
-					local_batch_size=args.per_device_batch_size,
-					semantic_targets=batch["semantic_targets"],
-					sources=batch["sources"],
-					stage=stage_config.stage,
-					processed_batches=processed_batches,
-					original_indices=tuple(
-						group.original_indices
-						for group in input_groups
-					),
-				)
-				loss = step_output["total_loss"] / gradient_accumulation_steps
-				loss.backward()
+				with torch.autocast(
+					device_type="cuda",
+					dtype=training_precision.autocast_dtype,
+					enabled=training_precision.autocast_enabled,
+				):
+					step_output = ddp_model(
+						local_batch_size=args.per_device_batch_size,
+						semantic_targets=batch["semantic_targets"],
+						sources=batch["sources"],
+						stage=stage_config.stage,
+						processed_batches=processed_batches,
+						original_indices=tuple(
+							group.original_indices
+							for group in input_groups
+						),
+					)
+					loss = step_output["total_loss"] / gradient_accumulation_steps
+				gradient_scaler.scale(loss).backward()
 			_accumulate_metric_tensors(accumulator, step_output, metric_keys)
 			accumulated_batches += 1
 			source_counts.update(batch["sources"])
@@ -414,6 +427,7 @@ def _train_stage(
 				],
 			}
 			if is_accumulation_boundary:
+				gradient_scaler.unscale_(optimizer)
 				gradient_audit = None
 				if cursor.global_step == 0:
 					gradient_audit = audit_gradient_scope(
@@ -433,9 +447,34 @@ def _train_stage(
 					),
 					stage_config.gradient_clip_norm,
 				)
-				optimizer.step()
-				scheduler.step()
+				scale_before_step = gradient_scaler.get_scale()
+				gradient_scaler.step(optimizer)
+				gradient_scaler.update()
+				optimizer_step_skipped = (
+					gradient_scaler.is_enabled()
+					and gradient_scaler.get_scale() < scale_before_step
+				)
 				optimizer.zero_grad(set_to_none=True)
+				if optimizer_step_skipped:
+					if rank == 0:
+						LOGGER.warning(
+							"Skipped non-finite FP16 optimizer step at data batch %d",
+							batch_index,
+						)
+					cursor = TrainingCursor(
+						stage=stage_config.stage,
+						global_step=cursor.global_step,
+						sampler_epoch=epoch,
+						batch_in_epoch=batch_index + 1,
+						gradient_accumulation_step=0,
+					)
+					accumulator = {}
+					accumulated_batches = 0
+					source_counts = Counter()
+					direction_counts = Counter()
+					step_start = time.perf_counter()
+					continue
+				scheduler.step()
 				global_step = cursor.global_step + 1
 				averages = _finalize_metric_tensors(accumulator, accumulated_batches)
 				finalized_diagnostics = {
@@ -453,6 +492,7 @@ def _train_stage(
 					**finalized_diagnostics,
 					"gradient_norm": float(gradient_norm.detach().float().item()),
 					"learning_rate": float(scheduler.get_last_lr()[0]),
+					"gradient_scale": float(gradient_scaler.get_scale()),
 					"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
 					"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
 					"samples_per_second": global_samples / elapsed,
@@ -506,6 +546,7 @@ def _train_stage(
 						rank=rank,
 						world_size=world_size,
 						metadata=checkpoint_metadata,
+						gradient_scaler=gradient_scaler,
 					)
 					if rank == 0:
 						_write_json(
@@ -565,7 +606,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	resolved_attention_implementation = resolve_attention_implementation(
 		args.attention_implementation,
 	)
-	runtime_dtype = resolve_torch_dtype(args.runtime_precision)
+	training_precision = resolve_training_precision(args.runtime_precision)
 	output_dir = Path(args.output_dir)
 	if rank == 0:
 		if output_dir.exists():
@@ -599,7 +640,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		device=device,
 		enable_lora=True,
 		semantic_decoder_root=args.semantic_decoder_root,
-		dtype=runtime_dtype,
+		dtype=training_precision.parameter_dtype,
 		attention_implementation=resolved_attention_implementation,
 		semantic_gradient_checkpointing=args.semantic_gradient_checkpointing,
 		max_length=args.max_length,
@@ -621,6 +662,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"world_size": world_size,
 		"specification_precision": "bf16",
 		"runtime_precision": args.runtime_precision,
+		"parameter_dtype": str(training_precision.parameter_dtype),
+		"autocast_dtype": str(training_precision.autocast_dtype),
+		"autocast_enabled": training_precision.autocast_enabled,
+		"gradient_scaling_enabled": training_precision.gradient_scaling_enabled,
 		"requested_attention_implementation": args.attention_implementation,
 		"resolved_attention_implementation": resolved_attention_implementation,
 		"resolved_backbone_attention_implementation": (
@@ -690,6 +735,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			output_dir=output_dir,
 			checkpoint_metadata=checkpoint_metadata,
 			resume_checkpoint=args.resume_checkpoint if stage == args.start_stage else None,
+			training_precision=training_precision,
 		)
 	checkpoint_hash_after = checkpoint_sha256(model_checkpoint_path) if rank == 0 else None
 	if rank == 0 and checkpoint_hash_after != checkpoint_hash_before:

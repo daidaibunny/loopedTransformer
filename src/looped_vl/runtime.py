@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import importlib.util
+from dataclasses import dataclass
 
 import torch
 
 ATTENTION_IMPLEMENTATIONS = ("auto", "flash_attention_2", "sdpa", "eager")
 RUNTIME_PRECISIONS = ("bf16", "fp16")
+
+
+@dataclass(frozen=True)
+class TrainingPrecision:
+	"""Parameter storage and automatic mixed-precision settings for training."""
+
+	parameter_dtype: torch.dtype
+	autocast_dtype: torch.dtype
+	autocast_enabled: bool
+	gradient_scaling_enabled: bool
 
 
 def resolve_attention_implementation(
@@ -48,4 +59,23 @@ def resolve_torch_dtype(precision: str) -> torch.dtype:
 		return torch.bfloat16
 	if precision == "fp16":
 		return torch.float16
+	raise ValueError(f"Unsupported runtime precision: {precision}")
+
+
+def resolve_training_precision(precision: str) -> TrainingPrecision:
+	"""Keep FP16 trainable weights in FP32 while using Volta Tensor Cores."""
+	if precision == "bf16":
+		return TrainingPrecision(
+			parameter_dtype=torch.bfloat16,
+			autocast_dtype=torch.bfloat16,
+			autocast_enabled=False,
+			gradient_scaling_enabled=False,
+		)
+	if precision == "fp16":
+		return TrainingPrecision(
+			parameter_dtype=torch.float32,
+			autocast_dtype=torch.float16,
+			autocast_enabled=True,
+			gradient_scaling_enabled=True,
+		)
 	raise ValueError(f"Unsupported runtime precision: {precision}")

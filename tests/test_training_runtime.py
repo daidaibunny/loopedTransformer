@@ -34,6 +34,17 @@ from looped_vl.training.train import (
 )
 
 
+class _FakeGradientScaler:
+	def __init__(self, scale: float) -> None:
+		self.scale = scale
+
+	def state_dict(self) -> dict[str, float]:
+		return {"scale": self.scale}
+
+	def load_state_dict(self, state_dict: dict[str, float]) -> None:
+		self.scale = state_dict["scale"]
+
+
 def test_stage_configs_match_all_fixed_optimizer_values() -> None:
 	stage1 = TrainingStageConfig.from_yaml(Path("configs/stage1.yaml"))
 	stage2 = TrainingStageConfig.from_yaml(Path("configs/stage2.yaml"))
@@ -117,6 +128,42 @@ def test_checkpoint_restores_trainable_values_optimizer_scheduler_and_cursor(
 	assert torch.equal(model[0].weight, original_weight)
 	assert loaded_cursor == cursor
 	assert metadata == {"test": True}
+
+
+def test_checkpoint_restores_gradient_scaler_state(tmp_path: Path) -> None:
+	model = nn.Linear(3, 2)
+	stage = TrainingStageConfig.from_yaml(Path("configs/stage1.yaml"))
+	optimizer, scheduler = build_optimizer_and_scheduler(model, stage)
+	saved_scaler = _FakeGradientScaler(scale=4096.0)
+	restored_scaler = _FakeGradientScaler(scale=1.0)
+	checkpoint_path = tmp_path / "checkpoint-with-scaler.pt"
+
+	save_training_checkpoint(
+		path=checkpoint_path,
+		model=model,
+		optimizer=optimizer,
+		scheduler=scheduler,
+		cursor=TrainingCursor(
+			stage=1,
+			global_step=3,
+			sampler_epoch=0,
+			batch_in_epoch=4,
+			gradient_accumulation_step=0,
+		),
+		rank_rng_states=[capture_rng_state()],
+		metadata={},
+		gradient_scaler=saved_scaler,
+	)
+	load_training_checkpoint(
+		path=checkpoint_path,
+		model=model,
+		optimizer=optimizer,
+		scheduler=scheduler,
+		rank=0,
+		gradient_scaler=restored_scaler,
+	)
+
+	assert restored_scaler.scale == 4096.0
 
 
 def test_checkpoint_cursor_rebases_exact_sample_position_for_larger_batch() -> None:

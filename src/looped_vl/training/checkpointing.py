@@ -5,11 +5,23 @@ from __future__ import annotations
 import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import torch
 from torch import nn
+
+
+class GradientScaler(Protocol):
+	"""Checkpoint-facing subset of the CUDA gradient scaler API."""
+
+	def state_dict(self) -> dict[str, Any]:
+		"""Return the scaler state."""
+		...
+
+	def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+		"""Restore the scaler state."""
+		...
 
 
 @dataclass(frozen=True)
@@ -83,6 +95,7 @@ def save_training_checkpoint(
 	cursor: TrainingCursor,
 	rank_rng_states: list[dict[str, Any]],
 	metadata: dict[str, Any],
+	gradient_scaler: GradientScaler | None = None,
 ) -> None:
 	"""Save all trainable values, optimizer state, cursor, and rank RNG streams."""
 	target = Path(path)
@@ -97,6 +110,9 @@ def save_training_checkpoint(
 		"cursor": asdict(cursor),
 		"rank_rng_states": rank_rng_states,
 		"metadata": metadata,
+		"gradient_scaler_state": (
+			gradient_scaler.state_dict() if gradient_scaler is not None else None
+		),
 	}
 	temporary = target.with_suffix(target.suffix + ".tmp")
 	if temporary.exists():
@@ -111,6 +127,7 @@ def load_training_checkpoint(
 	optimizer: torch.optim.Optimizer,
 	scheduler: torch.optim.lr_scheduler.LRScheduler,
 	rank: int,
+	gradient_scaler: GradientScaler | None = None,
 ) -> tuple[TrainingCursor, dict[str, Any]]:
 	"""Restore trainable values, optimizer, scheduler, cursor, and this rank's RNG."""
 	payload = torch.load(path, map_location="cpu", weights_only=False)
@@ -126,6 +143,9 @@ def load_training_checkpoint(
 		)
 	optimizer.load_state_dict(payload["optimizer_state"])
 	scheduler.load_state_dict(payload["scheduler_state"])
+	gradient_scaler_state = payload.get("gradient_scaler_state")
+	if gradient_scaler is not None and gradient_scaler_state is not None:
+		gradient_scaler.load_state_dict(gradient_scaler_state)
 	rank_rng_states = payload["rank_rng_states"]
 	if rank >= len(rank_rng_states):
 		raise ValueError(f"Checkpoint does not contain RNG state for rank {rank}")
