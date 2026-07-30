@@ -423,6 +423,13 @@ def test_smoke_run_skips_large_optimizer_checkpoints() -> None:
 		smoke_optimizer_steps=3,
 	) is False
 	assert _should_save_checkpoint(
+		global_step=3,
+		optimizer_step_limit=3,
+		checkpoint_every=100,
+		smoke_optimizer_steps=3,
+		smoke_save_final_checkpoint=True,
+	) is True
+	assert _should_save_checkpoint(
 		global_step=100,
 		optimizer_step_limit=2000,
 		checkpoint_every=100,

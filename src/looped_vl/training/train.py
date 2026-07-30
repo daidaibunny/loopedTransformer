@@ -313,10 +313,14 @@ def _should_save_checkpoint(
 	optimizer_step_limit: int,
 	checkpoint_every: int,
 	smoke_optimizer_steps: int,
+	smoke_save_final_checkpoint: bool = False,
 ) -> bool:
 	"""Skip multi-gigabyte optimizer checkpoints for disposable smoke runs."""
 	if smoke_optimizer_steps:
-		return False
+		return (
+			smoke_save_final_checkpoint
+			and global_step == optimizer_step_limit
+		)
 	return global_step % checkpoint_every == 0 or global_step == optimizer_step_limit
 
 
@@ -750,6 +754,7 @@ def _train_one_epoch(
 			optimizer_step_limit=optimizer_step_limit,
 			checkpoint_every=args.checkpoint_every,
 			smoke_optimizer_steps=args.smoke_optimizer_steps,
+			smoke_save_final_checkpoint=args.smoke_save_final_checkpoint,
 		):
 			checkpoint_path = _save_checkpoint(
 				output_dir=output_dir,
@@ -806,6 +811,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	if args.smoke_optimizer_steps and args.max_additional_optimizer_steps:
 		raise ValueError(
 			"smoke_optimizer_steps and max_additional_optimizer_steps are mutually exclusive",
+		)
+	if args.smoke_save_final_checkpoint and not args.smoke_optimizer_steps:
+		raise ValueError(
+			"smoke_save_final_checkpoint requires smoke_optimizer_steps",
 		)
 	if args.smoke_optimizer_steps and not (
 		0 < args.smoke_warm_start_steps < args.smoke_optimizer_steps
@@ -1107,6 +1116,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--smoke-optimizer-steps", type=int, default=0)
 	parser.add_argument("--smoke-warm-start-steps", type=int, default=1)
 	parser.add_argument("--smoke-gradient-accumulation-steps", type=int, default=1)
+	parser.add_argument("--smoke-save-final-checkpoint", action="store_true")
 	return parser.parse_args()
 
 
