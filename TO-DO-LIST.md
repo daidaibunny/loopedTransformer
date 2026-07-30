@@ -37,3 +37,9 @@
 - [ ] Run the optimized two-GPU Stage 1 and Stage 2 smoke benchmarks at batch size 8.
 - [ ] Estimate one 100,000-row training epoch; create a 50,000-row train subset only if the
   measured upper estimate exceeds one hour.
+- [ ] Audit the full official COCO, GQA Balanced, and CLEVR splits on `8XV100`.
+- [ ] Profile one-dataset training on eight V100 GPUs and compare the measured COCO epoch
+  time with the reported 20-minute reference.
+- [ ] Train and evaluate COCO, GQA Balanced, and CLEVR independently on their full splits.
+- [ ] Report retrieval metrics after recurrent passes 1, 2, 3, and 4, including the change
+  from the previous pass and from pass 1.

@@ -11,23 +11,41 @@
 
 ## Remote execution
 
-- Use only SSH alias `gyy1` and its two assigned physical GPUs, 0 and 1.
-- Use the official Git clone at `/mnt/afs/liyiwei/loopedTransformer` as the remote code root.
-- Use `/mnt/afs/likangle/reserach/LOCUS-MLLM/envs/LOCUS/bin/python`.
+- There are two independent compute routes: `8XV100` and `2XA800`. Follow the route
+  separation, GPU guard, SSH, storage, and scheduling rules in the workspace-root
+  `AGENTS.md`.
+- Select one route explicitly for every remote task. Never mix code, data, environments,
+  processes, checkpoints, logs, or results between the two routes.
+- The currently selected route is `8XV100`. Use SSH alias `8XV100`, verify that the host
+  has eight NVIDIA V100 GPUs before every launch, and use all eight GPUs when the program
+  supports distributed execution.
+- On `8XV100`, discover the project, data, model, and Python environment under
+  `/home/mnt/liyiwei` before use. Do not reuse `/mnt/afs` paths or the shared LOCUS
+  interpreter from `2XA800`.
+- `2XA800` remains available for tasks that explicitly select it. Its operational target
+  is SSH alias `gyy1`, with project root `/mnt/afs/liyiwei/loopedTransformer` and the two
+  assigned physical GPUs 0 and 1.
 - Run long jobs in uniquely named detached tmux sessions with separate logs.
-- Before a two-GPU launch, inspect both GPUs once and submit immediately when neither GPU
-  has an active compute process. Do not impose a continuous idle waiting period.
-- Use per-device training batch size 8 on two GPUs, with gradient accumulation 32 and
-  effective global batch size 512. Do not use batch size 16; it exhausted an 80 GB GPU
-  under the official variable-resolution preprocessing.
-- After launch, poll both ranks, GPU use, progress logs, and checkpoints for several minutes.
+- Before an `8XV100` launch, pause and verify the persistent idle GPU guard exactly as
+  specified in the workspace-root `AGENTS.md`. Resume it after the real task finishes.
+- Treat physical batch size and gradient accumulation as route-specific settings. Measure
+  them on the selected hardware while preserving the required effective global batch size
+  and all result-affecting model settings.
+- After launch, poll every distributed rank, GPU use, progress logs, and checkpoints for
+  several minutes.
 
 ## Data
 
-- Dataset root:
-  `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val10000_test10000`.
-- Parent full dataset: `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1`.
-- Define split sizes by sample rows: 100,000 train, 10,000 validation, and 10,000 test.
+- Resolve dataset roots under the selected route's storage mount. Do not copy a path from
+  one compute route into commands for the other route.
+- The old mixed subset on `2XA800` is
+  `/mnt/afs/liyiwei/datasets/looped_vl_mix_v1_train100000_val10000_test10000`; it is not
+  the input to the first single-dataset experiments.
+- The first experiments train and evaluate COCO, GQA Balanced, and CLEVR independently,
+  using each dataset's full official split rather than the 50:35:15 mixture.
+- Keep the 50:35:15 mixture only for later mixed-dataset experiments and aggregate reports.
+- For the later mixed subset only, define split sizes by sample rows: 100,000 train,
+  10,000 validation, and 10,000 test.
 - Resolve COCO and CLEVR with `image_path`.
 - Resolve GQA Balanced from its materialized image cache by `image_id`.
 - Preserve the exact source ratio in train, validation, and test.
