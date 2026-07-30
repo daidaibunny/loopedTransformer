@@ -31,6 +31,7 @@ from looped_vl.training.step import compose_training_loss
 from looped_vl.training.train import (
 	_accumulate_metric_tensors,
 	_clear_parameter_gradients,
+	_distributed_data_parallel_options,
 	_finalize_metric_tensors,
 	_optimizer_step_limit,
 	_resolve_git_commit,
@@ -50,6 +51,17 @@ class _FakeGradientScaler:
 
 	def load_state_dict(self, state_dict: dict[str, float]) -> None:
 		self.scale = state_dict["scale"]
+
+
+def test_recurrent_ddp_options_support_gradient_accumulation() -> None:
+	options = _distributed_data_parallel_options()
+
+	assert options == {
+		"broadcast_buffers": False,
+		"find_unused_parameters": False,
+		"gradient_as_bucket_view": True,
+		"static_graph": False,
+	}
 
 
 def test_single_training_config_matches_optimizer_and_warm_start_protocol() -> None:

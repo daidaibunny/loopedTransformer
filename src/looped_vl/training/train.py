@@ -349,6 +349,22 @@ def _clear_parameter_gradients(
 		parameters[name].grad = None
 
 
+def _distributed_data_parallel_options() -> dict[str, bool]:
+	"""Return options that support repeated no-sync backward passes.
+
+	The recurrent run accumulates several independently constructed forward
+	graphs before each optimizer step. PyTorch's static-graph reducer can assert
+	internally on the second no-sync backward pass, so this run must use the
+	regular reducer while retaining bucket views.
+	"""
+	return {
+		"broadcast_buffers": False,
+		"find_unused_parameters": False,
+		"gradient_as_bucket_view": True,
+		"static_graph": False,
+	}
+
+
 def _train_one_epoch(
 	*,
 	args: argparse.Namespace,
@@ -460,10 +476,7 @@ def _train_one_epoch(
 		training_model,
 		device_ids=[local_rank],
 		output_device=local_rank,
-		broadcast_buffers=False,
-		find_unused_parameters=False,
-		gradient_as_bucket_view=True,
-		static_graph=True,
+		**_distributed_data_parallel_options(),
 	)
 	if rank == 0:
 		_write_json(
@@ -943,7 +956,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"semantic_decoder_enabled": False,
 		"modality_grouped_padding": True,
 		"ddp_gradient_as_bucket_view": True,
-		"ddp_static_graph": True,
+		"ddp_static_graph": False,
 		"fused_adamw": True,
 		"seed": 42,
 		"model_config": asdict(model_config),
