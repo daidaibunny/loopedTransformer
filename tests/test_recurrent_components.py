@@ -9,7 +9,7 @@ from looped_vl.models.latent_slot_inserter import (
 	augment_before_last_valid_token,
 	create_or_load_master_slot_initialization,
 )
-from looped_vl.models.recurrent_connector import RecurrentConnector
+from looped_vl.models.recurrent_connector import RecurrentConnector, RMSNorm
 from looped_vl.models.recurrent_decoder_block import (
 	build_dynamic_attention_mask,
 	detach_prefix_key_values,
@@ -192,6 +192,15 @@ def test_recurrent_connector_starts_as_an_exact_zero_residual() -> None:
 
 	assert output.abs().max().item() < 1e-7
 	assert connector.up_projection.weight.count_nonzero().item() == 0
+
+
+def test_project_rms_norm_matches_torch_reference() -> None:
+	inputs = torch.randn(2, 3, 32)
+	reference = torch.nn.RMSNorm(32, eps=1e-6)
+	project = RMSNorm(32, eps=1e-6)
+	project.weight.data.copy_(reference.weight)
+
+	assert torch.allclose(project(inputs), reference(inputs), atol=1e-6, rtol=1e-6)
 
 
 def test_recurrent_components_run_after_bfloat16_precision_alignment() -> None:
