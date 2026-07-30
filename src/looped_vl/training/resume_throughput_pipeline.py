@@ -548,7 +548,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--resume-checkpoint", type=Path)
 	parser.add_argument("--latest-checkpoint-json", type=Path)
 	parser.add_argument("--resume-per-device-batch-size", type=int)
-	parser.add_argument("--training-batch-sizes", type=_parse_batch_sizes, default=(4, 8, 16))
+	parser.add_argument("--training-batch-sizes", type=_parse_batch_sizes, default=(8,))
 	parser.add_argument("--training-benchmark-steps", type=int, default=3)
 	parser.add_argument("--frozen-batch-sizes", type=_parse_batch_sizes, default=(64, 128, 256))
 	parser.add_argument("--frozen-benchmark-rows", type=int, default=800)

@@ -1,4 +1,5 @@
 import random
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,7 @@ from looped_vl.training.train import (
 	_finalize_metric_tensors,
 	_optimizer_step_limit,
 	_resolve_git_commit,
+	parse_args,
 )
 
 
@@ -172,6 +174,21 @@ def test_effective_batch_size_must_equal_512() -> None:
 	assert stage.gradient_accumulation_steps(per_device_batch_size=8, world_size=2) == 32
 	with pytest.raises(ValueError, match="divide"):
 		stage.gradient_accumulation_steps(per_device_batch_size=3, world_size=2)
+
+
+def test_training_cli_defaults_to_per_device_batch_eight(
+	monkeypatch: pytest.MonkeyPatch,
+	tmp_path: Path,
+) -> None:
+	monkeypatch.setattr(
+		sys,
+		"argv",
+		["train", "--output-dir", str(tmp_path / "training")],
+	)
+
+	args = parse_args()
+
+	assert args.per_device_batch_size == 8
 
 
 def test_additional_step_limit_is_relative_to_resumed_global_step() -> None:

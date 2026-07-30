@@ -108,6 +108,31 @@ def test_pipeline_cli_rejects_removed_continuous_idle_gate(
 		parse_args()
 
 
+def test_pipeline_cli_defaults_to_training_batch_eight(
+	monkeypatch: pytest.MonkeyPatch,
+	tmp_path: Path,
+) -> None:
+	monkeypatch.setattr(
+		sys,
+		"argv",
+		[
+			"resume_throughput_pipeline",
+			"--pipeline-root",
+			str(tmp_path / "pipeline"),
+			"--code-commit",
+			"a" * 40,
+			"--full-frozen-output",
+			str(tmp_path / "frozen"),
+			"--training-output",
+			str(tmp_path / "training"),
+		],
+	)
+
+	args = parse_args()
+
+	assert args.training_batch_sizes == (8,)
+
+
 def test_frozen_full_evaluation_command_does_not_apply_smoke_limit(tmp_path: Path) -> None:
 	command = build_frozen_evaluation_command(
 		torchrun=Path("/env/bin/torchrun"),

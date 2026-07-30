@@ -17,6 +17,9 @@
 - Run long jobs in uniquely named detached tmux sessions with separate logs.
 - Before a two-GPU launch, inspect both GPUs once and submit immediately when neither GPU
   has an active compute process. Do not impose a continuous idle waiting period.
+- Use per-device training batch size 8 on two GPUs, with gradient accumulation 32 and
+  effective global batch size 512. Do not use batch size 16; it exhausted an 80 GB GPU
+  under the official variable-resolution preprocessing.
 - After launch, poll both ranks, GPU use, progress logs, and checkpoints for several minutes.
 
 ## Data

@@ -680,7 +680,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--expected-world-size", type=int, default=2)
 	parser.add_argument("--start-stage", type=int, choices=(1, 2), default=1)
 	parser.add_argument("--end-stage", type=int, choices=(1, 2), default=2)
-	parser.add_argument("--per-device-batch-size", type=int, default=1)
+	parser.add_argument("--per-device-batch-size", type=int, default=8)
 	parser.add_argument("--num-workers", type=int, default=2)
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--checkpoint-every", type=int, default=500)

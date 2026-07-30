@@ -1,4 +1,4 @@
-"""Wait for three idle GPU minutes, run a two-GPU smoke, then launch full training."""
+"""Check both GPUs once, run a two-GPU smoke, then launch full training."""
 
 from __future__ import annotations
 
@@ -174,7 +174,7 @@ def _training_command(
 		"--output-dir",
 		str(output_dir),
 		"--per-device-batch-size",
-		"1",
+		"1" if smoke else "8",
 		"--num-workers",
 		str(args.num_workers),
 		"--checkpoint-every",
@@ -201,30 +201,27 @@ def _training_command(
 
 
 def run_wait_smoke_and_train(args: argparse.Namespace) -> None:
-	"""Perform the continuous idle gate, two-stage smoke, then the full run."""
+	"""Perform immediate GPU checks, two-stage smoke, then the full run."""
 	launcher_output = Path(args.launcher_output_dir)
 	if launcher_output.exists():
 		raise FileExistsError(f"Launcher output already exists: {launcher_output}")
 	launcher_output.mkdir(parents=True)
 	status_path = launcher_output / "status.json"
-	monitor_log = launcher_output / "gpu_idle_monitor_before_smoke.jsonl"
-	_write_json(status_path, {"status": "waiting_for_three_idle_minutes"})
-	passed_snapshot = wait_for_idle_window(
-		required_seconds=args.required_idle_seconds,
-		poll_seconds=args.poll_seconds,
-		log_path=monitor_log,
-	)
+	_write_json(status_path, {"status": "checking_gpus_before_smoke"})
+	passed_snapshot = query_gpu_snapshot()
 	_write_json(
-		launcher_output / "smoke_idle_gate_passed.json",
+		launcher_output / "gpu_state_before_smoke.json",
 		{
 			"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-			"required_idle_seconds": args.required_idle_seconds,
 			"snapshot": {
 				"gpus": [asdict(gpu) for gpu in passed_snapshot.gpus],
 				"compute_process_count": passed_snapshot.compute_process_count,
+				"is_idle": passed_snapshot.is_idle,
 			},
 		},
 	)
+	if not passed_snapshot.is_idle:
+		raise RuntimeError("Both GPUs must be idle at submission time")
 	environment = os.environ.copy()
 	environment["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 	environment["CUDA_VISIBLE_DEVICES"] = "0,1"
@@ -244,23 +241,21 @@ def run_wait_smoke_and_train(args: argparse.Namespace) -> None:
 	)
 	if smoke_status.get("status") != "passed":
 		raise RuntimeError(f"Two-GPU smoke did not pass: {smoke_status}")
-	_write_json(status_path, {"status": "waiting_for_pre_training_idle_window"})
-	training_snapshot = wait_for_idle_window(
-		required_seconds=args.required_idle_seconds,
-		poll_seconds=args.poll_seconds,
-		log_path=launcher_output / "gpu_idle_monitor_before_training.jsonl",
-	)
+	_write_json(status_path, {"status": "checking_gpus_before_full_training"})
+	training_snapshot = query_gpu_snapshot()
 	_write_json(
-		launcher_output / "training_idle_gate_passed.json",
+		launcher_output / "gpu_state_before_full_training.json",
 		{
 			"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-			"required_idle_seconds": args.required_idle_seconds,
 			"snapshot": {
 				"gpus": [asdict(gpu) for gpu in training_snapshot.gpus],
 				"compute_process_count": training_snapshot.compute_process_count,
+				"is_idle": training_snapshot.is_idle,
 			},
 		},
 	)
+	if not training_snapshot.is_idle:
+		raise RuntimeError("Both GPUs must be idle before full training")
 	_write_json(status_path, {"status": "running_full_training"})
 	training_command = _training_command(args, Path(args.train_output_dir), smoke=False)
 	training_result = subprocess.run(
@@ -275,7 +270,7 @@ def run_wait_smoke_and_train(args: argparse.Namespace) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-	"""Parse idle monitor, smoke, and full-run paths."""
+	"""Parse immediate GPU check, smoke, and full-run paths."""
 	parser = argparse.ArgumentParser(description=__doc__)
 	parser.add_argument(
 		"--project-root",
@@ -285,15 +280,13 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--launcher-output-dir", type=Path, required=True)
 	parser.add_argument("--smoke-output-dir", type=Path, required=True)
 	parser.add_argument("--train-output-dir", type=Path, required=True)
-	parser.add_argument("--required-idle-seconds", type=float, default=180.0)
-	parser.add_argument("--poll-seconds", type=float, default=10.0)
 	parser.add_argument("--num-workers", type=int, default=2)
 	parser.add_argument("--checkpoint-every", type=int, default=500)
 	return parser.parse_args()
 
 
 def main() -> int:
-	"""Wait, validate both ranks, and keep the full training attached to this process."""
+	"""Check GPUs, validate both ranks, and keep training attached to this process."""
 	args = parse_args()
 	try:
 		run_wait_smoke_and_train(args)
