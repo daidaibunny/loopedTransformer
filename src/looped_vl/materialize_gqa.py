@@ -20,7 +20,7 @@ def materialize_split(
 	split: str,
 ) -> dict[str, Any]:
 	"""Write one GQA Balanced image split and verify every expected identifier."""
-	if split not in {"train", "val"}:
+	if split not in {"train", "val", "testdev"}:
 		raise ValueError(f"Unsupported GQA split: {split}")
 	source_root = Path(source_root)
 	output_root = Path(output_root)
@@ -95,7 +95,7 @@ def parse_args() -> argparse.Namespace:
 		"--output-root",
 		default="/mnt/afs/liyiwei/datasets/gqa_hf_full/materialized_balanced",
 	)
-	parser.add_argument("--splits", nargs="+", default=["train", "val"])
+	parser.add_argument("--splits", nargs="+", default=["train", "val", "testdev"])
 	return parser.parse_args()
 
 

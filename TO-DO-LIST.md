@@ -43,3 +43,12 @@
 - [ ] Train and evaluate COCO, GQA Balanced, and CLEVR independently on their full splits.
 - [ ] Report retrieval metrics after recurrent passes 1, 2, 3, and 4, including the change
   from the previous pass and from pass 1.
+- [x] Freeze the independent baseline split protocol: COCO Karpathy, GQA Balanced
+  train/validation/testdev, and an image-disjoint seed-42 split of labeled CLEVR validation.
+- [x] Add failing tests for full-data manifests, duplicate-positive contrastive loss,
+  official Qwen LoRA configuration, and the eight-GPU idle queue.
+- [x] Implement the unmodified Qwen3-VL-Embedding-2B LoRA trainer and single-dataset test
+  evaluator without using the 50:35:15 mixture.
+- [ ] Materialize and validate the three full single-dataset manifests on `8XV100`.
+- [ ] Run eight-V100 smoke searches for COCO, GQA Balanced, and CLEVR.
+- [ ] Queue all three full LoRA train/test runs after a continuous two-minute idle window.

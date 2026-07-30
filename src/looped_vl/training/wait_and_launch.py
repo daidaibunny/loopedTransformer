@@ -54,8 +54,12 @@ class ContinuousIdleWindow:
 		return 0.0 if self.idle_since is None else max(0.0, now - self.idle_since)
 
 
-def parse_gpu_snapshot(gpu_output: str, compute_process_count: int) -> GpuSnapshot:
-	"""Parse two physical A800 states and apply the strict idle definition."""
+def parse_gpu_snapshot(
+	gpu_output: str,
+	compute_process_count: int,
+	expected_indexes: tuple[int, ...] = (0, 1),
+) -> GpuSnapshot:
+	"""Parse the selected physical GPUs and apply the strict idle definition."""
 	gpus: list[GpuState] = []
 	for line in gpu_output.splitlines():
 		if not line.strip():
@@ -70,7 +74,6 @@ def parse_gpu_snapshot(gpu_output: str, compute_process_count: int) -> GpuSnapsh
 				utilization_percent=int(parts[2]),
 			),
 		)
-	expected_indexes = (0, 1)
 	if tuple(gpu.index for gpu in gpus) != expected_indexes:
 		raise RuntimeError(f"Expected physical GPUs {expected_indexes}, found {gpus}")
 	is_idle = compute_process_count == 0 and all(
@@ -83,8 +86,10 @@ def parse_gpu_snapshot(gpu_output: str, compute_process_count: int) -> GpuSnapsh
 	)
 
 
-def query_gpu_snapshot() -> GpuSnapshot:
-	"""Read both assigned GPUs and every active compute process."""
+def query_gpu_snapshot(
+	expected_indexes: tuple[int, ...] = (0, 1),
+) -> GpuSnapshot:
+	"""Read the selected GPUs and every active compute process."""
 	gpu_result = subprocess.run(
 		[
 			"nvidia-smi",
@@ -106,7 +111,11 @@ def query_gpu_snapshot() -> GpuSnapshot:
 		text=True,
 	)
 	process_count = len([line for line in process_result.stdout.splitlines() if line.strip()])
-	return parse_gpu_snapshot(gpu_result.stdout, process_count)
+	return parse_gpu_snapshot(
+		gpu_result.stdout,
+		process_count,
+		expected_indexes=expected_indexes,
+	)
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -123,13 +132,14 @@ def wait_for_idle_window(
 	required_seconds: float,
 	poll_seconds: float,
 	log_path: Path,
+	expected_indexes: tuple[int, ...] = (0, 1),
 ) -> GpuSnapshot:
-	"""Block until both GPUs satisfy the strict idle rule continuously."""
+	"""Block until every selected GPU satisfies the strict idle rule continuously."""
 	window = ContinuousIdleWindow(required_seconds)
 	while True:
 		now = time.monotonic()
 		try:
-			snapshot = query_gpu_snapshot()
+			snapshot = query_gpu_snapshot(expected_indexes)
 			ready = window.update(is_idle=snapshot.is_idle, now=now)
 			record = {
 				"timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
