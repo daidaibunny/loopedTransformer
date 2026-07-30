@@ -6,6 +6,7 @@ from looped_vl.baseline.queue import (
 	BaselineRun,
 	build_training_command,
 )
+from looped_vl.baseline.smoke_search import _project_pythonpath
 from looped_vl.training.wait_and_launch import parse_gpu_snapshot
 
 
@@ -45,3 +46,14 @@ def test_training_command_keeps_dataset_specific_parallel_parameters(tmp_path: P
 	assert command[command.index("--gradient-accumulation-steps") + 1] == "4"
 	assert command[command.index("--num-workers") + 1] == "6"
 	assert command[command.index("--expected-world-size") + 1] == "8"
+
+
+def test_smoke_search_preserves_the_selected_runtime_pythonpath(tmp_path: Path) -> None:
+	pythonpath = _project_pythonpath(
+		tmp_path,
+		"/usr/local/lib/python3.10/dist-packages",
+	)
+
+	assert pythonpath == (
+		f"{tmp_path / 'src'}:/usr/local/lib/python3.10/dist-packages"
+	)

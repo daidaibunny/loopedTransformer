@@ -14,6 +14,14 @@ from typing import Any
 from looped_vl.baseline.data import BASELINE_DATASETS
 
 
+def _project_pythonpath(project_root: Path, existing: str | None) -> str:
+	"""Prepend experiment code without hiding the selected runtime libraries."""
+	entries = [str(project_root / "src")]
+	if existing:
+		entries.append(existing)
+	return os.pathsep.join(entries)
+
+
 def _write_json(path: Path, value: Any) -> None:
 	path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -91,7 +99,10 @@ def run_search(args: argparse.Namespace) -> dict[str, Any]:
 	environment["CUDA_VISIBLE_DEVICES"] = ",".join(
 		str(index) for index in range(args.world_size)
 	)
-	environment["PYTHONPATH"] = str(Path(args.project_root) / "src")
+	environment["PYTHONPATH"] = _project_pythonpath(
+		Path(args.project_root),
+		environment.get("PYTHONPATH"),
+	)
 	all_results: dict[str, Any] = {}
 	selected: dict[str, Any] = {}
 	for dataset in args.datasets:
