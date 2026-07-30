@@ -24,9 +24,10 @@ def _training_command(
 	batch_size: int,
 	output_dir: Path,
 ) -> list[str]:
-	torchrun = Path(sys.executable).with_name("torchrun")
 	return [
-		str(torchrun),
+		sys.executable,
+		"-m",
+		"torch.distributed.run",
 		"--standalone",
 		f"--nproc_per_node={args.world_size}",
 		"-m",

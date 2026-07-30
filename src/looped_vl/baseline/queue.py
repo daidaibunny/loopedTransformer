@@ -48,9 +48,10 @@ def build_training_command(
 ) -> list[str]:
 	"""Build one result-isolated eight-rank full training command."""
 	run.validate()
-	torchrun = Path(sys.executable).with_name("torchrun")
 	return [
-		str(torchrun),
+		sys.executable,
+		"-m",
+		"torch.distributed.run",
 		"--standalone",
 		f"--nproc_per_node={world_size}",
 		"-m",
@@ -85,9 +86,10 @@ def build_evaluation_command(
 	world_size: int,
 ) -> list[str]:
 	"""Build the matching held-out test command for one saved adapter."""
-	torchrun = Path(sys.executable).with_name("torchrun")
 	return [
-		str(torchrun),
+		sys.executable,
+		"-m",
+		"torch.distributed.run",
 		"--standalone",
 		f"--nproc_per_node={world_size}",
 		"-m",

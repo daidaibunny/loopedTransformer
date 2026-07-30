@@ -39,6 +39,7 @@ def test_training_command_keeps_dataset_specific_parallel_parameters(tmp_path: P
 		world_size=8,
 	)
 
+	assert command[1:3] == ["-m", "torch.distributed.run"]
 	assert command[command.index("--dataset") + 1] == "clevr"
 	assert command[command.index("--per-device-batch-size") + 1] == "8"
 	assert command[command.index("--gradient-accumulation-steps") + 1] == "4"
