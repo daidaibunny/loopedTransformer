@@ -59,10 +59,11 @@ def test_runtime_precision_names_resolve_to_torch_dtypes() -> None:
 		resolve_torch_dtype("fp32")
 
 
-def test_fp16_training_uses_fp32_parameters_autocast_and_gradient_scaling() -> None:
+def test_fp16_training_keeps_only_trainable_parameters_in_fp32() -> None:
 	precision = resolve_training_precision("fp16")
 
-	assert precision.parameter_dtype is torch.float32
+	assert precision.parameter_dtype is torch.float16
+	assert precision.trainable_parameter_dtype is torch.float32
 	assert precision.autocast_dtype is torch.float16
 	assert precision.autocast_enabled is True
 	assert precision.gradient_scaling_enabled is True
@@ -72,6 +73,7 @@ def test_bf16_training_preserves_the_original_direct_dtype_path() -> None:
 	precision = resolve_training_precision("bf16")
 
 	assert precision.parameter_dtype is torch.bfloat16
+	assert precision.trainable_parameter_dtype is torch.bfloat16
 	assert precision.autocast_dtype is torch.bfloat16
 	assert precision.autocast_enabled is False
 	assert precision.gradient_scaling_enabled is False

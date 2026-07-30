@@ -17,6 +17,19 @@ STAGE2_PREFIXES = STAGE1_PREFIXES + (
 )
 
 
+def align_trainable_parameter_dtype(model: nn.Module, dtype: torch.dtype) -> tuple[str, ...]:
+	"""Move only trainable parameter storage to the optimizer-safe dtype."""
+	aligned_names: list[str] = []
+	for name, parameter in model.named_parameters():
+		if not parameter.requires_grad:
+			continue
+		parameter.data = parameter.data.to(dtype=dtype)
+		if parameter.grad is not None:
+			parameter.grad.data = parameter.grad.data.to(dtype=dtype)
+		aligned_names.append(name)
+	return tuple(aligned_names)
+
+
 def configure_trainable_parameters(model: nn.Module, stage: int) -> tuple[str, ...]:
 	"""Freeze everything, then enable exactly the v1.0 parameter set for one stage."""
 	if stage not in (1, 2):

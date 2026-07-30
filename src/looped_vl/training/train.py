@@ -50,7 +50,11 @@ from looped_vl.training.data import (
 from looped_vl.training.model import RecurrentTrainingModel
 from looped_vl.training.optimizer import build_optimizer_and_scheduler
 from looped_vl.training.reproducibility import seed_everything
-from looped_vl.training.trainability import audit_gradient_scope, configure_trainable_parameters
+from looped_vl.training.trainability import (
+	align_trainable_parameter_dtype,
+	audit_gradient_scope,
+	configure_trainable_parameters,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -272,6 +276,12 @@ def _train_stage(
 	training_precision: TrainingPrecision,
 ) -> TrainingCursor:
 	trainable_names = configure_trainable_parameters(training_model.encoder, stage_config.stage)
+	aligned_names = align_trainable_parameter_dtype(
+		training_model.encoder,
+		training_precision.trainable_parameter_dtype,
+	)
+	if set(aligned_names) != set(trainable_names):
+		raise RuntimeError("Trainable dtype alignment did not match the stage allowlist")
 	_set_training_modes(training_model)
 	optimizer, scheduler = build_optimizer_and_scheduler(training_model, stage_config)
 	gradient_scaler = torch.cuda.amp.GradScaler(
@@ -663,6 +673,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"specification_precision": "bf16",
 		"runtime_precision": args.runtime_precision,
 		"parameter_dtype": str(training_precision.parameter_dtype),
+		"trainable_parameter_dtype": str(training_precision.trainable_parameter_dtype),
 		"autocast_dtype": str(training_precision.autocast_dtype),
 		"autocast_enabled": training_precision.autocast_enabled,
 		"gradient_scaling_enabled": training_precision.gradient_scaling_enabled,

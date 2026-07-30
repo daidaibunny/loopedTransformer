@@ -2,7 +2,11 @@ import torch
 from torch import nn
 
 from looped_vl.models.lora import LoRALinear, inject_loop_layer_lora
-from looped_vl.training.trainability import audit_gradient_scope, configure_trainable_parameters
+from looped_vl.training.trainability import (
+	align_trainable_parameter_dtype,
+	audit_gradient_scope,
+	configure_trainable_parameters,
+)
 
 
 class TinyAttention(nn.Module):
@@ -95,6 +99,19 @@ def test_stage_trainability_matches_strict_parameter_allowlists() -> None:
 	assert any("lora_" in name for name in stage2)
 	assert not any("o_proj" in name for name in stage2)
 	assert not any("layers.11" in name or "layers.20" in name for name in stage2)
+
+
+def test_fp16_storage_promotes_only_trainable_parameters_to_fp32() -> None:
+	model = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 2)).to(torch.float16)
+	model[1].requires_grad_(False)
+
+	aligned_names = align_trainable_parameter_dtype(model, torch.float32)
+
+	assert aligned_names == ("0.weight", "0.bias")
+	assert model[0].weight.dtype is torch.float32
+	assert model[0].bias.dtype is torch.float32
+	assert model[1].weight.dtype is torch.float16
+	assert model[1].bias.dtype is torch.float16
 
 
 def test_gradient_audit_rejects_any_gradient_outside_allowlist() -> None:

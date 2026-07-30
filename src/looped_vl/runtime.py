@@ -16,6 +16,7 @@ class TrainingPrecision:
 	"""Parameter storage and automatic mixed-precision settings for training."""
 
 	parameter_dtype: torch.dtype
+	trainable_parameter_dtype: torch.dtype
 	autocast_dtype: torch.dtype
 	autocast_enabled: bool
 	gradient_scaling_enabled: bool
@@ -67,13 +68,15 @@ def resolve_training_precision(precision: str) -> TrainingPrecision:
 	if precision == "bf16":
 		return TrainingPrecision(
 			parameter_dtype=torch.bfloat16,
+			trainable_parameter_dtype=torch.bfloat16,
 			autocast_dtype=torch.bfloat16,
 			autocast_enabled=False,
 			gradient_scaling_enabled=False,
 		)
 	if precision == "fp16":
 		return TrainingPrecision(
-			parameter_dtype=torch.float32,
+			parameter_dtype=torch.float16,
+			trainable_parameter_dtype=torch.float32,
 			autocast_dtype=torch.float16,
 			autocast_enabled=True,
 			gradient_scaling_enabled=True,
