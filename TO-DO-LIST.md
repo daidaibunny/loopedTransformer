@@ -80,5 +80,6 @@
   every distributed rank, and fail instead of silently losing a non-finite update.
 - [x] Add one restartable queue for the three baseline and three recurrent train/test
   experiments, with no idle-time gate and no validation command.
-- [ ] Re-run final eight-V100 safety smokes on the unified commit and launch the six-run
-  serial queue.
+- [x] Re-run final eight-V100 safety smokes for both trainers and every dataset-specific
+  recurrent memory policy.
+- [ ] Complete the restartable six-run serial train/test queue on all full splits.
