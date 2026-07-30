@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from PIL import Image
 
 from looped_vl.baseline.data import (
@@ -12,7 +13,10 @@ from looped_vl.baseline.data import (
 	baseline_pair_collate,
 	normalize_answer,
 )
-from looped_vl.baseline.prepare import split_clevr_validation_images
+from looped_vl.baseline.prepare import (
+	_resolve_materialized_gqa_image,
+	split_clevr_validation_images,
+)
 
 
 def test_clevr_validation_split_is_seeded_exact_and_image_disjoint() -> None:
@@ -34,6 +38,37 @@ def test_clevr_validation_split_is_seeded_exact_and_image_disjoint() -> None:
 	assert len(first_validation) == len(first_test) == 5
 	assert first_validation.isdisjoint(first_test)
 	assert first_validation | first_test == set(image_names)
+
+
+def test_gqa_image_existence_is_checked_once_per_unique_image(
+	tmp_path: Path,
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	verified_images: set[tuple[str, str]] = set()
+	call_count = 0
+
+	def fake_is_file(path: Path) -> bool:
+		nonlocal call_count
+		call_count += 1
+		return True
+
+	monkeypatch.setattr(Path, "is_file", fake_is_file)
+	first = _resolve_materialized_gqa_image(
+		tmp_path,
+		"train",
+		"image-1",
+		verified_images,
+	)
+	second = _resolve_materialized_gqa_image(
+		tmp_path,
+		"train",
+		"image-1",
+		verified_images,
+	)
+
+	assert first == second
+	assert call_count == 1
+	assert verified_images == {("train", "image-1")}
 
 
 def test_manifest_dataset_builds_coco_and_vqa_pairs(tmp_path: Path) -> None:

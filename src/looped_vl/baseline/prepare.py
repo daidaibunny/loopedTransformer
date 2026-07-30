@@ -196,6 +196,23 @@ def _iter_parquet_rows(paths: list[Path]) -> Iterator[dict[str, Any]]:
 			yield from batch.to_pylist()
 
 
+def _resolve_materialized_gqa_image(
+	materialized_root: Path,
+	source_split: str,
+	image_id: str,
+	verified_images: set[tuple[str, str]],
+) -> Path:
+	"""Verify each unique GQA image once instead of once per question."""
+	image_key = (source_split, image_id)
+	image_path = materialized_root / source_split / f"{image_id}.jpg"
+	if image_key in verified_images:
+		return image_path
+	if not image_path.is_file():
+		raise FileNotFoundError(f"Missing materialized GQA image: {image_path}")
+	verified_images.add(image_key)
+	return image_path
+
+
 def prepare_gqa(
 	*,
 	gqa_root: Path,
@@ -209,6 +226,7 @@ def prepare_gqa(
 		"test": "testdev",
 	}
 	answer_gallery: dict[str, str] = {}
+	verified_images: set[tuple[str, str]] = set()
 	stats: dict[str, Any] = {}
 	for split, source_split in source_splits.items():
 		paths = sorted((gqa_root / f"{source_split}_balanced_instructions").glob("*.parquet"))
@@ -228,9 +246,12 @@ def prepare_gqa(
 				if active_split == "train":
 					answer_gallery.setdefault(answer_key, answer)
 				image_id = str(row["imageId"])
-				image_path = materialized_root / active_source_split / f"{image_id}.jpg"
-				if not image_path.is_file():
-					raise FileNotFoundError(f"Missing materialized GQA image: {image_path}")
+				image_path = _resolve_materialized_gqa_image(
+					materialized_root,
+					active_source_split,
+					image_id,
+					verified_images,
+				)
 				yield {
 					"sample_id": f"gqa:{active_split}:{row['id']}",
 					"dataset": "gqa_balanced",
