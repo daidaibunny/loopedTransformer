@@ -15,7 +15,10 @@ from looped_vl.models.recurrent_decoder_block import (
 	build_dynamic_attention_mask,
 	detach_prefix_key_values,
 )
-from looped_vl.models.recurrent_qwen3vl_embedding import RecurrentQwen3VLEmbedding
+from looped_vl.models.recurrent_qwen3vl_embedding import (
+	RecurrentQwen3VLEmbedding,
+	_run_full_sequence_decoder_layer,
+)
 from looped_vl.training.losses import slot_diversity_loss, symmetric_info_nce
 
 
@@ -354,6 +357,38 @@ def test_pass_one_prefix_cache_reuses_projected_key_and_value() -> None:
 	assert cache.value.requires_grad is False
 
 
+def test_full_sequence_activation_checkpointing_preserves_gradients() -> None:
+	layer = _RecordedAddLayer(torch.tensor([1.0, -1.0]))
+	plain_input = torch.randn(2, 3, 2, requires_grad=True)
+	checkpointed_input = plain_input.detach().clone().requires_grad_(True)
+	arguments = {
+		"layer": layer,
+		"attention_mask": None,
+		"position_ids": torch.arange(3).expand(2, -1),
+		"cache_position": torch.arange(3),
+		"position_embeddings": (
+			torch.ones(2, 3, 2),
+			torch.zeros(2, 3, 2),
+		),
+	}
+
+	plain = _run_full_sequence_decoder_layer(
+		hidden_states=plain_input,
+		activation_checkpointing=False,
+		**arguments,
+	)
+	checkpointed = _run_full_sequence_decoder_layer(
+		hidden_states=checkpointed_input,
+		activation_checkpointing=True,
+		**arguments,
+	)
+	plain.square().sum().backward()
+	checkpointed.square().sum().backward()
+
+	assert torch.equal(plain, checkpointed)
+	assert torch.equal(plain_input.grad, checkpointed_input.grad)
+
+
 def test_each_reported_pass_runs_its_loop_count_then_the_shared_suffix(
 	monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -369,6 +404,7 @@ def test_each_reported_pass_runs_its_loop_count_then_the_shared_suffix(
 	model.base_embedding_model = _TinyEmbeddingModel()
 	model.recurrent_connector = _IdentityConnector()
 	model.late_fusion = _IdentitySlotFusion()
+	model.activation_checkpointing_enabled = False
 	full_loop_calls: list[torch.Tensor] = []
 	dynamic_loop_calls: list[torch.Tensor] = []
 

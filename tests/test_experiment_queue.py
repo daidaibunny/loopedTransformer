@@ -23,6 +23,7 @@ def test_default_queue_contains_six_serial_single_dataset_experiments() -> None:
 		("recurrent", "gqa_balanced"),
 		("recurrent", "clevr"),
 	]
+	assert all(item.gradient_checkpointing for item in experiments)
 
 
 def test_baseline_and_recurrent_commands_share_checkpoint_and_test_contract(
@@ -68,4 +69,5 @@ def test_baseline_and_recurrent_commands_share_checkpoint_and_test_contract(
 		else:
 			assert _value_after(training, "--expected-contrastive-global-batch-size") == "64"
 			assert _value_after(training, "--initial-gradient-scale") == "32"
+			assert "--gradient-checkpointing" in training
 			assert _value_after(evaluation, "--split") == "test"

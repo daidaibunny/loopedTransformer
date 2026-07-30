@@ -8,6 +8,7 @@ from typing import Any
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from transformers.masking_utils import create_causal_mask
 from transformers.models.qwen3_vl.modeling_qwen3_vl import (
 	apply_rotary_pos_emb,
@@ -106,6 +107,33 @@ def _pairwise_slot_cosine(slot_hidden_states: torch.Tensor) -> torch.Tensor:
 	return cosine[:, off_diagonal].mean()
 
 
+def _run_full_sequence_decoder_layer(
+	*,
+	layer: nn.Module,
+	hidden_states: torch.Tensor,
+	attention_mask: torch.Tensor | None,
+	position_ids: torch.Tensor,
+	cache_position: torch.Tensor,
+	position_embeddings: tuple[torch.Tensor, torch.Tensor],
+	activation_checkpointing: bool,
+) -> torch.Tensor:
+	"""Run one full-sequence layer, optionally recomputing it during backward."""
+
+	def layer_forward(states: torch.Tensor) -> torch.Tensor:
+		return layer(
+			states,
+			attention_mask=attention_mask,
+			position_ids=position_ids,
+			past_key_values=None,
+			cache_position=cache_position,
+			position_embeddings=position_embeddings,
+		)
+
+	if activation_checkpointing and torch.is_grad_enabled():
+		return checkpoint(layer_forward, hidden_states, use_reentrant=False)
+	return layer_forward(hidden_states)
+
+
 class RecurrentQwen3VLEmbedding(nn.Module):
 	"""Wrap the official embedding model with dynamic-only middle-layer recurrence."""
 
@@ -142,6 +170,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			attention_dim=config.fusion_attention_dim,
 		)
 		self.warmup_embedding_head = WarmupEmbeddingHead(config.hidden_size)
+		self.activation_checkpointing_enabled = False
 		self.injected_lora_modules: tuple[str, ...] = ()
 		if enable_lora:
 			self.inject_lora()
@@ -169,6 +198,10 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			dropout=self.config.lora_dropout,
 		)
 		return self.injected_lora_modules
+
+	def set_activation_checkpointing(self, enabled: bool) -> None:
+		"""Enable full-sequence decoder recomputation for memory-safe training."""
+		self.activation_checkpointing_enabled = enabled
 
 	def forward(
 		self,
@@ -392,13 +425,16 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		position_embeddings = language_model.rotary_emb(hidden_states, position_ids)
 		deepstack_layers_executed: list[int] = []
 		for layer_index in range(self.config.loop_start_layer):
-			hidden_states = language_model.layers[layer_index](
-				hidden_states,
+			hidden_states = _run_full_sequence_decoder_layer(
+				layer=language_model.layers[layer_index],
+				hidden_states=hidden_states,
 				attention_mask=causal_mask,
 				position_ids=text_position_ids,
-				past_key_values=None,
 				cache_position=cache_position,
 				position_embeddings=position_embeddings,
+				activation_checkpointing=(
+					self.activation_checkpointing_enabled and self.training
+				),
 			)
 			if (
 				deepstack_visual_embeddings is not None
@@ -426,16 +462,22 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 					attention_mask=causal_mask,
 					position_ids=text_position_ids,
 					cache_position=cache_position,
+					activation_checkpointing=(
+						self.activation_checkpointing_enabled and self.training
+					),
 				)
 				prefix_caches.append(prefix_cache)
 			else:
-				hidden_states = layer(
-					hidden_states,
+				hidden_states = _run_full_sequence_decoder_layer(
+					layer=layer,
+					hidden_states=hidden_states,
 					attention_mask=causal_mask,
 					position_ids=text_position_ids,
-					past_key_values=None,
 					cache_position=cache_position,
 					position_embeddings=position_embeddings,
+					activation_checkpointing=(
+						self.activation_checkpointing_enabled and self.training
+					),
 				)
 		pass_one_full_hidden_states = hidden_states
 		dynamic_output = _gather_sequence_positions(hidden_states, dynamic_positions)
@@ -576,13 +618,16 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			dynamic_output,
 		)
 		for layer_index in range(self.config.loop_end_layer, len(language_model.layers)):
-			hidden_states = language_model.layers[layer_index](
-				hidden_states,
+			hidden_states = _run_full_sequence_decoder_layer(
+				layer=language_model.layers[layer_index],
+				hidden_states=hidden_states,
 				attention_mask=causal_mask,
 				position_ids=text_position_ids,
-				past_key_values=None,
 				cache_position=cache_position,
 				position_embeddings=position_embeddings,
+				activation_checkpointing=(
+					self.activation_checkpointing_enabled and self.training
+				),
 			)
 		hidden_states = language_model.norm(hidden_states)
 		eos_hidden_state = _gather_sequence_positions(hidden_states, augmented.eos_positions)
@@ -619,6 +664,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		attention_mask: torch.Tensor | None,
 		position_ids: torch.Tensor,
 		cache_position: torch.Tensor,
+		activation_checkpointing: bool = False,
 	) -> tuple[torch.Tensor, PrefixKeyValue]:
 		"""Reuse Pass-1 projections when constructing the detached prefix cache."""
 		attention = layer.self_attn
@@ -641,13 +687,14 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		key_hook = attention.k_norm.register_forward_hook(capture_key)
 		value_hook = attention.v_proj.register_forward_hook(capture_value)
 		try:
-			output_hidden_states = layer(
-				hidden_states,
+			output_hidden_states = _run_full_sequence_decoder_layer(
+				layer=layer,
+				hidden_states=hidden_states,
 				attention_mask=attention_mask,
 				position_ids=position_ids,
-				past_key_values=None,
 				cache_position=cache_position,
 				position_embeddings=position_embeddings,
+				activation_checkpointing=activation_checkpointing,
 			)
 		finally:
 			key_hook.remove()

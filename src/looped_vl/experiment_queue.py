@@ -58,7 +58,7 @@ def default_experiments() -> list[ExperimentSpec]:
 		ExperimentSpec("baseline", dataset, 32, 4, 32, 4)
 		for dataset in BASELINE_DATASETS
 	] + [
-		ExperimentSpec("recurrent", dataset, 8, 4, 8, 4, False)
+		ExperimentSpec("recurrent", dataset, 8, 4, 8, 4)
 		for dataset in BASELINE_DATASETS
 	]
 
@@ -179,6 +179,11 @@ def build_training_command(
 				"32",
 				"--attention-implementation",
 				"auto",
+				(
+					"--gradient-checkpointing"
+					if spec.gradient_checkpointing
+					else "--no-gradient-checkpointing"
+				),
 			],
 		)
 	if resume_checkpoint is not None:

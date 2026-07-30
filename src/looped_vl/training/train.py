@@ -889,6 +889,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		max_pixels=args.max_pixels,
 	)
 	training_model = RecurrentTrainingModel(components.model)
+	training_model.encoder.set_activation_checkpointing(args.gradient_checkpointing)
 	loader, sampler = _build_loader(args, rank, world_size, generator)
 	gradient_accumulation_steps = training_config.gradient_accumulation_steps(
 		args.per_device_batch_size,
@@ -955,6 +956,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		),
 		"semantic_decoder_enabled": False,
 		"modality_grouped_padding": True,
+		"gradient_checkpointing": args.gradient_checkpointing,
 		"ddp_gradient_as_bucket_view": True,
 		"ddp_static_graph": False,
 		"fused_adamw": True,
@@ -1019,6 +1021,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		),
 		"runtime_precision": args.runtime_precision,
 		"attention_implementation": resolved_attention_implementation,
+		"gradient_checkpointing": args.gradient_checkpointing,
 		"max_length": args.max_length,
 		"min_pixels": args.min_pixels,
 		"max_pixels": args.max_pixels,
@@ -1126,6 +1129,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)
 	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)
+	parser.add_argument(
+		"--gradient-checkpointing",
+		action=argparse.BooleanOptionalAction,
+		default=True,
+	)
 	parser.add_argument("--smoke-optimizer-steps", type=int, default=0)
 	parser.add_argument("--smoke-warm-start-steps", type=int, default=1)
 	parser.add_argument("--smoke-gradient-accumulation-steps", type=int, default=1)
