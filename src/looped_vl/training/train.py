@@ -225,6 +225,19 @@ def _optimizer_step_limit(
 	return limit
 
 
+def _should_save_checkpoint(
+	*,
+	global_step: int,
+	optimizer_step_limit: int,
+	checkpoint_every: int,
+	smoke_optimizer_steps: int,
+) -> bool:
+	"""Skip multi-gigabyte optimizer checkpoints for disposable smoke runs."""
+	if smoke_optimizer_steps:
+		return False
+	return global_step % checkpoint_every == 0 or global_step == optimizer_step_limit
+
+
 def _train_stage(
 	*,
 	args: argparse.Namespace,
@@ -465,9 +478,11 @@ def _train_stage(
 				source_counts = Counter()
 				direction_counts = Counter()
 				step_start = time.perf_counter()
-				if (
-					cursor.global_step % args.checkpoint_every == 0
-					or cursor.global_step == optimizer_step_limit
+				if _should_save_checkpoint(
+					global_step=cursor.global_step,
+					optimizer_step_limit=optimizer_step_limit,
+					checkpoint_every=args.checkpoint_every,
+					smoke_optimizer_steps=args.smoke_optimizer_steps,
 				):
 					checkpoint_path = _save_checkpoint(
 						output_dir=output_dir,

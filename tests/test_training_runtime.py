@@ -27,6 +27,7 @@ from looped_vl.training.train import (
 	_finalize_metric_tensors,
 	_optimizer_step_limit,
 	_resolve_git_commit,
+	_should_save_checkpoint,
 	_worker_loader_options,
 	parse_args,
 )
@@ -204,6 +205,21 @@ def test_training_workers_spawn_without_inheriting_cuda_context() -> None:
 		"persistent_workers": True,
 		"prefetch_factor": 4,
 	}
+
+
+def test_smoke_run_skips_large_optimizer_checkpoints() -> None:
+	assert _should_save_checkpoint(
+		global_step=3,
+		optimizer_step_limit=3,
+		checkpoint_every=100,
+		smoke_optimizer_steps=3,
+	) is False
+	assert _should_save_checkpoint(
+		global_step=100,
+		optimizer_step_limit=2000,
+		checkpoint_every=100,
+		smoke_optimizer_steps=0,
+	) is True
 
 
 def test_dynamic_scaled_dot_product_attention_matches_explicit_attention() -> None:
