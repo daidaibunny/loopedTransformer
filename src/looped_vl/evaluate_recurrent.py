@@ -1,0 +1,597 @@
+"""Evaluate one trained recurrent model on one full official validation split."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import socket
+import time
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+import pyarrow.parquet as pq
+import torch
+import torch.distributed as dist
+from torch import nn
+from torch.utils.data import DataLoader
+
+from looped_vl.data import LoopedVLMixtureDataset
+from looped_vl.evaluate_frozen import (
+	COCO_IMAGE_TO_TEXT_INSTRUCTION,
+	COCO_TEXT_TO_IMAGE_INSTRUCTION,
+	METRIC_SCALE,
+	RETRIEVAL_CUTOFFS,
+	VQA_INSTRUCTION,
+	DistributedEncodingDataset,
+	EncodingItem,
+	_close_batch_images,
+	_initialize_distributed,
+	aggregate_coco_directions,
+	build_answer_gallery,
+	build_coco_relevance,
+	compute_ranking_metrics,
+	encoding_collate,
+)
+from looped_vl.models.config import RecurrentModelConfig
+from looped_vl.models.loading import load_recurrent_components
+from looped_vl.runtime import (
+	ATTENTION_IMPLEMENTATIONS,
+	RUNTIME_PRECISIONS,
+	resolve_attention_implementation,
+	resolve_torch_dtype,
+)
+from looped_vl.smoke import checkpoint_sha256
+from looped_vl.throughput import validate_embeddings
+
+INFERENCE_PARAMETER_PREFIXES = (
+	"latent_slots",
+	"eos_delta",
+	"recurrent_connector.",
+	"late_fusion.",
+)
+
+
+def _is_inference_parameter(name: str) -> bool:
+	return name in INFERENCE_PARAMETER_PREFIXES[:2] or name.startswith(
+		INFERENCE_PARAMETER_PREFIXES[2:],
+	) or ".lora_a." in name or ".lora_b." in name
+
+
+def load_recurrent_inference_checkpoint(
+	model: nn.Module,
+	path: str | Path,
+	*,
+	expected_base_hash: str,
+	expected_model_config: dict[str, Any],
+) -> dict[str, Any]:
+	"""Strictly restore inference parameters while rejecting incompatible checkpoints."""
+	payload = torch.load(path, map_location="cpu", weights_only=False)
+	if payload.get("format_version") != 1:
+		raise ValueError("Unsupported recurrent checkpoint format version")
+	metadata = payload.get("metadata")
+	if not isinstance(metadata, dict):
+		raise ValueError("Recurrent checkpoint metadata is missing")
+	if metadata.get("model_checkpoint_sha256") != expected_base_hash:
+		raise ValueError("Recurrent checkpoint base checkpoint hash does not match")
+	if metadata.get("model_config") != expected_model_config:
+		raise ValueError("Recurrent checkpoint model configuration does not match")
+	state = payload.get("trainable_parameter_state")
+	if not isinstance(state, dict):
+		raise ValueError("Recurrent checkpoint parameter state is missing")
+	model_parameters = dict(model.named_parameters())
+	expected_names = {
+		name for name in model_parameters if _is_inference_parameter(name)
+	}
+	checkpoint_inference_state = {
+		name.removeprefix("encoder."): value
+		for name, value in state.items()
+		if _is_inference_parameter(name.removeprefix("encoder."))
+	}
+	missing = expected_names - checkpoint_inference_state.keys()
+	extra = checkpoint_inference_state.keys() - expected_names
+	if missing:
+		raise ValueError(f"Missing inference parameters: {sorted(missing)}")
+	if extra:
+		raise ValueError(f"Unexpected inference parameters: {sorted(extra)}")
+	for name in sorted(expected_names):
+		parameter = model_parameters[name]
+		value = checkpoint_inference_state[name]
+		if tuple(value.shape) != tuple(parameter.shape):
+			raise ValueError(
+				f"Inference parameter shape mismatch for {name}: "
+				f"{tuple(value.shape)} != {tuple(parameter.shape)}",
+			)
+		parameter.data.copy_(value.to(device=parameter.device, dtype=parameter.dtype))
+	return metadata
+
+
+def build_loop_metric_series(
+	metrics_by_pass: dict[int, dict[str, float]],
+) -> dict[str, dict[str, dict[str, float]]]:
+	"""Attach previous-pass and pass-1 percentage-point changes to every metric set."""
+	if not metrics_by_pass or min(metrics_by_pass) != 1:
+		raise ValueError("Loop metrics must begin at pass 1")
+	pass_numbers = sorted(metrics_by_pass)
+	if pass_numbers != list(range(1, max(pass_numbers) + 1)):
+		raise ValueError("Loop metric passes must be contiguous")
+	metric_names = set(metrics_by_pass[1])
+	if any(set(metrics) != metric_names for metrics in metrics_by_pass.values()):
+		raise ValueError("Every loop pass must report the same metrics")
+	result: dict[str, dict[str, dict[str, float]]] = {}
+	for pass_number in pass_numbers:
+		metrics = metrics_by_pass[pass_number]
+		previous = metrics_by_pass[max(1, pass_number - 1)]
+		first = metrics_by_pass[1]
+		result[str(pass_number)] = {
+			"metrics": dict(metrics),
+			"delta_from_previous_percentage_points": {
+				name: metrics[name] - previous[name] for name in sorted(metric_names)
+			},
+			"delta_from_r1_percentage_points": {
+				name: metrics[name] - first[name] for name in sorted(metric_names)
+			},
+		}
+	return result
+
+
+def _load_rows(
+	dataset_root: Path,
+	split: str,
+	max_rows: int,
+) -> list[dict[str, Any]]:
+	paths = sorted((dataset_root / split).glob("*.parquet"))
+	if not paths:
+		raise FileNotFoundError(f"No Parquet manifests under {dataset_root / split}")
+	columns = [
+		"sample_id",
+		"source",
+		"source_split",
+		"image_storage",
+		"image_path",
+		"image_id",
+		"text",
+		"answer",
+	]
+	rows: list[dict[str, Any]] = []
+	for path in paths:
+		for batch in pq.ParquetFile(path).iter_batches(columns=columns, batch_size=8192):
+			rows.extend(batch.to_pylist())
+			if max_rows and len(rows) >= max_rows:
+				return rows[:max_rows]
+	return rows
+
+
+def _build_groups(
+	rows: list[dict[str, Any]],
+	dataset: LoopedVLMixtureDataset,
+	source: str,
+) -> tuple[dict[str, list[EncodingItem]], dict[str, Any]]:
+	if not rows:
+		raise ValueError("Evaluation split is empty")
+	found_sources = {str(row["source"]) for row in rows}
+	if found_sources != {source}:
+		raise ValueError(
+			f"Expected only source {source}, found {sorted(found_sources)}",
+		)
+	if source == "coco":
+		relevance = build_coco_relevance(rows)
+		image_by_id: dict[str, dict[str, Any]] = {}
+		for row in rows:
+			image_by_id.setdefault(str(row["image_id"]), row)
+		image_rows = [image_by_id[image_id] for image_id in relevance["image_ids"]]
+		return {
+			"text_query": [
+				EncodingItem(
+					item_id=str(row["sample_id"]),
+					text=str(row["text"]),
+					instruction=COCO_TEXT_TO_IMAGE_INSTRUCTION,
+				)
+				for row in rows
+			],
+			"image_target": [
+				EncodingItem(
+					item_id=str(row["image_id"]),
+					image_path=dataset.resolve_image_path(row),
+				)
+				for row in image_rows
+			],
+			"image_query": [
+				EncodingItem(
+					item_id=str(row["image_id"]),
+					image_path=dataset.resolve_image_path(row),
+					instruction=COCO_IMAGE_TO_TEXT_INSTRUCTION,
+				)
+				for row in image_rows
+			],
+			"text_target": [
+				EncodingItem(item_id=str(row["sample_id"]), text=str(row["text"]))
+				for row in rows
+			],
+		}, relevance
+	if source not in {"gqa_balanced", "clevr"}:
+		raise ValueError(f"Unsupported evaluation source: {source}")
+	answers, positive_indices = build_answer_gallery([str(row["answer"]) for row in rows])
+	return {
+		"query": [
+			EncodingItem(
+				item_id=str(row["sample_id"]),
+				text=str(row["text"]),
+				image_path=dataset.resolve_image_path(row),
+				instruction=VQA_INSTRUCTION,
+			)
+			for row in rows
+		],
+		"answer_target": [
+			EncodingItem(item_id=f"{source}:answer:{index}", text=answer)
+			for index, answer in enumerate(answers)
+		],
+	}, {"answers": answers, "positive_indices": positive_indices}
+
+
+def _encode_group(
+	*,
+	name: str,
+	items: list[EncodingItem],
+	model: nn.Module,
+	processor: Any,
+	args: argparse.Namespace,
+	rank: int,
+	world_size: int,
+	output_dir: Path,
+) -> dict[str, Any]:
+	global_indices = list(range(rank, len(items), world_size))
+	dataset = DistributedEncodingDataset(items, global_indices)
+	loader_options: dict[str, Any] = {
+		"dataset": dataset,
+		"batch_size": args.batch_size,
+		"shuffle": False,
+		"num_workers": args.num_workers,
+		"collate_fn": encoding_collate,
+		"pin_memory": False,
+	}
+	if args.num_workers:
+		loader_options["prefetch_factor"] = args.prefetch_factor
+	loader = DataLoader(**loader_options)
+	index_chunks: list[torch.Tensor] = []
+	embedding_chunks: dict[int, list[torch.Tensor]] = defaultdict(list)
+	start = time.perf_counter()
+	for batch_number, batch in enumerate(loader, start=1):
+		try:
+			processed = processor.prepare(batch["model_inputs"], device=torch.device("cuda"))
+			with torch.inference_mode():
+				output = model(**processed, return_all_loop_embeddings=True)
+			if output.loop_embeddings is None:
+				raise RuntimeError("Recurrent model did not return per-loop embeddings")
+			for pass_number, embeddings in enumerate(output.loop_embeddings, start=1):
+				validate_embeddings(embeddings, len(batch["global_indices"]))
+				embedding_chunks[pass_number].append(embeddings.float().cpu())
+			index_chunks.append(torch.tensor(batch["global_indices"], dtype=torch.long))
+		finally:
+			_close_batch_images(batch["model_inputs"])
+		if batch_number == 1 or batch_number % args.log_every_batches == 0:
+			progress = {
+				"status": "encoding",
+				"rank": rank,
+				"group": name,
+				"processed": sum(chunk.shape[0] for chunk in index_chunks),
+				"rank_items": len(global_indices),
+				"elapsed_seconds": time.perf_counter() - start,
+			}
+			(output_dir / f"progress_rank{rank}.json").write_text(
+				json.dumps(progress, indent=2, sort_keys=True) + "\n",
+				encoding="utf-8",
+			)
+	indices = torch.cat(index_chunks) if index_chunks else torch.empty(0, dtype=torch.long)
+	for pass_number, chunks in embedding_chunks.items():
+		torch.save(
+			{
+				"indices": indices,
+				"embeddings": torch.cat(chunks),
+			},
+			output_dir / "embedding_cache" / f"{name}.pass{pass_number}.rank{rank}.pt",
+		)
+	return {
+		"rank": rank,
+		"group": name,
+		"items": len(global_indices),
+		"seconds": time.perf_counter() - start,
+	}
+
+
+def _load_embeddings(
+	*,
+	name: str,
+	pass_number: int,
+	item_count: int,
+	world_size: int,
+	output_dir: Path,
+) -> torch.Tensor:
+	result: torch.Tensor | None = None
+	seen = torch.zeros(item_count, dtype=torch.bool)
+	for rank in range(world_size):
+		shard = torch.load(
+			output_dir / "embedding_cache" / (
+				f"{name}.pass{pass_number}.rank{rank}.pt"
+			),
+			map_location="cpu",
+			weights_only=True,
+		)
+		indices = shard["indices"]
+		embeddings = shard["embeddings"]
+		if result is None:
+			result = torch.empty((item_count, embeddings.shape[1]))
+		if seen[indices].any():
+			raise ValueError(f"Duplicate encoded indices for {name} pass {pass_number}")
+		result[indices] = embeddings
+		seen[indices] = True
+	if result is None or not seen.all():
+		raise ValueError(f"Missing encoded indices for {name} pass {pass_number}")
+	return result
+
+
+def _score_passes(
+	*,
+	source: str,
+	groups: dict[str, list[EncodingItem]],
+	relevance: dict[str, Any],
+	num_passes: int,
+	world_size: int,
+	output_dir: Path,
+	device: torch.device,
+	score_batch_size: int,
+) -> dict[str, Any]:
+	if source == "coco":
+		text_to_image: dict[int, dict[str, float]] = {}
+		image_to_text: dict[int, dict[str, float]] = {}
+		aggregate: dict[int, dict[str, float]] = {}
+		for pass_number in range(1, num_passes + 1):
+			text_to_image[pass_number] = compute_ranking_metrics(
+				_load_embeddings(
+					name="text_query",
+					pass_number=pass_number,
+					item_count=len(groups["text_query"]),
+					world_size=world_size,
+					output_dir=output_dir,
+				),
+				_load_embeddings(
+					name="image_target",
+					pass_number=pass_number,
+					item_count=len(groups["image_target"]),
+					world_size=world_size,
+					output_dir=output_dir,
+				),
+				relevance["text_to_image_positive_indices"],
+				device,
+				score_batch_size,
+			)
+			image_to_text[pass_number] = compute_ranking_metrics(
+				_load_embeddings(
+					name="image_query",
+					pass_number=pass_number,
+					item_count=len(groups["image_query"]),
+					world_size=world_size,
+					output_dir=output_dir,
+				),
+				_load_embeddings(
+					name="text_target",
+					pass_number=pass_number,
+					item_count=len(groups["text_target"]),
+					world_size=world_size,
+					output_dir=output_dir,
+				),
+				relevance["image_to_text_positive_indices"],
+				device,
+				score_batch_size,
+			)
+			aggregate[pass_number] = aggregate_coco_directions(
+				text_to_image[pass_number],
+				image_to_text[pass_number],
+			)
+		direction_series = {
+			"aggregate": build_loop_metric_series(aggregate),
+			"text_to_image": build_loop_metric_series(text_to_image),
+			"image_to_text": build_loop_metric_series(image_to_text),
+		}
+		return {
+			str(pass_number): {
+				name: series[str(pass_number)]
+				for name, series in direction_series.items()
+			}
+			for pass_number in range(1, num_passes + 1)
+		}
+	metrics_by_pass = {
+		pass_number: compute_ranking_metrics(
+			_load_embeddings(
+				name="query",
+				pass_number=pass_number,
+				item_count=len(groups["query"]),
+				world_size=world_size,
+				output_dir=output_dir,
+			),
+			_load_embeddings(
+				name="answer_target",
+				pass_number=pass_number,
+				item_count=len(groups["answer_target"]),
+				world_size=world_size,
+				output_dir=output_dir,
+			),
+			relevance["positive_indices"],
+			device,
+			score_batch_size,
+		)
+		for pass_number in range(1, num_passes + 1)
+	}
+	return build_loop_metric_series(metrics_by_pass)
+
+
+def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
+	"""Run distributed source-pure recurrent evaluation."""
+	rank, world_size, local_rank, device = _initialize_distributed(args.expected_world_size)
+	output_dir = Path(args.output_dir)
+	if rank == 0:
+		if output_dir.exists():
+			raise FileExistsError(f"Output directory already exists: {output_dir}")
+		(output_dir / "embedding_cache").mkdir(parents=True)
+	dist.barrier()
+	resolved_attention = resolve_attention_implementation(args.attention_implementation)
+	runtime_dtype = resolve_torch_dtype(args.runtime_precision)
+	model_config = RecurrentModelConfig.from_yaml(args.model_config)
+	dataset_root = Path(args.dataset_root)
+	dataset = LoopedVLMixtureDataset(
+		dataset_root,
+		args.split,
+		args.gqa_materialized_root,
+	)
+	rows = _load_rows(dataset_root, args.split, args.max_rows)
+	groups, relevance = _build_groups(rows, dataset, args.source)
+	base_checkpoint_path = Path(args.model_root) / "model.safetensors"
+	base_hash_objects: list[str | None] = [
+		checkpoint_sha256(base_checkpoint_path) if rank == 0 else None,
+	]
+	dist.broadcast_object_list(base_hash_objects, src=0)
+	base_hash = base_hash_objects[0]
+	if base_hash is None:
+		raise RuntimeError("Failed to broadcast the base checkpoint hash")
+	components = load_recurrent_components(
+		model_root=args.model_root,
+		master_slot_path=args.master_slot_path,
+		config=model_config,
+		device=device,
+		enable_lora=True,
+		dtype=runtime_dtype,
+		attention_implementation=resolved_attention,
+		max_length=args.max_length,
+		min_pixels=args.min_pixels,
+		max_pixels=args.max_pixels,
+	)
+	metadata = load_recurrent_inference_checkpoint(
+		components.model,
+		args.checkpoint,
+		expected_base_hash=base_hash,
+		expected_model_config=model_config.__dict__,
+	)
+	components.model.eval()
+	runtime_rows = []
+	for name, items in groups.items():
+		runtime_rows.append(
+			_encode_group(
+				name=name,
+				items=items,
+				model=components.model,
+				processor=components.processor,
+				args=args,
+				rank=rank,
+				world_size=world_size,
+				output_dir=output_dir,
+			),
+		)
+	dist.barrier()
+	report = None
+	if rank == 0:
+		loop_metrics = _score_passes(
+			source=args.source,
+			groups=groups,
+			relevance=relevance,
+			num_passes=model_config.num_total_loop_passes,
+			world_size=world_size,
+			output_dir=output_dir,
+			device=device,
+			score_batch_size=args.score_batch_size,
+		)
+		report = {
+			"status": "passed",
+			"scope": "single_dataset_full_official_validation",
+			"source": args.source,
+			"metric_scale": METRIC_SCALE,
+			"loop_passes": loop_metrics,
+			"protocol": {
+				"dataset_root": str(dataset_root),
+				"split": args.split,
+				"sample_rows": len(rows),
+				"group_sizes": {name: len(items) for name, items in groups.items()},
+				"retrieval_cutoffs": RETRIEVAL_CUTOFFS,
+				"ndcg_cutoff": 10,
+			},
+			"model": {
+				"model_root": str(args.model_root),
+				"checkpoint": str(args.checkpoint),
+				"base_checkpoint_sha256": base_hash,
+				"checkpoint_metadata": metadata,
+				"runtime_precision": args.runtime_precision,
+				"requested_attention_implementation": args.attention_implementation,
+				"resolved_attention_implementation": resolved_attention,
+			},
+			"distributed": {
+				"hostname": socket.gethostname(),
+				"world_size": world_size,
+				"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+				"local_rank": local_rank,
+				"runtime_rows": runtime_rows,
+			},
+		}
+		(output_dir / "report.json").write_text(
+			json.dumps(report, indent=2, sort_keys=True) + "\n",
+			encoding="utf-8",
+		)
+		(output_dir / "status.json").write_text(
+			json.dumps({"status": "passed"}, indent=2) + "\n",
+			encoding="utf-8",
+		)
+	dist.barrier()
+	dist.destroy_process_group()
+	return report
+
+
+def parse_args() -> argparse.Namespace:
+	parser = argparse.ArgumentParser(description=__doc__)
+	parser.add_argument("--source", choices=("coco", "gqa_balanced", "clevr"), required=True)
+	parser.add_argument("--dataset-root", type=Path, required=True)
+	parser.add_argument("--gqa-materialized-root", type=Path, required=True)
+	parser.add_argument("--model-root", type=Path, required=True)
+	parser.add_argument("--master-slot-path", type=Path, required=True)
+	parser.add_argument("--model-config", type=Path, default=Path("configs/base.yaml"))
+	parser.add_argument("--checkpoint", type=Path, required=True)
+	parser.add_argument("--output-dir", type=Path, required=True)
+	parser.add_argument("--split", choices=("validation",), default="validation")
+	parser.add_argument("--expected-world-size", type=int, required=True)
+	parser.add_argument("--batch-size", type=int, default=1)
+	parser.add_argument("--num-workers", type=int, default=2)
+	parser.add_argument("--prefetch-factor", type=int, default=2)
+	parser.add_argument("--score-batch-size", type=int, default=256)
+	parser.add_argument("--log-every-batches", type=int, default=10)
+	parser.add_argument("--max-rows", type=int, default=0)
+	parser.add_argument("--max-length", type=int, default=8192)
+	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)
+	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)
+	parser.add_argument(
+		"--attention-implementation",
+		choices=ATTENTION_IMPLEMENTATIONS,
+		default="auto",
+	)
+	parser.add_argument(
+		"--runtime-precision",
+		choices=RUNTIME_PRECISIONS,
+		default="bf16",
+	)
+	return parser.parse_args()
+
+
+def main() -> int:
+	args = parse_args()
+	try:
+		run_evaluation(args)
+		return 0
+	except Exception as error:
+		output_dir = Path(args.output_dir)
+		if output_dir.is_dir():
+			(output_dir / "status.json").write_text(
+				json.dumps({"status": "failed", "error": repr(error)}, indent=2) + "\n",
+				encoding="utf-8",
+			)
+		raise
+
+
+if __name__ == "__main__":
+	raise SystemExit(main())

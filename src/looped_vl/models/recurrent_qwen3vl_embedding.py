@@ -42,6 +42,7 @@ class RecurrentEmbeddingOutput:
 	"""Normalized retrieval output plus contextual slots and diagnostics."""
 
 	embeddings: torch.Tensor
+	loop_embeddings: tuple[torch.Tensor, ...] | None
 	slot_hidden_states: torch.Tensor
 	eos_hidden_state: torch.Tensor
 	attention_weights: torch.Tensor | None
@@ -178,10 +179,11 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		pixel_values_videos: torch.Tensor | None = None,
 		image_grid_thw: torch.Tensor | None = None,
 		video_grid_thw: torch.Tensor | None = None,
+		return_all_loop_embeddings: bool = False,
 	) -> RecurrentEmbeddingOutput:
 		"""Encode one tower with either an exact baseline or recurrent v1.0 path."""
 		if self.config.num_latent_slots == 0 and self.config.num_total_loop_passes == 1:
-			return self._official_base_forward(
+			output = self._official_base_forward(
 				input_ids=input_ids,
 				attention_mask=attention_mask,
 				pixel_values=pixel_values,
@@ -189,6 +191,16 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 				image_grid_thw=image_grid_thw,
 				video_grid_thw=video_grid_thw,
 			)
+			if return_all_loop_embeddings:
+				return RecurrentEmbeddingOutput(
+					embeddings=output.embeddings,
+					loop_embeddings=(output.embeddings,),
+					slot_hidden_states=output.slot_hidden_states,
+					eos_hidden_state=output.eos_hidden_state,
+					attention_weights=output.attention_weights,
+					diagnostics=output.diagnostics,
+				)
+			return output
 		augmented = augment_before_last_valid_token(
 			input_ids=input_ids,
 			attention_mask=attention_mask,
@@ -214,6 +226,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			position_ids=position_ids,
 			visual_position_mask=visual_position_mask,
 			deepstack_visual_embeddings=deepstack_visual_embeddings,
+			return_all_loop_embeddings=return_all_loop_embeddings,
 		)
 
 	def _official_base_forward(self, **inputs: torch.Tensor | None) -> RecurrentEmbeddingOutput:
@@ -228,6 +241,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		embeddings = F.normalize(eos_hidden_state, p=2, dim=-1)
 		return RecurrentEmbeddingOutput(
 			embeddings=embeddings,
+			loop_embeddings=None,
 			slot_hidden_states=hidden_states[:, :0],
 			eos_hidden_state=eos_hidden_state,
 			attention_weights=None,
@@ -361,6 +375,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		position_ids: torch.Tensor,
 		visual_position_mask: torch.Tensor | None,
 		deepstack_visual_embeddings: list[torch.Tensor] | None,
+		return_all_loop_embeddings: bool,
 	) -> RecurrentEmbeddingOutput:
 		"""Run prefix, full first pass, dynamic-only passes, suffix, norm, and fusion."""
 		language_model = self.language_model
@@ -425,6 +440,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 				)
 		pass_one_full_hidden_states = hidden_states
 		dynamic_output = _gather_sequence_positions(hidden_states, dynamic_positions)
+		dynamic_outputs = [dynamic_output] if return_all_loop_embeddings else None
 
 		dynamic_cos, dynamic_sin = self._gather_dynamic_position_embeddings(
 			position_embeddings,
@@ -460,6 +476,8 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 					attention_mask=dynamic_mask,
 				)
 			dynamic_output = dynamic_input
+			if dynamic_outputs is not None:
+				dynamic_outputs.append(dynamic_output)
 			pass_cosines.append(
 				F.cosine_similarity(
 					dynamic_output.float().flatten(1),
@@ -474,6 +492,85 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 				).mean(),
 			)
 
+		finalized_outputs = (
+			tuple(
+				self._run_suffix_and_fusion(
+					pass_one_full_hidden_states=pass_one_full_hidden_states,
+					dynamic_positions=dynamic_positions,
+					dynamic_output=pass_output,
+					augmented=augmented,
+					causal_mask=causal_mask,
+					text_position_ids=text_position_ids,
+					cache_position=cache_position,
+					position_embeddings=position_embeddings,
+				)
+				for pass_output in dynamic_outputs
+			)
+			if dynamic_outputs is not None
+			else (
+				self._run_suffix_and_fusion(
+					pass_one_full_hidden_states=pass_one_full_hidden_states,
+					dynamic_positions=dynamic_positions,
+					dynamic_output=dynamic_output,
+					augmented=augmented,
+					causal_mask=causal_mask,
+					text_position_ids=text_position_ids,
+					cache_position=cache_position,
+					position_embeddings=position_embeddings,
+				),
+			)
+		)
+		final_output = finalized_outputs[-1]
+		return RecurrentEmbeddingOutput(
+			embeddings=final_output["embeddings"],
+			loop_embeddings=(
+				tuple(output["embeddings"] for output in finalized_outputs)
+				if dynamic_outputs is not None
+				else None
+			),
+			slot_hidden_states=final_output["slot_hidden_states"],
+			eos_hidden_state=final_output["eos_hidden_state"],
+			attention_weights=final_output["attention_weights"],
+			diagnostics={
+				"variant": self._variant_name(),
+				"deepstack_layer_indices": tuple(deepstack_layers_executed),
+				"extra_pass_dynamic_token_counts": tuple(
+					dynamic_positions.shape[1]
+					for _ in range(self.config.num_extra_loop_passes)
+				),
+				"prefix_cache_requires_grad": tuple(
+					cache.key.requires_grad or cache.value.requires_grad
+					for cache in prefix_caches
+				),
+				"recurrent_pass_cosine": tuple(pass_cosines),
+				"recurrent_pass_relative_update": tuple(pass_relative_updates),
+				"connector_output_norm": (
+					torch.stack(connector_output_norms).mean()
+					if connector_output_norms
+					else final_output["eos_hidden_state"].new_zeros(())
+				),
+				"fusion_gate": final_output["fusion_gate"],
+				"late_fusion_attention_entropy": final_output["attention_entropy"].mean(),
+				"slot_pairwise_cosine": _pairwise_slot_cosine(
+					final_output["slot_hidden_states"],
+				),
+			},
+		)
+
+	def _run_suffix_and_fusion(
+		self,
+		*,
+		pass_one_full_hidden_states: torch.Tensor,
+		dynamic_positions: torch.Tensor,
+		dynamic_output: torch.Tensor,
+		augmented: AugmentedSequence,
+		causal_mask: torch.Tensor,
+		text_position_ids: torch.Tensor,
+		cache_position: torch.Tensor,
+		position_embeddings: tuple[torch.Tensor, torch.Tensor],
+	) -> dict[str, torch.Tensor | None]:
+		"""Finalize one recurrent pass through Layers 21–28, norm, and late fusion."""
+		language_model = self.language_model
 		hidden_states = _scatter_sequence_positions(
 			pass_one_full_hidden_states,
 			dynamic_positions,
@@ -505,35 +602,14 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			fusion_gate = fusion_output.gate
 		else:
 			pre_normalized_embedding = eos_hidden_state
-		embeddings = F.normalize(pre_normalized_embedding, p=2, dim=-1)
-		return RecurrentEmbeddingOutput(
-			embeddings=embeddings,
-			slot_hidden_states=slot_hidden_states,
-			eos_hidden_state=eos_hidden_state,
-			attention_weights=attention_weights,
-			diagnostics={
-				"variant": self._variant_name(),
-				"deepstack_layer_indices": tuple(deepstack_layers_executed),
-				"extra_pass_dynamic_token_counts": tuple(
-					dynamic_positions.shape[1]
-					for _ in range(self.config.num_extra_loop_passes)
-				),
-				"prefix_cache_requires_grad": tuple(
-					cache.key.requires_grad or cache.value.requires_grad
-					for cache in prefix_caches
-				),
-				"recurrent_pass_cosine": tuple(pass_cosines),
-				"recurrent_pass_relative_update": tuple(pass_relative_updates),
-				"connector_output_norm": (
-					torch.stack(connector_output_norms).mean()
-					if connector_output_norms
-					else eos_hidden_state.new_zeros(())
-				),
-				"fusion_gate": fusion_gate,
-				"late_fusion_attention_entropy": attention_entropy.mean(),
-				"slot_pairwise_cosine": _pairwise_slot_cosine(slot_hidden_states),
-			},
-		)
+		return {
+			"embeddings": F.normalize(pre_normalized_embedding, p=2, dim=-1),
+			"slot_hidden_states": slot_hidden_states,
+			"eos_hidden_state": eos_hidden_state,
+			"attention_weights": attention_weights,
+			"attention_entropy": attention_entropy,
+			"fusion_gate": fusion_gate,
+		}
 
 	@staticmethod
 	def _run_full_layer_and_capture_prefix(
