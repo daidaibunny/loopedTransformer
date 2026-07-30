@@ -67,4 +67,5 @@ def test_baseline_and_recurrent_commands_share_checkpoint_and_test_contract(
 			assert _value_after(training, "--expected-contrastive-global-batch-size") == "256"
 		else:
 			assert _value_after(training, "--expected-contrastive-global-batch-size") == "64"
+			assert _value_after(training, "--initial-gradient-scale") == "32"
 			assert _value_after(evaluation, "--split") == "test"

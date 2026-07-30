@@ -1093,7 +1093,7 @@ def parse_args() -> argparse.Namespace:
 		choices=RUNTIME_PRECISIONS,
 		default="fp16",
 	)
-	parser.add_argument("--initial-gradient-scale", type=float, default=4096.0)
+	parser.add_argument("--initial-gradient-scale", type=float, default=32.0)
 	parser.add_argument("--num-workers", type=int, default=2)
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--checkpoint-every", type=int, default=100)

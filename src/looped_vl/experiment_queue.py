@@ -176,7 +176,7 @@ def build_training_command(
 				"--runtime-precision",
 				"fp16",
 				"--initial-gradient-scale",
-				"4096",
+				"32",
 				"--attention-implementation",
 				"auto",
 			],

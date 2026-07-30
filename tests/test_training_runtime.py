@@ -339,7 +339,7 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	assert args.per_device_batch_size == 8
 	assert args.attention_implementation == "auto"
 	assert args.runtime_precision == "fp16"
-	assert args.initial_gradient_scale == 4096.0
+	assert args.initial_gradient_scale == 32.0
 	assert args.checkpoint_every == 100
 	assert args.max_checkpoints == 4
 	assert args.training_config == Path("configs/train.yaml")
