@@ -70,6 +70,8 @@
   before AdamW, and smoothly activate them without restarting the optimizer.
 - [x] Remove the Qwen3-0.6B semantic decoder and its loss, data, checkpoint, and command
   paths from recurrent training.
+- [x] Pool all latent slots in the warm-start retrieval head after removing the obsolete
+  semantic/retrieval slot partition.
 - [x] Group baseline inputs by text/vision modality before Qwen preprocessing and restore
   their exact logical pair order before the contrastive loss.
 - [x] Cross-audit baseline and recurrent runs as source-pure one-epoch training followed

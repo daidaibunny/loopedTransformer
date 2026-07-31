@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from looped_vl.baseline.data import build_coco_retrieval_inputs
-from looped_vl.models.warmup_heads import WarmupEmbeddingHead, split_slot_groups
+from looped_vl.models.warmup_heads import WarmupEmbeddingHead
 from looped_vl.training.data import build_training_pair, group_model_inputs_by_modality
 
 
@@ -66,30 +66,36 @@ def test_reasoning_pair_uses_image_question_and_answer(source: str) -> None:
 	assert not hasattr(pair, "semantic_target")
 
 
-def test_slot_grouping_matches_every_required_k_value() -> None:
-	for slot_count, expected_reasoning, expected_embedding in (
-		(1, 1, 1),
-		(2, 1, 1),
-		(4, 2, 2),
-		(8, 4, 4),
-		(16, 8, 8),
-	):
-		slots = torch.randn(2, slot_count, 32)
-		reasoning, embedding = split_slot_groups(slots)
-		assert reasoning.shape[1] == expected_reasoning
-		assert embedding.shape[1] == expected_embedding
-		if slot_count == 1:
-			assert reasoning.data_ptr() == embedding.data_ptr()
-
-
-def test_warmup_embedding_head_outputs_unit_normalized_vectors() -> None:
+@pytest.mark.parametrize("slot_count", [1, 2, 4, 8, 16])
+def test_warmup_embedding_head_outputs_unit_normalized_vectors(slot_count: int) -> None:
 	head = WarmupEmbeddingHead(hidden_size=32)
-	slots = torch.randn(3, 4, 32)
+	slots = torch.randn(3, slot_count, 32)
 
 	embeddings = head(slots)
 
 	assert embeddings.shape == (3, 32)
 	assert torch.allclose(embeddings.norm(dim=-1), torch.ones(3), atol=1e-6)
+
+
+def test_warmup_embedding_head_pools_every_latent_slot() -> None:
+	head = WarmupEmbeddingHead(hidden_size=2)
+	with torch.no_grad():
+		head.projection.weight.copy_(torch.eye(2))
+		head.projection.bias.zero_()
+	slots = torch.tensor(
+		[
+			[
+				[2.0, 0.0],
+				[2.0, 0.0],
+				[0.0, 0.0],
+				[0.0, 0.0],
+			],
+		],
+	)
+
+	embeddings = head(slots)
+
+	assert torch.allclose(embeddings, torch.tensor([[1.0, 0.0]]))
 
 
 def test_model_inputs_are_grouped_by_modality_and_keep_original_indices() -> None:
