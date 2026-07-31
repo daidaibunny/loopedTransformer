@@ -33,6 +33,20 @@ the current experiments.
 The frozen row cannot reuse the old 200-row smoke or an older mixed-data report. It must
 be evaluated on the exact test splits above.
 
+### Scheduled frozen evaluation
+
+- Status: waiting for the current six-experiment queue; no metrics exist yet.
+- Code: commit `fe4e1794acda4ed79a504d8b4f0238d9147e35ee` in isolated worktree
+  `/home/mnt/liyiwei/loopedTransformer_worktrees/frozen_eval_fe4e179`.
+- Runtime: 8 × V100, FP16, scaled dot-product attention, per-device batch 32,
+  4 workers, zero trainable parameters, no validation.
+- Dataset order: COCO → GQA Balanced → CLEVR, using the split contract above.
+- Tmux: `frozen_base_full_test_after_six_fe4e179_v2_20260731`.
+- Output:
+  `/home/mnt/liyiwei/outputs/frozen_base_full_test_fe4e179_20260731`.
+- Log:
+  `/home/mnt/liyiwei/outputs/frozen_base_full_test_fe4e179_v2_20260731.tmux.log`.
+
 ## EXP-001 — COCO independent LoRA baseline
 
 - Status/date: passed, 2026-07-30; exact start/end timestamps were not recorded (`N/A`).
