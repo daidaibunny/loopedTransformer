@@ -4,6 +4,10 @@ This is the central comparison record for this repository. Raw `run_manifest.jso
 `training_result.json`, and `report.json` files remain the source of truth. `N/A` means
 that a field was not measured; it must never be guessed.
 
+The pretrained model is Qwen3-VL-Embedding-2B at
+`/home/mnt/liyiwei/models/Qwen3-VL-Embedding-2B/base_original`. In the remainder of this
+file, `backbone` refers to that exact immutable pretrained checkpoint.
+
 The fixed fields follow the smallest useful intersection of the official
 [MLflow run model](https://mlflow.org/docs/latest/ml/tracking/) and
 [MLflow Tracking API](https://mlflow.org/docs/latest/ml/tracking/tracking-api/):
@@ -26,52 +30,26 @@ the current experiments.
 
 | Experiment | COCO | GQA Balanced | CLEVR | Comparable final metrics |
 | --- | --- | --- | --- | --- |
-| Frozen original Qwen3-VL-Embedding-2B | Passed | Passed | Passed | All three datasets |
-| Independent LoRA baseline | Passed | Passed | Interrupted | COCO and GQA |
-| Recurrent latent-slot model | Pending | Pending | Pending | No |
+| Frozen backbone | Passed | Passed | Passed | All three datasets |
+| Backbone + LoRA | Passed | Passed | Interrupted | COCO and GQA |
+| Backbone + recurrent latent slots | Pending | Pending | Pending | No |
 
 The first CLEVR LoRA attempt was interrupted by the 2026-07-31 experiment reorder.
 Its latest resumable state is step 100 (25,600 processed train rows); it has no final
 adapter or test metrics and is not a completed result.
 
-## Unified primary comparison metrics (%)
-
-Each model contributes exactly one primary row per dataset. COCO is a bidirectional
-image-text retrieval task, so its primary row is the arithmetic mean of text-to-image
-and image-to-text metrics. The two direction-specific rows remain diagnostic details in
-the corresponding experiment section; they are not three separate COCO tests. GQA
-Balanced and CLEVR are question-to-answer retrieval tasks and therefore each have one
-direction.
-
-| Model | Dataset | Primary aggregation | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Frozen original Qwen3-VL-Embedding-2B | COCO | Equal-direction mean | 61.2443 | 64.0153 | 33.9117 | 20.6115 | 11.7428 | 34.2366 | 64.9735 | 75.4542 | 83.6250 | 73.0671 | 66.9576 |
-| Independent LoRA baseline | COCO | Equal-direction mean | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
-| Frozen original Qwen3-VL-Embedding-2B | GQA Balanced | Answer retrieval | 52.1141 | 36.2697 | 14.4077 | 8.5292 | 4.6554 | 36.2697 | 72.0385 | 85.2918 | 93.1070 | 52.1141 | 59.5010 |
-| Independent LoRA baseline | GQA Balanced | Answer retrieval | 74.9712 | 62.9035 | 17.9043 | 9.3473 | 4.8056 | 62.9035 | 89.5214 | 93.4727 | 96.1123 | 74.9712 | 79.3467 |
-| Frozen original Qwen3-VL-Embedding-2B | CLEVR | Answer retrieval | 84.9359 | 73.1707 | 19.8499 | 9.9993 | 5.0000 | 73.1707 | 99.2493 | 99.9933 | 100.0000 | 84.9359 | 88.7750 |
-
-Frozen-versus-LoRA rows are directly comparable within COCO and within GQA Balanced:
-they use the same full test manifest checksum, query/candidate gallery, embedding
-normalization, similarity function, and metric implementation. The current COCO full
-test is 25,010 caption sample rows over 5,000 images; it is not a 25,010-image test.
-CLEVR does not yet have a completed LoRA result. Values from different datasets measure
-different retrieval tasks and must not be compared as if they shared one candidate
-gallery. Runtime is also not a strict frozen-versus-LoRA comparison because frozen
-evaluation used visual-length bucketing while the earlier LoRA evaluation did not.
-
-## EXP-000A/B/C — Frozen original Qwen3-VL-Embedding-2B
+## EXP-000A/B/C — Frozen backbone
 
 - Status/date: all three passed, 2026-07-31. The serial full-test queue ran from
   2026-07-31T03:42:04Z to 2026-07-31T03:59:28Z; exact per-dataset start timestamps were
   not separately recorded.
-- Objective: measure the untouched Qwen3-VL-Embedding-2B checkpoint on each full
-  single-dataset test split before any LoRA or recurrent training.
+- Objective: measure the untouched backbone on each full single-dataset test split
+  before any LoRA or recurrent training.
 - Route/node: `8XV100`,
   `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB.
 - Code: commit `2877e70ad5394aa060b419823673fdcd02bad6d1`.
-- Model: `Qwen3-VL-Embedding-2B/base_original`, zero trainable parameters, no adapter
-  and no training checkpoint. Base-model SHA-256 was
+- Backbone: zero trainable parameters, no adapter, and no training checkpoint.
+  Backbone SHA-256 was
   `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1` before and
   after every test.
 - Runtime: FP16, scaled dot-product attention, per-device batch 32, 4 data workers,
@@ -112,7 +90,7 @@ for an exact peak.
 | GQA Balanced | 52.1141 | 36.2697 | 14.4077 | 8.5292 | 4.6554 | 36.2697 | 72.0385 | 85.2918 | 93.1070 | 52.1141 | 59.5010 |
 | CLEVR | 84.9359 | 73.1707 | 19.8499 | 9.9993 | 5.0000 | 73.1707 | 99.2493 | 99.9933 | 100.0000 | 84.9359 | 88.7750 |
 
-## EXP-001 — COCO independent LoRA baseline
+## EXP-001 — COCO backbone + LoRA
 
 - Status/date: passed, 2026-07-30; exact start/end timestamps were not recorded (`N/A`).
 - Objective: establish the unmodified-architecture LoRA retrieval baseline on full COCO.
@@ -123,9 +101,9 @@ for an exact peak.
   manifest SHA-256 `555211fd08280e4e9ab72f040d64b002c1e2aa4b72f6cb6b42427adabb381ff8`;
   test manifest SHA-256
   `a36d9000f665bbaf6bc7d7e472f38e069bb201c0cf6770c0784b498e7193ec89`.
-- Base model: `Qwen3-VL-Embedding-2B/base_original`;
-  SHA-256 `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1`
-  before and after.
+- Backbone SHA-256:
+  `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1` before and
+  after.
 - Trainable parameters: 31,195,136 LoRA parameters; rank 32, alpha 32, dropout 0;
   all 28 decoder layers; `q_proj`, `k_proj`, `v_proj`, `up_proj`, `down_proj`,
   and `gate_proj`.
@@ -154,7 +132,7 @@ for an exact peak.
 
 Coverage was 100%. Similarity was the dot product of L2-normalized embeddings.
 
-## EXP-002 — GQA Balanced independent LoRA baseline
+## EXP-002 — GQA Balanced backbone + LoRA
 
 - Status/date: passed, 2026-07-31; exact start/end timestamps were not recorded (`N/A`).
 - Objective: establish the unmodified-architecture LoRA answer-retrieval baseline on
@@ -166,9 +144,9 @@ Coverage was 100%. Similarity was the dot product of L2-normalized embeddings.
   manifest SHA-256 `2022a835621ea4c072e1e09c5412b78d3322fdd1ac658485ac947859fb20abdb`;
   test manifest SHA-256
   `ba1442bb782bb4627efc081111009e833dbbe6a5451a9f0264075cf662318b2b`.
-- Base model: `Qwen3-VL-Embedding-2B/base_original`;
-  SHA-256 `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1`
-  before and after.
+- Backbone SHA-256:
+  `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1` before and
+  after.
 - Trainable parameters: 31,195,136 LoRA parameters; rank 32, alpha 32, dropout 0;
   all 28 decoder layers; `q_proj`, `k_proj`, `v_proj`, `up_proj`, `down_proj`,
   and `gate_proj`.
@@ -195,24 +173,29 @@ Coverage was 100%. Similarity was the dot product of L2-normalized embeddings.
 The answer gallery contained 1,833 normalized answers observed in training. Coverage
 was 99.9841%; answer accuracy equals P@1.
 
-## Canonical performance-selection smokes
+## COCO bidirectional diagnostic metrics
 
-These runs select safe execution settings. Their short-run losses are not model-quality
-results and must not be compared with full-test metrics.
+COCO is the only current dataset with two protocol-defined retrieval directions.
+Text-to-image uses each caption as a query over the image gallery. Image-to-text uses
+each image as a query over the caption gallery. The equal-direction mean remains the
+single primary COCO value in the all-model table; the two directional rows below are
+diagnostics, not additional independent tests.
 
-| Experiment | Commit | Data | Per-device batch | Contrastive / optimizer batch | Checkpointing | Workers | Final throughput | Peak allocated memory | Status |
-| --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | --- |
-| Baseline batch sweep | `52d2159` | COCO | 16 | 128 / 128 | on | 4 | 44.51 samples/s | 6.49 GiB | passed |
-| Baseline batch sweep | `52d2159` | COCO | 24 | 192 / 192 | on | 4 | 48.13 samples/s | 7.50 GiB | passed |
-| Baseline selected | `e467751` | COCO | 32 | 256 / 256 | on | 4 | 50.04 samples/s | 8.53 GiB | passed |
-| Baseline selected | `e467751` | GQA Balanced | 32 | 256 / 256 | on | 4 | 25.94 samples/s | 11.88 GiB | passed |
-| Baseline selected | `e467751` | CLEVR | 32 | 256 / 256 | on | 4 | 90.50 samples/s | 6.48 GiB | passed |
-| Recurrent selected | `2db8533` | COCO | 8 | 64 / 512 | off | 4 | 46.68 samples/s | 14.32 GiB | passed |
-| Recurrent selected | `0393bef` | GQA Balanced | 8 | 64 / 512 | on | 4 | 28.47 samples/s | 7.17 GiB | passed |
-| Recurrent selected | `0393bef` | CLEVR | 8 | 64 / 512 | off | 4 | 59.62 samples/s | 9.36 GiB | passed |
+| Model | Status | Direction | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Frozen backbone | Passed | Text→image | 64.5980 | 53.5906 | 15.5354 | 8.5610 | 4.5836 | 53.5906 | 77.6769 | 85.6098 | 91.6713 | 64.5980 | 69.1638 |
+| Frozen backbone | Passed | Image→text | 57.8905 | 74.4400 | 52.2880 | 32.6620 | 18.9020 | 14.8827 | 52.2700 | 65.2987 | 75.5787 | 81.5361 | 64.7513 |
+| Frozen backbone | Passed | Equal-direction mean | 61.2443 | 64.0153 | 33.9117 | 20.6115 | 11.7428 | 34.2366 | 64.9735 | 75.4542 | 83.6250 | 73.0671 | 66.9576 |
+| Backbone + LoRA | Passed | Text→image | 72.0247 | 62.0832 | 16.8581 | 9.0672 | 4.7439 | 62.0832 | 84.2903 | 90.6717 | 94.8780 | 72.0247 | 76.2017 |
+| Backbone + LoRA | Passed | Image→text | 64.0410 | 78.4600 | 57.8000 | 35.8980 | 20.5160 | 15.6867 | 57.7787 | 71.7680 | 82.0300 | 85.0017 | 70.5028 |
+| Backbone + LoRA | Passed | Equal-direction mean | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
+| Backbone + recurrent latent slots | Pending | Text→image | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Backbone + recurrent latent slots | Pending | Image→text | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Backbone + recurrent latent slots | Pending | Equal-direction mean | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
-The baseline batch-32 checkpoint-off variants for COCO and GQA failed from insufficient
-memory and are not selected. Eight workers did not improve the selected batch-32 runs.
+GQA Balanced and CLEVR remain one-way image-question-to-answer retrieval tasks under the
+current manifests. Reverse answer-to-question/image retrieval would require a new
+candidate gallery and relevance definition, so it is not reported as a symmetric metric.
 
 ## Required record for every new experiment
 
@@ -230,49 +213,85 @@ memory and are not selected. Eight workers did not improve the selected batch-32
 
 ## All-model horizontal comparison
 
-This final table is the complete at-a-glance comparison matrix. It contains one primary
-row for every model and dataset combination, including combinations that are interrupted
-or still pending. Only full held-out test results appear as numbers; smoke losses,
-partial-test metrics, and values from other candidate galleries are excluded.
+This is the single primary comparison table. Rows distinguish experiments. The first
+header level groups results by dataset; the second level lists the compared metrics.
+COCO uses the equal-direction mean of text-to-image and image-to-text. GQA Balanced and
+CLEVR use answer retrieval. Compare metrics only within the same dataset.
 
-For COCO, each metric is the equal-direction mean of text-to-image and image-to-text.
-For GQA Balanced and CLEVR, each metric is answer retrieval. Results are directly
-comparable only between rows from the same dataset. The recurrent parameter count is the
-current training-time count on `main`; its training-only warm-start embedding head can be
-discarded for inference.
+The recurrent parameter count is the current training-time count on `main`; its
+training-only warm-start embedding head can be discarded for inference. `N/A` means the
+corresponding full held-out test result does not exist.
 
-| Dataset | Model | Status | Latent slots K | Loop passes R | Added trainable parameters | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| COCO | Frozen original Qwen3-VL-Embedding-2B | Passed | 0 | 1 | 0 | 61.2443 | 64.0153 | 33.9117 | 20.6115 | 11.7428 | 34.2366 | 64.9735 | 75.4542 | 83.6250 | 73.0671 | 66.9576 |
-| COCO | Independent LoRA baseline | Passed | 0 | 1 | 31,195,136 | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
-| COCO | Recurrent latent-slot model | Pending | 4 | 4 | 17,342,977 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| GQA Balanced | Frozen original Qwen3-VL-Embedding-2B | Passed | 0 | 1 | 0 | 52.1141 | 36.2697 | 14.4077 | 8.5292 | 4.6554 | 36.2697 | 72.0385 | 85.2918 | 93.1070 | 52.1141 | 59.5010 |
-| GQA Balanced | Independent LoRA baseline | Passed | 0 | 1 | 31,195,136 | 74.9712 | 62.9035 | 17.9043 | 9.3473 | 4.8056 | 62.9035 | 89.5214 | 93.4727 | 96.1123 | 74.9712 | 79.3467 |
-| GQA Balanced | Recurrent latent-slot model | Pending | 4 | 4 | 17,342,977 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| CLEVR | Frozen original Qwen3-VL-Embedding-2B | Passed | 0 | 1 | 0 | 84.9359 | 73.1707 | 19.8499 | 9.9993 | 5.0000 | 73.1707 | 99.2493 | 99.9933 | 100.0000 | 84.9359 | 88.7750 |
-| CLEVR | Independent LoRA baseline | Interrupted | 0 | 1 | 31,195,136 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| CLEVR | Recurrent latent-slot model | Pending | 4 | 4 | 17,342,977 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-
-### COCO bidirectional diagnostic metrics
-
-COCO is the only current dataset with two protocol-defined retrieval directions.
-Text-to-image uses each caption as a query over the image gallery. Image-to-text uses
-each image as a query over the caption gallery. The equal-direction mean remains the
-single primary COCO row in the all-model table above; the two directional rows below are
-diagnostics, not additional independent tests.
-
-| Model | Status | Direction | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Frozen original Qwen3-VL-Embedding-2B | Passed | Text→image | 64.5980 | 53.5906 | 15.5354 | 8.5610 | 4.5836 | 53.5906 | 77.6769 | 85.6098 | 91.6713 | 64.5980 | 69.1638 |
-| Frozen original Qwen3-VL-Embedding-2B | Passed | Image→text | 57.8905 | 74.4400 | 52.2880 | 32.6620 | 18.9020 | 14.8827 | 52.2700 | 65.2987 | 75.5787 | 81.5361 | 64.7513 |
-| Frozen original Qwen3-VL-Embedding-2B | Passed | Equal-direction mean | 61.2443 | 64.0153 | 33.9117 | 20.6115 | 11.7428 | 34.2366 | 64.9735 | 75.4542 | 83.6250 | 73.0671 | 66.9576 |
-| Independent LoRA baseline | Passed | Text→image | 72.0247 | 62.0832 | 16.8581 | 9.0672 | 4.7439 | 62.0832 | 84.2903 | 90.6717 | 94.8780 | 72.0247 | 76.2017 |
-| Independent LoRA baseline | Passed | Image→text | 64.0410 | 78.4600 | 57.8000 | 35.8980 | 20.5160 | 15.6867 | 57.7787 | 71.7680 | 82.0300 | 85.0017 | 70.5028 |
-| Independent LoRA baseline | Passed | Equal-direction mean | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
-| Recurrent latent-slot model | Pending | Text→image | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| Recurrent latent-slot model | Pending | Image→text | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| Recurrent latent-slot model | Pending | Equal-direction mean | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-
-GQA Balanced and CLEVR remain one-way image-question-to-answer retrieval tasks under the
-current manifests. Reverse answer-to-question/image retrieval would require a new
-candidate gallery and relevance definition, so it is not reported as a symmetric metric.
+<table>
+<thead>
+<tr>
+<th rowspan="2">Experiment</th>
+<th rowspan="2">K</th>
+<th rowspan="2">R</th>
+<th rowspan="2">Added trainable parameters</th>
+<th colspan="12">COCO</th>
+<th colspan="12">GQA Balanced</th>
+<th colspan="12">CLEVR</th>
+</tr>
+<tr>
+<th>Status</th><th>mAP</th><th>P@1</th><th>P@5</th><th>P@10</th><th>P@20</th>
+<th>R@1</th><th>R@5</th><th>R@10</th><th>R@20</th><th>MRR</th><th>nDCG@10</th>
+<th>Status</th><th>mAP</th><th>P@1</th><th>P@5</th><th>P@10</th><th>P@20</th>
+<th>R@1</th><th>R@5</th><th>R@10</th><th>R@20</th><th>MRR</th><th>nDCG@10</th>
+<th>Status</th><th>mAP</th><th>P@1</th><th>P@5</th><th>P@10</th><th>P@20</th>
+<th>R@1</th><th>R@5</th><th>R@10</th><th>R@20</th><th>MRR</th><th>nDCG@10</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Frozen backbone</td>
+<td>0</td>
+<td>1</td>
+<td>0</td>
+<td>Passed</td>
+<td>61.2443</td><td>64.0153</td><td>33.9117</td><td>20.6115</td><td>11.7428</td>
+<td>34.2366</td><td>64.9735</td><td>75.4542</td><td>83.6250</td><td>73.0671</td>
+<td>66.9576</td>
+<td>Passed</td>
+<td>52.1141</td><td>36.2697</td><td>14.4077</td><td>8.5292</td><td>4.6554</td>
+<td>36.2697</td><td>72.0385</td><td>85.2918</td><td>93.1070</td><td>52.1141</td>
+<td>59.5010</td>
+<td>Passed</td>
+<td>84.9359</td><td>73.1707</td><td>19.8499</td><td>9.9993</td><td>5.0000</td>
+<td>73.1707</td><td>99.2493</td><td>99.9933</td><td>100.0000</td><td>84.9359</td>
+<td>88.7750</td>
+</tr>
+<tr>
+<td>Backbone + LoRA</td>
+<td>0</td>
+<td>1</td>
+<td>31,195,136</td>
+<td>Passed</td>
+<td>68.0328</td><td>70.2716</td><td>37.3290</td><td>22.4826</td><td>12.6300</td>
+<td>38.8849</td><td>71.0345</td><td>81.2199</td><td>88.4540</td><td>78.5132</td>
+<td>73.3522</td>
+<td>Passed</td>
+<td>74.9712</td><td>62.9035</td><td>17.9043</td><td>9.3473</td><td>4.8056</td>
+<td>62.9035</td><td>89.5214</td><td>93.4727</td><td>96.1123</td><td>74.9712</td>
+<td>79.3467</td>
+<td>Interrupted</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+</tr>
+<tr>
+<td>Backbone + recurrent latent slots</td>
+<td>4</td>
+<td>4</td>
+<td>17,342,977</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+</tr>
+</tbody>
+</table>
