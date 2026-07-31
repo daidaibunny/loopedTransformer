@@ -71,6 +71,7 @@ from looped_vl.training.trainability import (
 	audit_gradient_scope,
 	configure_trainable_parameters,
 )
+from looped_vl.visual_bucketing import DEFAULT_MIN_VISUAL_BUCKET_SIZE
 
 LOGGER = logging.getLogger(__name__)
 
@@ -540,6 +541,10 @@ def _train_one_epoch(
 			input_groups = group_model_inputs_by_modality(
 				batch["query_inputs"],
 				batch["candidate_inputs"],
+				min_pixels=args.min_pixels,
+				max_pixels=args.max_pixels,
+				max_visual_buckets=args.visual_length_buckets,
+				min_visual_bucket_size=args.min_visual_bucket_size,
 			)
 			processed_batches = tuple(
 				processor.prepare(list(group.model_inputs), device=device)
@@ -975,6 +980,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"checkpoint_every": args.checkpoint_every,
 		"formal_training_log_interval": FORMAL_TRAINING_LOG_INTERVAL,
 		"max_checkpoints": args.max_checkpoints,
+		"visual_length_buckets": args.visual_length_buckets,
+		"min_visual_bucket_size": args.min_visual_bucket_size,
 	}
 	all_manifests: list[dict[str, Any] | None] = [None for _ in range(world_size)]
 	dist.all_gather_object(all_manifests, manifest)
@@ -1118,6 +1125,20 @@ def parse_args() -> argparse.Namespace:
 		"--gradient-checkpointing",
 		action=argparse.BooleanOptionalAction,
 		default=True,
+	)
+	parser.add_argument(
+		"--visual-length-buckets",
+		type=int,
+		default=1,
+		help=(
+			"Number of visual-length encoding buckets. One disables bucketing. "
+			"Bucketing changes padding only, never contrastive batch composition."
+		),
+	)
+	parser.add_argument(
+		"--min-visual-bucket-size",
+		type=int,
+		default=DEFAULT_MIN_VISUAL_BUCKET_SIZE,
 	)
 	parser.add_argument("--smoke-optimizer-steps", type=int, default=0)
 	parser.add_argument("--smoke-gradient-accumulation-steps", type=int, default=1)
