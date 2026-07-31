@@ -36,16 +36,17 @@ be evaluated on the exact test splits above.
 ### Scheduled frozen evaluation
 
 - Status: waiting for the current six-experiment queue; no metrics exist yet.
-- Code: commit `fe4e1794acda4ed79a504d8b4f0238d9147e35ee` in isolated worktree
-  `/home/mnt/liyiwei/loopedTransformer_worktrees/frozen_eval_fe4e179`.
+- Code: commit `5c752bc4d42ef4eb073bed91870daf98e0ed5a4b` in isolated worktree
+  `/home/mnt/liyiwei/loopedTransformer_worktrees/baseline_bucket_5c752bc`.
 - Runtime: 8 × V100, FP16, scaled dot-product attention, per-device batch 32,
-  4 workers, zero trainable parameters, no validation.
+  4 workers, baseline-only visual-length bucketing with at most 3 buckets and at
+  least 8 items per bucket, zero trainable parameters, no validation.
 - Dataset order: COCO → GQA Balanced → CLEVR, using the split contract above.
-- Tmux: `frozen_base_full_test_after_six_fe4e179_v2_20260731`.
+- Tmux: `frozen_base_full_test_after_six_5c752bc_v2_20260731`.
 - Output:
-  `/home/mnt/liyiwei/outputs/frozen_base_full_test_fe4e179_20260731`.
+  `/home/mnt/liyiwei/outputs/frozen_base_full_test_5c752bc_20260731`.
 - Log:
-  `/home/mnt/liyiwei/outputs/frozen_base_full_test_fe4e179_v2_20260731.tmux.log`.
+  `/home/mnt/liyiwei/outputs/frozen_base_full_test_5c752bc_v2_20260731.tmux.log`.
 
 ## EXP-001 — COCO independent LoRA baseline
 
