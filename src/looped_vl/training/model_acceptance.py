@@ -151,6 +151,8 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 			raise RuntimeError(
 				"Final recurrent embedding differs from the final pass embedding",
 			)
+		if len(output.loop_slot_hidden_states) != config.num_total_loop_passes:
+			raise RuntimeError("Full recurrent acceptance did not return every slot round")
 		for pass_number, pass_embedding in enumerate(output.loop_embeddings, start=1):
 			if pass_embedding.shape != (1, config.hidden_size):
 				raise RuntimeError(
@@ -165,10 +167,10 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 				raise RuntimeError(
 					f"Pass {pass_number} norm error is too large: {pass_norm_error}",
 				)
-		expected_dynamic_tokens = config.num_latent_slots + 1
+		expected_dynamic_tokens = config.num_latent_slots
 		expected_counts = (expected_dynamic_tokens,) * config.num_extra_loop_passes
 		if tuple(output.diagnostics["extra_pass_dynamic_token_counts"]) != expected_counts:
-			raise RuntimeError("Extra passes did not update exactly slots plus EOS")
+			raise RuntimeError("Extra passes did not update exactly the latent slots")
 		if any(output.diagnostics["prefix_cache_requires_grad"]):
 			raise RuntimeError("A recurrent prefix K/V cache still tracks gradients")
 		if tuple(output.diagnostics["deepstack_layer_indices"]) != (0, 1, 2):

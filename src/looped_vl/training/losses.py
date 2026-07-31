@@ -1,4 +1,4 @@
-"""Losses fixed by recurrent embedding specification v1.0."""
+"""Losses for the locked damped recurrent embedding architecture."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def symmetric_info_nce(
 
 
 def slot_diversity_loss(slot_hidden_states: torch.Tensor) -> torch.Tensor:
-	"""Average off-diagonal cosine similarity of final contextual slots."""
+	"""Average absolute off-diagonal cosine similarity of final recurrent slots."""
 	if slot_hidden_states.ndim != 3 or slot_hidden_states.shape[1] == 0:
 		raise ValueError("slot_hidden_states must have shape [batch, slots, hidden]")
 	slot_count = slot_hidden_states.shape[1]
@@ -40,4 +40,4 @@ def slot_diversity_loss(slot_hidden_states: torch.Tensor) -> torch.Tensor:
 		dtype=torch.bool,
 		device=slot_hidden_states.device,
 	)
-	return cosine[:, off_diagonal].mean()
+	return cosine[:, off_diagonal].abs().mean()

@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from looped_vl.baseline.data import build_coco_retrieval_inputs
-from looped_vl.models.warmup_heads import WarmupEmbeddingHead
+from looped_vl.models.warmup_heads import AuxiliarySlotRetrievalHead
 from looped_vl.training.data import build_training_pair, group_model_inputs_by_modality
 
 
@@ -67,8 +67,8 @@ def test_reasoning_pair_uses_image_question_and_answer(source: str) -> None:
 
 
 @pytest.mark.parametrize("slot_count", [1, 2, 4, 8, 16])
-def test_warmup_embedding_head_outputs_unit_normalized_vectors(slot_count: int) -> None:
-	head = WarmupEmbeddingHead(hidden_size=32)
+def test_auxiliary_embedding_head_outputs_unit_normalized_vectors(slot_count: int) -> None:
+	head = AuxiliarySlotRetrievalHead(hidden_size=32, output_size=32)
 	slots = torch.randn(3, slot_count, 32)
 
 	embeddings = head(slots)
@@ -77,11 +77,10 @@ def test_warmup_embedding_head_outputs_unit_normalized_vectors(slot_count: int) 
 	assert torch.allclose(embeddings.norm(dim=-1), torch.ones(3), atol=1e-6)
 
 
-def test_warmup_embedding_head_pools_every_latent_slot() -> None:
-	head = WarmupEmbeddingHead(hidden_size=2)
+def test_auxiliary_embedding_head_pools_every_latent_slot() -> None:
+	head = AuxiliarySlotRetrievalHead(hidden_size=2, output_size=2)
 	with torch.no_grad():
 		head.projection.weight.copy_(torch.eye(2))
-		head.projection.bias.zero_()
 	slots = torch.tensor(
 		[
 			[

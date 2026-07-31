@@ -197,8 +197,6 @@ def _training_command(
 			[
 				"--smoke-optimizer-steps",
 				"2",
-				"--smoke-auxiliary-emphasis-steps",
-				"1",
 				"--smoke-gradient-accumulation-steps",
 				"1",
 				"--expected-contrastive-global-batch-size",

@@ -6,17 +6,12 @@ baselines:
   base:
     num_latent_slots: 0
     num_total_loop_passes: 1
-    connector: false
-    fusion: false
-  eos_only_recurrence:
-    num_latent_slots: 0
-    num_total_loop_passes: 4
     fusion: false
   slots_without_recurrence:
-    num_latent_slots: 4
+    num_latent_slots: 8
     num_total_loop_passes: 1
     fusion: true
   full_proposed_model:
-    num_latent_slots: 4
+    num_latent_slots: 8
     num_total_loop_passes: 4
     fusion: true

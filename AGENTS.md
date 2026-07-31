@@ -7,8 +7,15 @@
 - The formal recurrent model is pure recurrent and must contain no LoRA modules or
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
-- Implement the attached v1.0 specification exactly, keeping forward activation updates
-  separate from the trainable-parameter allowlist for each stage.
+- The locked recurrent architecture is
+  `damped_mid_decoder_latent_slot_recurrence_no_lora_v2`. The attachment's LoRA and
+  two-stage sections are explicitly excluded by the user.
+- Use one training stage and one full-data epoch. All trainable recurrent parameters are
+  active from the first optimizer step.
+- Default to 8 active slots from the shared seed-42 16-slot initialization bank and 4
+  total recurrent passes. Extra passes update slots only; EOS is fixed after Pass 1.
+- The recurrent update is parameter-free damping with step size `1 / R`. The model must
+  contain no recurrent connector.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
   only under experiment-specific output directories.
 - Always call the single-query attention from the final valid token over latent slots
@@ -78,25 +85,26 @@
 - Keep the final adapter or final recurrent learned weights separately from the rolling
   resumable checkpoint. Evaluation reads those final learned weights, not an intermediate
   optimizer checkpoint.
-- Reject recurrent checkpoints containing LoRA parameters or the superseded
-  `single_stage_warm_start_v1` and `pure_recurrent_single_stage_v1` protocols.
+- Reject recurrent checkpoints containing LoRA parameters, recurrent-connector
+  parameters, or any superseded training protocol.
 - Every recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata, and
-  `report.json` must declare architecture `recurrent_latent_slot_qwen3vl_no_lora_v1`,
-  protocol `pure_recurrent_full_objective_v2`, `backbone_frozen: true`, and
-  `lora_enabled: false`. Reject missing or conflicting identities.
+  `report.json` must declare architecture
+  `damped_mid_decoder_latent_slot_recurrence_no_lora_v2`, protocol
+  `pure_recurrent_single_stage_full_objective_v3`, `backbone_frozen: true`,
+  `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
+  conflicting identities.
 - Recurrent training runs for exactly one epoch with final InfoNCE weight 1.0 at every
-  optimizer step. The first 35% of the epoch only increases the auxiliary slot InfoNCE
-  weight from 0.2 to 1.0; it must not freeze final-fusion parameters or disable the final
-  retrieval objective. All trainable groups use the same learning-rate schedule from
-  step one.
+  optimizer step. The mean of the four per-round auxiliary InfoNCE losses has weight 0.1,
+  and final-slot diversity has weight 0.05, at every optimizer step. All trainable groups
+  use the same learning-rate schedule from step one.
 
 ## Verification
 
 - Add tests before implementation changes.
 - Verify all dataset backends, batching, processor inputs, embedding shapes, finite values,
   unit norms, and model checkpoint hash stability.
-- Enforce every structural, trainability, determinism, and numerical acceptance condition
-  from sections 27–29 of the v1.0 implementation specification.
+- Enforce the locked no-LoRA, single-stage, connector-free architecture with structural,
+  trainability, determinism, checkpoint-compatibility, and numerical tests.
 
 ## Required evaluation metrics
 

@@ -109,21 +109,21 @@ def test_recurrent_losses_match_independent_multi_positive_losses() -> None:
 		"train_rows",
 		"optimizer_global_batch_size",
 		"loader_batches",
-		"expected_auxiliary_emphasis_steps",
+		"expected_optimizer_steps",
 	),
 	(
-		(100_000, 256, 1_563, 137),
-		(100_000, 512, 1_563, 69),
-		(566_747, 512, 8_856, 388),
-		(943_000, 512, 14_735, 645),
-		(699_989, 512, 10_938, 479),
+		(100_000, 256, 1_563, 391),
+		(100_000, 512, 1_563, 196),
+		(566_747, 512, 8_856, 1_107),
+		(943_000, 512, 14_735, 1_842),
+		(699_989, 512, 10_938, 1_368),
 	),
 )
-def test_auxiliary_emphasis_uses_fraction_of_rows_not_loop_count(
+def test_single_stage_plan_covers_every_loader_batch_once(
 	train_rows: int,
 	optimizer_global_batch_size: int,
 	loader_batches: int,
-	expected_auxiliary_emphasis_steps: int,
+	expected_optimizer_steps: int,
 ) -> None:
 	gradient_accumulation_steps = 4 if optimizer_global_batch_size == 256 else 8
 	plan = resolve_one_epoch_training_plan(
@@ -131,33 +131,23 @@ def test_auxiliary_emphasis_uses_fraction_of_rows_not_loop_count(
 		loader_batches=loader_batches,
 		gradient_accumulation_steps=gradient_accumulation_steps,
 		optimizer_global_batch_size=optimizer_global_batch_size,
-		auxiliary_emphasis_epoch_fraction=0.35,
 	)
 
 	assert plan.start_batch == 0
 	assert plan.end_batch == loader_batches
-	assert plan.optimizer_steps == loader_batches // gradient_accumulation_steps + (
-		loader_batches % gradient_accumulation_steps != 0
-	)
-	assert (
-		plan.auxiliary_emphasis_optimizer_steps
-		== expected_auxiliary_emphasis_steps
-	)
-	assert (
-		plan.standard_optimizer_steps
-		== plan.optimizer_steps - expected_auxiliary_emphasis_steps
-	)
+	assert plan.optimizer_steps == expected_optimizer_steps
+	assert not hasattr(plan, "auxiliary_emphasis_optimizer_steps")
 
 
-def test_one_epoch_training_plan_rejects_no_standard_training_window() -> None:
-	with pytest.raises(ValueError, match="standard optimizer step"):
-		resolve_one_epoch_training_plan(
-			train_rows=8,
-			loader_batches=1,
-			gradient_accumulation_steps=1,
-			optimizer_global_batch_size=8,
-			auxiliary_emphasis_epoch_fraction=0.35,
-		)
+def test_one_epoch_training_plan_accepts_one_optimizer_step() -> None:
+	plan = resolve_one_epoch_training_plan(
+		train_rows=8,
+		loader_batches=1,
+		gradient_accumulation_steps=1,
+		optimizer_global_batch_size=8,
+	)
+
+	assert plan.optimizer_steps == 1
 
 
 def test_batch_sizes_distinguish_negative_pool_from_optimizer_accumulation() -> None:

@@ -14,9 +14,8 @@ class TinyRecurrentModel(nn.Module):
 		self.base_embedding_model = nn.Linear(4, 4)
 		self.latent_slots = nn.Parameter(torch.randn(1, 16, 4))
 		self.eos_delta = nn.Parameter(torch.zeros(1, 1, 4))
-		self.recurrent_connector = nn.Linear(4, 4)
 		self.late_fusion = nn.Linear(4, 4)
-		self.warmup_embedding_head = nn.Linear(4, 4)
+		self.auxiliary_embedding_head = nn.Linear(4, 4)
 
 
 def test_pure_recurrent_trainability_freezes_the_entire_backbone() -> None:
@@ -27,8 +26,7 @@ def test_pure_recurrent_trainability_freezes_the_entire_backbone() -> None:
 		name.startswith(
 			(
 				"latent_slots",
-				"recurrent_connector",
-				"warmup_embedding_head",
+				"auxiliary_embedding_head",
 			)
 		)
 		for name in groups.recurrent_core

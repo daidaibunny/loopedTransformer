@@ -9,8 +9,7 @@ from torch import nn
 
 RECURRENT_CORE_PREFIXES = (
 	"latent_slots",
-	"recurrent_connector.",
-	"warmup_embedding_head.",
+	"auxiliary_embedding_head.",
 )
 FINAL_FUSION_PREFIXES = (
 	"eos_delta",

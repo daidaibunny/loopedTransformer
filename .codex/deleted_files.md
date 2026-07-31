@@ -58,3 +58,15 @@ released 309,683,217 bytes.
 Recovery: rerun the preserved smoke command from its run manifest against the immutable
 Qwen3-VL-Embedding-2B base checkpoint. The three completed full LoRA experiments retain
 their final resumable checkpoints and final adapters.
+
+### Recurrent connector removal
+
+- `src/looped_vl/models/recurrent_connector.py`
+
+Reason: the locked damped recurrence replaces the learned connector with the parameter-free
+update `S_next = S_previous + (proposal - S_previous) / R`. Keeping the obsolete connector
+module would make the implemented architecture and parameter accounting ambiguous.
+
+Recovery: the removed implementation remains available in Git history. Checkpoints that
+contain `recurrent_connector` parameters are intentionally incompatible with the new
+architecture identity.

@@ -122,7 +122,7 @@ def test_single_training_config_matches_full_objective_protocol() -> None:
 	assert config.precision == "bf16"
 	assert config.lr_scheduler == "cosine"
 	assert config.warmup_ratio == 0.03
-	assert config.auxiliary_emphasis_epoch_fraction == 0.35
+	assert not hasattr(config, "auxiliary_emphasis_epoch_fraction")
 
 
 def test_seed_42_reproduces_python_numpy_and_torch_streams() -> None:
@@ -245,6 +245,7 @@ def test_checkpoint_restores_gradient_scaler_state(tmp_path: Path) -> None:
 		"two_stage_v1",
 		"single_stage_warm_start_v1",
 		"pure_recurrent_single_stage_v1",
+		"pure_recurrent_full_objective_v2",
 	],
 )
 def test_checkpoint_rejects_non_pure_recurrent_protocol_before_loading(
@@ -277,14 +278,14 @@ def test_checkpoint_rejects_non_pure_recurrent_protocol_before_loading(
 		metadata={"training_protocol": old_protocol},
 	)
 
-	with pytest.raises(ValueError, match="pure recurrent"):
+	with pytest.raises(ValueError, match="damped recurrent"):
 		load_training_checkpoint(
 			path=checkpoint_path,
 			model=model,
 			optimizer=optimizer,
 			scheduler=scheduler,
 			rank=0,
-			expected_training_protocol="pure_recurrent_full_objective_v2",
+			expected_training_protocol="pure_recurrent_single_stage_full_objective_v3",
 		)
 
 
@@ -591,18 +592,16 @@ def test_metric_accumulation_stays_on_device_until_step_boundary() -> None:
 	assert _finalize_metric_tensors(accumulator, count=2) == {"loss": pytest.approx(3.0)}
 
 
-def test_final_retrieval_loss_is_active_during_the_entire_epoch() -> None:
+def test_single_stage_loss_weights_are_fixed_during_the_entire_epoch() -> None:
 	components = {
 		"final_infonce": torch.tensor(10.0),
-		"slot_infonce": torch.tensor(2.0),
+		"loop_infonce": torch.tensor(2.0),
 		"slot_diversity": torch.tensor(4.0),
 	}
 
-	warm_start = compose_training_loss(phase="auxiliary_emphasis", **components)
-	joint = compose_training_loss(phase="standard", **components)
+	total = compose_training_loss(**components)
 
-	assert warm_start.item() == pytest.approx(10.0 + 2.0 + 0.05 * 4.0)
-	assert joint.item() == pytest.approx(10.0 + 0.2 * 2.0 + 0.05 * 4.0)
+	assert total.item() == pytest.approx(10.0 + 0.1 * 2.0 + 0.05 * 4.0)
 
 
 def test_every_recurrent_parameter_group_uses_the_same_lr_from_step_one() -> None:
@@ -643,19 +642,15 @@ def test_first_optimizer_step_updates_both_recurrent_parameter_groups() -> None:
 	assert model[1].bias in optimizer.state
 
 
-def test_training_phase_transitions_without_a_second_formal_stage() -> None:
+def test_training_phase_is_single_stage_for_the_full_epoch() -> None:
 	plan = OneEpochTrainingPlan(
 		start_batch=0,
 		end_batch=100,
 		optimizer_steps=20,
-		auxiliary_emphasis_optimizer_steps=5,
-		standard_optimizer_steps=15,
 	)
 
-	assert _training_phase(0, plan) == "auxiliary_emphasis"
-	assert _training_phase(4, plan) == "auxiliary_emphasis"
-	assert _training_phase(5, plan) == "standard"
-	assert _training_phase(19, plan) == "standard"
+	for global_step in range(20):
+		assert _training_phase(global_step, plan) == "single_stage"
 
 
 def test_explicit_commit_allows_a_non_git_launch_directory(tmp_path: Path) -> None:

@@ -22,7 +22,6 @@ class TrainingConfig:
 	precision: str
 	lr_scheduler: str
 	warmup_ratio: float
-	auxiliary_emphasis_epoch_fraction: float
 
 	@classmethod
 	def from_yaml(cls, path: str | Path) -> TrainingConfig:
@@ -41,9 +40,6 @@ class TrainingConfig:
 			precision=str(value["precision"]),
 			lr_scheduler=str(value["lr_scheduler"]),
 			warmup_ratio=float(value["warmup_ratio"]),
-			auxiliary_emphasis_epoch_fraction=float(
-				value["auxiliary_emphasis_epoch_fraction"],
-			),
 		)
 		config.validate()
 		return config
@@ -64,8 +60,6 @@ class TrainingConfig:
 			raise ValueError("precision must remain bf16")
 		if self.lr_scheduler != "cosine" or self.warmup_ratio != 0.03:
 			raise ValueError("scheduler must be cosine with warmup ratio 0.03")
-		if self.auxiliary_emphasis_epoch_fraction != 0.35:
-			raise ValueError("auxiliary-emphasis window must cover exactly 0.35 epoch")
 
 	def gradient_accumulation_steps(
 		self,

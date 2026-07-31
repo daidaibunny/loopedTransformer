@@ -12,7 +12,7 @@ import sys
 import time
 from collections import Counter
 from contextlib import nullcontext
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -172,8 +172,7 @@ def _build_loader(
 def _set_training_modes(model: RecurrentTrainingModel) -> None:
 	model.train()
 	model.encoder.base_embedding_model.eval()
-	model.encoder.warmup_embedding_head.train()
-	model.encoder.recurrent_connector.train()
+	model.encoder.auxiliary_embedding_head.train()
 	model.encoder.late_fusion.train()
 
 
@@ -334,10 +333,10 @@ def _training_phase(
 	global_step: int,
 	training_plan: OneEpochTrainingPlan,
 ) -> str:
-	"""Return the loss and learning-rate phase for the next optimizer update."""
-	if global_step < training_plan.auxiliary_emphasis_optimizer_steps:
-		return "auxiliary_emphasis"
-	return "standard"
+	"""Return the sole stage label while validating the optimizer cursor."""
+	if not 0 <= global_step < training_plan.optimizer_steps:
+		raise ValueError("global_step is outside the single-stage training plan")
+	return "single_stage"
 
 
 def _distributed_data_parallel_options() -> dict[str, bool]:
@@ -405,7 +404,7 @@ def _train_one_epoch(
 		init_scale=args.initial_gradient_scale,
 	)
 	cursor = TrainingCursor(
-		stage=0,
+		stage=1,
 		global_step=0,
 		sampler_epoch=0,
 		batch_in_epoch=training_plan.start_batch,
@@ -422,8 +421,8 @@ def _train_one_epoch(
 			gradient_scaler=gradient_scaler,
 			expected_training_protocol=PURE_RECURRENT_TRAINING_PROTOCOL,
 		)
-		if cursor.stage != 0:
-			raise ValueError("Resume checkpoint is not from single-stage training")
+		if cursor.stage != 1:
+			raise ValueError("Resume checkpoint is not from the single training stage")
 		source_batch_size = args.resume_per_device_batch_size
 		if source_batch_size is None:
 			metadata_batch_size = resume_metadata.get("per_device_batch_size")
@@ -490,21 +489,17 @@ def _train_one_epoch(
 				"epoch_batch_start": training_plan.start_batch,
 				"epoch_batch_end": training_plan.end_batch,
 				"optimizer_steps": training_plan.optimizer_steps,
-				"auxiliary_emphasis_optimizer_steps": (
-					training_plan.auxiliary_emphasis_optimizer_steps
-				),
 			},
 		)
 	optimizer.zero_grad(set_to_none=True)
 	metric_keys = (
 		"total_loss",
 		"final_infonce",
-		"slot_infonce",
+		"loop_infonce",
 		"slot_diversity",
 		"fusion_gate",
 		"late_fusion_attention_entropy",
 		"slot_pairwise_cosine",
-		"connector_output_norm",
 	)
 	accumulator: dict[str, torch.Tensor] = {}
 	accumulated_local_samples = 0
@@ -563,7 +558,6 @@ def _train_one_epoch(
 				step_output = ddp_model(
 					local_batch_size=local_batch_size,
 					positive_ids=batch["positive_ids"],
-					phase=phase,
 					processed_batches=processed_batches,
 					original_indices=tuple(
 						group.original_indices
@@ -581,8 +575,9 @@ def _train_one_epoch(
 		for diagnostic_name in (
 			"recurrent_pass_cosine",
 			"recurrent_pass_relative_update",
+			"loop_infonce_by_pass",
 		):
-			for pass_index, value in enumerate(step_output[diagnostic_name], start=2):
+			for pass_index, value in enumerate(step_output[diagnostic_name], start=1):
 				key = f"{diagnostic_name}_pass{pass_index}"
 				accumulator[key] = (
 					accumulator.get(key, torch.zeros_like(value.detach().float()))
@@ -595,7 +590,7 @@ def _train_one_epoch(
 		direction_counts.update(batch["directions"])
 		if not is_accumulation_boundary:
 			cursor = TrainingCursor(
-				stage=0,
+				stage=1,
 				global_step=cursor.global_step,
 				sampler_epoch=epoch,
 				batch_in_epoch=batch_index + 1,
@@ -605,10 +600,7 @@ def _train_one_epoch(
 			continue
 		gradient_scaler.unscale_(optimizer)
 		gradient_audit = None
-		if cursor.global_step in {
-			0,
-			training_plan.auxiliary_emphasis_optimizer_steps,
-		}:
+		if cursor.global_step == 0:
 			gradient_audit = audit_gradient_scope(
 				training_model.encoder,
 				allowed_names=parameter_groups.all,
@@ -645,7 +637,7 @@ def _train_one_epoch(
 					batch_index,
 				)
 			cursor = TrainingCursor(
-				stage=0,
+				stage=1,
 				global_step=cursor.global_step,
 				sampler_epoch=epoch,
 				batch_in_epoch=batch_index + 1,
@@ -662,10 +654,6 @@ def _train_one_epoch(
 		interval_gradient_scope_audited = (
 			interval_gradient_scope_audited or gradient_audit is not None
 		)
-		next_step_changes_phase = (
-			global_step < optimizer_step_limit
-			and _training_phase(global_step, training_plan) != phase
-		)
 		if should_log_training_metrics(
 			optimizer_steps_since_log=optimizer_steps_since_log,
 			global_step=global_step,
@@ -673,7 +661,7 @@ def _train_one_epoch(
 			force_every_step=bool(
 				args.smoke_optimizer_steps or args.max_additional_optimizer_steps
 			),
-			force_boundary=next_step_changes_phase,
+			force_boundary=False,
 		):
 			torch.cuda.synchronize(device)
 			reduced_accumulator, global_metric_samples = _reduce_metric_tensors(
@@ -688,13 +676,14 @@ def _train_one_epoch(
 				key: [
 					averages.pop(f"{key}_pass{pass_index}")
 					for pass_index in range(
-						2,
+						1,
 						training_model.encoder.config.num_total_loop_passes + 1,
 					)
 				]
 				for key in (
 					"recurrent_pass_cosine",
 					"recurrent_pass_relative_update",
+					"loop_infonce_by_pass",
 				)
 			}
 			global_source_counts, global_direction_counts = _gather_training_counters(
@@ -734,7 +723,8 @@ def _train_one_epoch(
 					and averages["late_fusion_attention_entropy"] < 0.1
 				),
 				"recurrence_unused": (
-					global_step > 100 and averages["connector_output_norm"] < 1e-6
+					global_step > 100
+					and max(finalized_diagnostics["recurrent_pass_relative_update"]) < 1e-6
 				),
 				"gradient_scope_audited": interval_gradient_scope_audited,
 			}
@@ -759,7 +749,7 @@ def _train_one_epoch(
 			interval_gradient_scope_audited = False
 			step_start = time.perf_counter()
 		cursor = TrainingCursor(
-			stage=0,
+			stage=1,
 			global_step=global_step,
 			sampler_epoch=epoch,
 			batch_in_epoch=batch_index + 1,
@@ -827,12 +817,6 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	if args.smoke_save_final_checkpoint and not args.smoke_optimizer_steps:
 		raise ValueError(
 			"smoke_save_final_checkpoint requires smoke_optimizer_steps",
-		)
-	if args.smoke_optimizer_steps and not (
-		0 < args.smoke_auxiliary_emphasis_steps < args.smoke_optimizer_steps
-	):
-		raise ValueError(
-			"smoke_auxiliary_emphasis_steps must leave at least one standard smoke step",
 		)
 	rank, world_size, local_rank, device = _initialize_distributed(args.expected_world_size)
 	logging.basicConfig(
@@ -905,18 +889,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		loader_batches=len(loader),
 		gradient_accumulation_steps=gradient_accumulation_steps,
 		optimizer_global_batch_size=parallel_batch_sizes.optimizer_global_batch_size,
-		auxiliary_emphasis_epoch_fraction=(
-			training_config.auxiliary_emphasis_epoch_fraction
-		),
 	)
-	if args.smoke_optimizer_steps:
-		training_plan = replace(
-			training_plan,
-			auxiliary_emphasis_optimizer_steps=args.smoke_auxiliary_emphasis_steps,
-			standard_optimizer_steps=(
-				training_plan.optimizer_steps - args.smoke_auxiliary_emphasis_steps
-			),
-		)
 	if (
 		parallel_batch_sizes.contrastive_global_batch_size
 		!= args.expected_contrastive_global_batch_size
@@ -960,10 +933,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"training_config": asdict(training_config),
 		"schedule": {
 			"epochs": 1,
-			"policy": "full_final_objective_with_auxiliary_slot_emphasis",
-			"auxiliary_emphasis_formula": (
-				"ceil(0.35 * train_rows / optimizer_global_batch_size)"
-			),
+			"policy": "single_stage_fixed_full_objective",
 			"resolved_training_plan": asdict(training_plan),
 			"loader_batches_per_rank": len(loader),
 			"distributed_sampler_total_rows": sampler.total_size,
@@ -980,6 +950,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"multi_positive_contrastive_loss": True,
 		"combined_contrastive_all_gather": True,
 		"final_infonce_weight_all_steps": 1.0,
+		"loop_infonce_weight_all_steps": 0.1,
+		"slot_diversity_weight_all_steps": 0.05,
 		"all_parameter_groups_active_from_step_one": True,
 		"resume_per_device_batch_size": args.resume_per_device_batch_size,
 		"max_additional_optimizer_steps": args.max_additional_optimizer_steps,
@@ -995,7 +967,6 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			}
 		],
 		"smoke_optimizer_steps": args.smoke_optimizer_steps,
-		"smoke_auxiliary_emphasis_steps": args.smoke_auxiliary_emphasis_steps,
 		"checkpoint_every": args.checkpoint_every,
 		"formal_training_log_interval": FORMAL_TRAINING_LOG_INTERVAL,
 		"max_checkpoints": args.max_checkpoints,
@@ -1034,7 +1005,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			)
 		_write_json(
 			output_dir / "status.json",
-			{"status": "training", "phase": "auxiliary_emphasis"},
+			{"status": "training", "phase": "single_stage"},
 		)
 	training_start = time.perf_counter()
 	final_cursor = _train_one_epoch(
@@ -1139,7 +1110,6 @@ def parse_args() -> argparse.Namespace:
 		default=True,
 	)
 	parser.add_argument("--smoke-optimizer-steps", type=int, default=0)
-	parser.add_argument("--smoke-auxiliary-emphasis-steps", type=int, default=1)
 	parser.add_argument("--smoke-gradient-accumulation-steps", type=int, default=1)
 	parser.add_argument("--smoke-save-final-checkpoint", action="store_true")
 	return parser.parse_args()

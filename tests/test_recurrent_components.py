@@ -17,7 +17,6 @@ from looped_vl.models.latent_slot_inserter import (
 	create_or_load_master_slot_initialization,
 )
 from looped_vl.models.loading import load_recurrent_components
-from looped_vl.models.recurrent_connector import RecurrentConnector, RMSNorm
 from looped_vl.models.recurrent_decoder_block import (
 	build_dynamic_attention_mask,
 	detach_prefix_key_values,
@@ -26,6 +25,7 @@ from looped_vl.models.recurrent_qwen3vl_embedding import (
 	RecurrentQwen3VLEmbedding,
 	_run_full_sequence_decoder_layer,
 )
+from looped_vl.models.warmup_heads import AuxiliarySlotRetrievalHead, RMSNorm
 from looped_vl.training.losses import slot_diversity_loss, symmetric_info_nce
 
 
@@ -111,11 +111,6 @@ class _TinyEmbeddingModel(torch.nn.Module):
 		self.model = _TinyMultimodalModel()
 
 
-class _IdentityConnector(torch.nn.Module):
-	def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-		return hidden_states
-
-
 class _IdentitySlotFusion(torch.nn.Module):
 	def forward(
 		self,
@@ -139,24 +134,30 @@ def test_base_configuration_matches_v1_specification() -> None:
 	assert config.seed == 42
 	assert config.hidden_size == 2048
 	assert config.max_num_latent_slots == 16
-	assert config.num_latent_slots == 4
+	assert config.num_latent_slots == 8
 	assert config.loop_start_layer == 12
 	assert config.loop_end_layer == 20
 	assert config.num_total_loop_passes == 4
 	assert config.detach_prefix_kv_cache is True
-	assert config.recurrent_bottleneck_dim == 512
 	assert config.fusion_attention_dim == 256
+	assert config.auxiliary_output_dim == 256
+	assert not any("connector" in name for name in vars(config))
 	assert not any(name.startswith("lora_") for name in vars(config))
 
 
 def test_pure_recurrent_result_identity_explicitly_excludes_lora() -> None:
-	assert PURE_RECURRENT_ARCHITECTURE == "recurrent_latent_slot_qwen3vl_no_lora_v1"
-	assert PURE_RECURRENT_TRAINING_PROTOCOL == "pure_recurrent_full_objective_v2"
+	assert PURE_RECURRENT_ARCHITECTURE == (
+		"damped_mid_decoder_latent_slot_recurrence_no_lora_v2"
+	)
+	assert PURE_RECURRENT_TRAINING_PROTOCOL == (
+		"pure_recurrent_single_stage_full_objective_v3"
+	)
 	assert pure_recurrent_result_identity() == {
 		"architecture": PURE_RECURRENT_ARCHITECTURE,
 		"training_protocol": PURE_RECURRENT_TRAINING_PROTOCOL,
 		"backbone_frozen": True,
 		"lora_enabled": False,
+		"formal_training_stages": 1,
 	}
 
 
@@ -267,16 +268,6 @@ def test_master_slot_initialization_is_seeded_once_and_sliced(tmp_path: Path) ->
 	assert torch.equal(full[:, :4], second_load[:, :4])
 
 
-def test_recurrent_connector_starts_as_an_exact_zero_residual() -> None:
-	connector = RecurrentConnector(hidden_size=32, bottleneck_dim=8)
-	hidden_states = torch.randn(2, 5, 32)
-
-	output = connector(hidden_states)
-
-	assert output.abs().max().item() < 1e-7
-	assert connector.up_projection.weight.count_nonzero().item() == 0
-
-
 def test_project_rms_norm_matches_torch_reference() -> None:
 	inputs = torch.randn(2, 3, 32)
 	reference = torch.nn.RMSNorm(32, eps=1e-6)
@@ -287,14 +278,17 @@ def test_project_rms_norm_matches_torch_reference() -> None:
 
 
 def test_recurrent_components_run_after_bfloat16_precision_alignment() -> None:
-	connector = RecurrentConnector(hidden_size=32, bottleneck_dim=8).to(torch.bfloat16)
+	auxiliary_head = AuxiliarySlotRetrievalHead(
+		hidden_size=32,
+		output_size=8,
+	).to(torch.bfloat16)
 	fusion = EOSConditionedSlotFusion(hidden_size=32, attention_dim=8).to(torch.bfloat16)
 	hidden_states = torch.randn(2, 5, 32, dtype=torch.bfloat16)
 
-	connector_output = connector(hidden_states)
+	auxiliary_output = auxiliary_head(hidden_states)
 	fusion_output = fusion(hidden_states[:, -1], hidden_states[:, :4])
 
-	assert connector_output.dtype == torch.bfloat16
+	assert auxiliary_output.dtype == torch.bfloat16
 	assert fusion_output.fused_embedding.dtype == torch.bfloat16
 
 
@@ -414,9 +408,9 @@ def test_each_reported_pass_runs_its_loop_count_then_the_shared_suffix(
 		num_extra_loop_passes=2,
 		num_total_loop_passes=3,
 		num_latent_slots=1,
+		recurrent_step_size=1 / 3,
 	)
 	model.base_embedding_model = _TinyEmbeddingModel()
-	model.recurrent_connector = _IdentityConnector()
 	model.late_fusion = _IdentitySlotFusion()
 	model.activation_checkpointing_enabled = False
 	full_loop_calls: list[torch.Tensor] = []
@@ -470,8 +464,8 @@ def test_each_reported_pass_runs_its_loop_count_then_the_shared_suffix(
 	assert len(output.loop_embeddings) == 3
 	expected = (
 		torch.nn.functional.normalize(torch.tensor([[2.0, 1.0]]), dim=-1),
-		torch.nn.functional.normalize(torch.tensor([[4.0, 1.0]]), dim=-1),
-		torch.nn.functional.normalize(torch.tensor([[6.0, 1.0]]), dim=-1),
+		torch.nn.functional.normalize(torch.tensor([[2.0, 1.0]]), dim=-1),
+		torch.nn.functional.normalize(torch.tensor([[2.0, 1.0]]), dim=-1),
 	)
 	for actual, expected_embedding in zip(output.loop_embeddings, expected, strict=True):
 		assert torch.allclose(actual, expected_embedding)
@@ -485,7 +479,12 @@ def test_each_reported_pass_runs_its_loop_count_then_the_shared_suffix(
 			suffix_input[:, :2],
 			torch.tensor([[[2.0, 0.0], [2.0, 0.0]]]),
 		)
-	assert [value[0, 3, 0].item() for value in suffix_inputs] == [2.0, 4.0, 6.0]
+	assert [value[0, 2, 0].item() for value in suffix_inputs] == pytest.approx(
+		[4 / 3, 5 / 3, 2.0],
+	)
+	assert [value[0, 3, 0].item() for value in suffix_inputs] == [2.0, 2.0, 2.0]
+	assert len(output.loop_slot_hidden_states) == 3
+	assert output.diagnostics["extra_pass_dynamic_token_counts"] == (1, 1)
 
 
 def test_slot_losses_cover_k1_and_symmetric_contrastive_learning() -> None:

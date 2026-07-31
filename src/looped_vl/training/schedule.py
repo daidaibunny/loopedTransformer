@@ -38,13 +38,11 @@ def should_log_training_metrics(
 
 @dataclass(frozen=True)
 class OneEpochTrainingPlan:
-	"""A full epoch with an early auxiliary-loss emphasis window."""
+	"""A single-stage plan that visits each distributed sample stream once."""
 
 	start_batch: int
 	end_batch: int
 	optimizer_steps: int
-	auxiliary_emphasis_optimizer_steps: int
-	standard_optimizer_steps: int
 
 	@property
 	def loader_batches(self) -> int:
@@ -132,9 +130,8 @@ def resolve_one_epoch_training_plan(
 	loader_batches: int,
 	gradient_accumulation_steps: int,
 	optimizer_global_batch_size: int,
-	auxiliary_emphasis_epoch_fraction: float,
 ) -> OneEpochTrainingPlan:
-	"""Resolve the auxiliary-emphasis prefix inside one continuous epoch."""
+	"""Resolve one continuous full-data epoch with no internal stage boundary."""
 	if train_rows <= 0:
 		raise ValueError("train_rows must be positive")
 	if loader_batches <= 0:
@@ -143,22 +140,11 @@ def resolve_one_epoch_training_plan(
 		raise ValueError("gradient_accumulation_steps must be positive")
 	if optimizer_global_batch_size <= 0:
 		raise ValueError("optimizer_global_batch_size must be positive")
-	if not 0 < auxiliary_emphasis_epoch_fraction < 1:
-		raise ValueError("auxiliary_emphasis_epoch_fraction must be between zero and one")
 	total_optimizer_steps = math.ceil(loader_batches / gradient_accumulation_steps)
-	if total_optimizer_steps < 2:
-		raise ValueError("One-epoch training needs at least one standard optimizer step")
-	auxiliary_emphasis_steps = math.ceil(
-		auxiliary_emphasis_epoch_fraction * train_rows / optimizer_global_batch_size,
-	)
-	auxiliary_emphasis_steps = min(
-		max(auxiliary_emphasis_steps, 1),
-		total_optimizer_steps - 1,
-	)
+	if total_optimizer_steps < 1:
+		raise ValueError("One-epoch training needs at least one optimizer step")
 	return OneEpochTrainingPlan(
 		start_batch=0,
 		end_batch=loader_batches,
 		optimizer_steps=total_optimizer_steps,
-		auxiliary_emphasis_optimizer_steps=auxiliary_emphasis_steps,
-		standard_optimizer_steps=total_optimizer_steps - auxiliary_emphasis_steps,
 	)

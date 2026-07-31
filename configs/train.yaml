@@ -8,4 +8,3 @@ gradient_clip_norm: 1.0
 precision: bf16
 lr_scheduler: cosine
 warmup_ratio: 0.03
-auxiliary_emphasis_epoch_fraction: 0.35

@@ -49,7 +49,6 @@ from looped_vl.throughput import validate_embeddings
 INFERENCE_PARAMETER_PREFIXES = (
 	"latent_slots",
 	"eos_delta",
-	"recurrent_connector.",
 	"late_fusion.",
 )
 
@@ -133,10 +132,12 @@ def load_recurrent_inference_checkpoint(
 	if not isinstance(state, dict):
 		raise ValueError("Recurrent checkpoint parameter state is missing")
 	if any("lora_" in str(name).lower() for name in state):
-		raise ValueError("Pure recurrent checkpoints must not contain LoRA parameters")
+		raise ValueError("Damped recurrent checkpoints must not contain LoRA parameters")
+	if any("recurrent_connector" in str(name) for name in state):
+		raise ValueError("Damped recurrent checkpoints must not contain a recurrent connector")
 	expected_identity = pure_recurrent_result_identity()
 	if any(metadata.get(key) != value for key, value in expected_identity.items()):
-		raise ValueError("Checkpoint does not declare the required pure recurrent result identity")
+		raise ValueError("Checkpoint does not declare the required damped recurrent identity")
 	model_parameters = dict(model.named_parameters())
 	expected_names = {
 		name for name in model_parameters if _is_inference_parameter(name)

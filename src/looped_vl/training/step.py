@@ -144,18 +144,9 @@ def distributed_symmetric_info_nce(
 
 def compose_training_loss(
 	*,
-	phase: str,
 	final_infonce: torch.Tensor,
-	slot_infonce: torch.Tensor,
+	loop_infonce: torch.Tensor,
 	slot_diversity: torch.Tensor,
 ) -> torch.Tensor:
-	"""Keep final retrieval active while reducing auxiliary slot emphasis after 35%."""
-	if phase == "auxiliary_emphasis":
-		return final_infonce + slot_infonce + 0.05 * slot_diversity
-	if phase == "standard":
-		return (
-			final_infonce
-			+ 0.2 * slot_infonce
-			+ 0.05 * slot_diversity
-		)
-	raise ValueError("phase must be auxiliary_emphasis or standard")
+	"""Apply the locked single-stage loss weights at every optimizer step."""
+	return final_infonce + 0.1 * loop_infonce + 0.05 * slot_diversity

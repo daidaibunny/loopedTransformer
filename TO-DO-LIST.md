@@ -17,7 +17,8 @@
 - [x] Add failing acceptance tests for sections 27–29 of the recurrent v1.0 specification.
 - [x] Implement latent-slot insertion and the shared 16-slot seed-42 initialization file.
 - [x] Implement four-pass Layers 13–20 recurrence with detached prefix K/V evidence.
-- [x] Implement the zero-output recurrent connector and EOS-conditioned late fusion.
+- [x] (Superseded) Implement the former zero-output recurrent connector and
+  EOS-conditioned late fusion.
 - [x] Implement Base, EOS-only, slots-only, full, slot-count, and loop-count variants.
 - [x] Supersede the original Stage 1/Stage 2 allowlists with one optimizer containing
   warm-start and joint-only parameter groups.
@@ -64,9 +65,9 @@
   retain only the latest checkpoint, including the end-of-epoch checkpoint.
 - [x] Average baseline loss and embedding norms over every microbatch and every rank,
   while skipping scheduler advancement after a non-finite FP16 optimizer step.
-- [x] Replace recurrent Stage 1/Stage 2 with one continuous one-epoch task whose
+- [x] (Superseded) Replace recurrent Stage 1/Stage 2 with one continuous one-epoch task whose
   auxiliary-emphasis length is `ceil(0.35 * train_rows / optimizer_global_batch_size)`.
-- [x] Keep final InfoNCE at weight 1.0 for the full epoch and activate every recurrent
+- [x] (Superseded) Keep final InfoNCE at weight 1.0 for the full epoch and activate every recurrent
   parameter group from step one; use the first 35% only to raise auxiliary slot InfoNCE
   from weight 0.2 to 1.0.
 - [x] Remove the Qwen3-0.6B semantic decoder and its loss, data, checkpoint, and command
@@ -92,9 +93,22 @@
   the equal-direction mean; GQA Balanced and CLEVR use answer retrieval.
 - [x] Remove the incorrectly coupled Layers 13–20 LoRA modules from recurrent
   configuration, training, evaluation, checkpoints, and parameter accounting.
-- [x] Stamp every recurrent manifest, training result, checkpoint, and test report with
+- [x] Stamp the previous recurrent manifest, training result, checkpoint, and test report with
   the pure-recurrent/no-LoRA identity and reject incompatible result inputs.
 - [x] Use CPU Gloo collectives for recurrent evaluation and record the final-pass primary
   metrics, per-pass metrics, exact peak GPU memory, and global encoding throughput.
-- [ ] Re-run all recurrent safety and throughput smokes under the pure recurrent protocol;
-  older recurrent smokes contained LoRA and cannot select the formal configuration.
+- [ ] Re-run all recurrent safety and throughput smokes under the damped recurrent
+  protocol; older recurrent smokes contained LoRA or the removed connector and cannot
+  select the formal configuration.
+- [x] Lock the recurrent v2 forward path to K=8, R=4, slots-only extra passes, fixed EOS
+  after Pass 1, and parameter-free damping with step size `1 / R`.
+- [x] Remove the learned recurrent connector from the model, trainable parameters,
+  checkpoints, evaluation loader, and diagnostics.
+- [x] Replace final-slot-only warm-up supervision with one shared 256-dimensional
+  auxiliary retrieval head applied after every complete recurrent pass.
+- [x] Lock one-stage training to fixed loss weights: final InfoNCE 1.0, mean per-round
+  auxiliary InfoNCE 0.1, and absolute-cosine final-slot diversity 0.05.
+- [x] Reject old recurrent checkpoints through the v2 architecture and v3 training
+  protocol identity.
+- [ ] Run a new eight-V100 architecture, gradient, memory, and throughput smoke for the
+  damped connector-free model before launching any formal recurrent experiment.

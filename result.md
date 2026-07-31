@@ -32,25 +32,28 @@ the current experiments.
 | --- | --- | --- | --- | --- |
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
-| Frozen backbone + recurrent latent slots (no LoRA) | Pending | Pending | Pending | No |
+| Frozen backbone + damped recurrent latent slots (no LoRA) | Pending | Pending | Pending | No |
 
-The recurrent definition was corrected on 2026-07-31 to contain no LoRA. Earlier
-recurrent trial runs used 8,912,896 unintended LoRA parameters in Layers 13–20 and
-are invalid for selecting the pure recurrent formal configuration. No full recurrent
-training or test result was produced under that superseded definition.
+The recurrent definition was locked again on 2026-07-31. It contains no LoRA, no
+recurrent connector, 8 active latent slots, 4 total passes, slots-only extra passes,
+and parameter-free damping with step size 1/4. Earlier recurrent trials used either
+unintended LoRA or the removed learned connector and are invalid for selecting the
+current formal configuration. No full recurrent training or test result exists under
+the current definition.
 
 Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
 and `report.json` must identify the architecture as
-`recurrent_latent_slot_qwen3vl_no_lora_v1`, the training protocol as
-`pure_recurrent_full_objective_v2`, `backbone_frozen` as true, and `lora_enabled` as
-false. A recurrent checkpoint missing this identity is not eligible for this comparison.
+`damped_mid_decoder_latent_slot_recurrence_no_lora_v2`, the training protocol as
+`pure_recurrent_single_stage_full_objective_v3`, `backbone_frozen` as true,
+`lora_enabled` as false, and `formal_training_stages` as 1. A recurrent checkpoint
+missing this identity, or containing LoRA or connector parameters, is not eligible.
 
-The v2 recurrent optimizer runs for one epoch with final InfoNCE weight 1.0 throughout.
-During the first 35% of optimizer steps, auxiliary slot InfoNCE has weight 1.0; afterward
-it has weight 0.2. Slot-diversity weight remains 0.05. Every recurrent trainable parameter
-group follows the same learning-rate schedule from the first step. The superseded v1
-protocol disabled final InfoNCE and final-fusion updates during the first 35% and is not
-eligible for the formal comparison.
+The v3 recurrent optimizer has one stage and visits the full train split exactly once.
+At every optimizer step, final InfoNCE has weight 1.0, the mean of the four shared-head
+per-round auxiliary InfoNCE losses has weight 0.1, and final-slot diversity has weight
+0.05. All 2,641,921 trainable parameters follow the same learning-rate schedule from the
+first step. Inference retains 2,115,585 learned parameters; the 526,336-parameter
+auxiliary head is training-only.
 
 ## EXP-000A/B/C — Frozen backbone
 
@@ -255,20 +258,20 @@ diagnostics, not additional independent tests.
 | Backbone + LoRA | Passed | Text→image | 72.0247 | 62.0832 | 16.8581 | 9.0672 | 4.7439 | 62.0832 | 84.2903 | 90.6717 | 94.8780 | 72.0247 | 76.2017 |
 | Backbone + LoRA | Passed | Image→text | 64.0410 | 78.4600 | 57.8000 | 35.8980 | 20.5160 | 15.6867 | 57.7787 | 71.7680 | 82.0300 | 85.0017 | 70.5028 |
 | Backbone + LoRA | Passed | Equal-direction mean | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
-| Frozen backbone + recurrent latent slots (no LoRA) | Pending | Text→image | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| Frozen backbone + recurrent latent slots (no LoRA) | Pending | Image→text | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| Frozen backbone + recurrent latent slots (no LoRA) | Pending | Equal-direction mean | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Frozen backbone + damped recurrent latent slots (no LoRA) | Pending | Text→image | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Frozen backbone + damped recurrent latent slots (no LoRA) | Pending | Image→text | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Frozen backbone + damped recurrent latent slots (no LoRA) | Pending | Equal-direction mean | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
 GQA Balanced and CLEVR remain one-way image-question-to-answer retrieval tasks under the
 current manifests. Reverse answer-to-question/image retrieval would require a new
 candidate gallery and relevance definition, so it is not reported as a symmetric metric.
 
-## EXP-SMOKE-004 — Pure recurrent v2 safety and GQA evaluation batch search
+## EXP-SMOKE-004 — Superseded connector-model safety and GQA batch search
 
 - Status/date: passed, 2026-07-31. Training smoke ran from 07:05:59Z until the
   batch-24 evaluation started at 07:08:07Z; batch 24 passed at 07:09:34Z. The
   independent batch-32 evaluation ran from 07:10:41Z to 07:12:14Z.
-- Objective: verify the corrected pure-recurrent/no-LoRA training path, rolling
+- Objective: historically verify the then-current pure-recurrent/no-LoRA training path, rolling
   one-checkpoint policy, Pass 1–4 export, CPU Gloo evaluation collectives, and the
   largest tested GQA evaluation batch. This is a runtime smoke, not a formal quality
   result.
@@ -282,6 +285,8 @@ candidate gallery and relevance definition, so it is not reported as a symmetric
   total passes, frozen backbone, 8,430,081 training parameters and 4,233,729
   inference parameters. Backbone SHA-256:
   `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1`.
+  This model used the now-removed recurrent connector, so its throughput and selected
+  batch sizes must be revalidated before use by the current damped architecture.
 - Training smoke: GQA Balanced train manifest, 1,024 consumed sample rows, exact
   unique-image count N/A, no validation, 2 optimizer steps, FP16, scaled dot-product
   attention, gradient checkpointing enabled, seed 42, AdamW, cosine schedule,
@@ -291,9 +296,11 @@ candidate gallery and relevance definition, so it is not reported as a symmetric
   second step reached 32.00 samples/second; exact peak allocated GPU memory was
   7.07 GiB. Both steps had finite loss and gradient norm and passed recurrence,
   slot-collapse, and pooling-collapse guards.
-- Checkpoint: the smoke explicitly saved its final resumable checkpoint. Exactly one
-  file remained: `step000002.pt`, 96.61 MiB, SHA-256
+- Checkpoint: the smoke explicitly saved one final resumable checkpoint,
+  `step000002.pt`, 96.61 MiB, SHA-256
   `1adbf8eedf556b4dab30aa888c67d9fce51e3f71940a19d862afcb2decb1f027`.
+  It was subsequently deleted after the connector architecture was superseded; the
+  manifest, metrics, gradient audits, and report remain preserved.
 - Evaluation protocol: partial GQA test prefixes from the authoritative full test
   manifest SHA-256
   `ba1442bb782bb4627efc081111009e833dbbe6a5451a9f0264075cf662318b2b`;
@@ -408,7 +415,7 @@ does not exist.
 <td>99.4138</td>
 </tr>
 <tr>
-<td>Frozen backbone + recurrent latent slots (no LoRA)</td>
+<td>Frozen backbone + damped recurrent latent slots (no LoRA)</td>
 <td>4</td>
 <td>4</td>
 <td>8,430,081</td>
