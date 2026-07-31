@@ -169,7 +169,7 @@ def test_recurrent_loader_and_model_expose_no_lora_switch() -> None:
 def test_configuration_accepts_only_required_slot_and_loop_sweeps() -> None:
 	config = RecurrentModelConfig()
 
-	for slot_count in (1, 2, 4, 8, 16, 32, 64):
+	for slot_count in (1, 2, 4, 8, 12, 16, 32, 64):
 		RecurrentModelConfig(
 			max_num_latent_slots=64,
 			num_latent_slots=slot_count,

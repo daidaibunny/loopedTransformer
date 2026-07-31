@@ -14,8 +14,8 @@
   active from the first optimizer step.
 - Default to 8 active slots from the shared seed-42 16-slot initialization bank and 4
   total recurrent passes. Extra passes update slots only; EOS is fixed after Pass 1.
-- Slot-count ablations may use K=32 or K=64 without changing the formal K=8 default.
-  Every K=8/16/32/64 comparison must use prefixes of the same separate seed-42
+- Slot-count ablations may use K=12, K=16, K=32, or K=64 without changing the formal
+  K=8 default. Every K=8/12/16/32/64 comparison must use prefixes of the same seed-42
   64-slot bank, `artifacts/master_slot_init_seed42_kmax64.pt`; never overwrite the
   existing 16-slot bank.
 - The recurrent update is parameter-free damping with step size `1 / R`. The model must

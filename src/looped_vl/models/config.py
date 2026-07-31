@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-ALLOWED_SLOT_COUNTS = (0, 1, 2, 4, 8, 16, 32, 64)
+ALLOWED_SLOT_COUNTS = (0, 1, 2, 4, 8, 12, 16, 32, 64)
 ALLOWED_MASTER_SLOT_COUNTS = (16, 64)
 ALLOWED_LOOP_PASSES = (1, 2, 3, 4)
 DAMPED_RECURRENT_ARCHITECTURE = "damped_mid_decoder_latent_slot_recurrence_no_lora_v3"

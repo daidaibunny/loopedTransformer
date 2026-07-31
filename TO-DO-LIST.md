@@ -114,3 +114,5 @@
   damped connector-free model before launching any formal recurrent experiment.
 - [ ] Compare K=8/16/32/64 on identical GQA Balanced smoke training rows and the same
   held-out test prefix using one shared seed-42 64-slot master bank.
+- [ ] Train and fully evaluate the causal-attention recurrent model on COCO for
+  K=8/12/16/32 using one shared seed-42 64-slot master bank.
