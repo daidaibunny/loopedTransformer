@@ -26,16 +26,65 @@ the current experiments.
 
 | Experiment | COCO | GQA Balanced | CLEVR | Comparable final metrics |
 | --- | --- | --- | --- | --- |
-| Frozen original Qwen3-VL-Embedding-2B | Pending | Pending | Pending | No |
+| Frozen original Qwen3-VL-Embedding-2B | Passed | Passed | Passed | All three datasets |
 | Independent LoRA baseline | Passed | Passed | Interrupted | COCO and GQA |
 | Recurrent latent-slot model | Pending | Pending | Pending | No |
-
-The frozen row cannot reuse the old 200-row smoke or an older mixed-data report. It must
-be evaluated on the exact test splits above.
 
 The first CLEVR LoRA attempt was interrupted by the 2026-07-31 experiment reorder.
 Its latest resumable state is step 100 (25,600 processed train rows); it has no final
 adapter or test metrics and is not a completed result.
+
+## EXP-000A/B/C — Frozen original Qwen3-VL-Embedding-2B
+
+- Status/date: all three passed, 2026-07-31. The serial full-test queue ran from
+  2026-07-31T03:42:04Z to 2026-07-31T03:59:28Z; exact per-dataset start timestamps were
+  not separately recorded.
+- Objective: measure the untouched Qwen3-VL-Embedding-2B checkpoint on each full
+  single-dataset test split before any LoRA or recurrent training.
+- Route/node: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB.
+- Code: commit `2877e70ad5394aa060b419823673fdcd02bad6d1`.
+- Model: `Qwen3-VL-Embedding-2B/base_original`, zero trainable parameters, no adapter
+  and no training checkpoint. Base-model SHA-256 was
+  `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1` before and
+  after every test.
+- Runtime: FP16, scaled dot-product attention, per-device batch 32, 4 data workers,
+  8 independent encoding ranks, CPU control collectives, and baseline-only visual-length
+  bucketing with at most 3 buckets and at least 8 items per bucket. Seed, optimizer,
+  learning rate, epochs, and checkpoint policy are N/A because this is deterministic
+  frozen inference. Validation was not used.
+- Protocol: dot product of L2-normalized embeddings; P/R cutoffs 1/5/10/20 and nDCG
+  cutoff 10. COCO uses its held-out image/caption galleries in both directions. GQA and
+  CLEVR retrieve normalized answers observed in the corresponding training split.
+- Evidence: tmux `frozen_qwen2b_three_2877e70_v2_20260731`; log
+  `/home/mnt/liyiwei/outputs/frozen_qwen2b_three_2877e70_v2_20260731.tmux.log`;
+  queue and reports under
+  `/home/mnt/liyiwei/outputs/frozen_qwen2b_three_2877e70_v2_20260731`.
+
+| Dataset | Test rows | Test images | Test manifest SHA-256 | Answer gallery | Runtime | Test rows/s | Coverage | Peak GPU memory |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| COCO | 25,010 | 5,000 | `a36d9000f665bbaf6bc7d7e472f38e069bb201c0cf6770c0784b498e7193ec89` | N/A | 289.93 s | 86.26 | 100.0000% | N/A |
+| GQA Balanced | 12,578 | 398 | `ba1442bb782bb4627efc081111009e833dbbe6a5451a9f0264075cf662318b2b` | 1,833 | 202.83 s | 62.01 | 99.9841% | N/A |
+| CLEVR | 75,000 | 7,500 | `d6d46dde537152465bb479684efd083ca6c6975d8a4d2fa3e3a1f1776395d094` | 28 | 416.81 s | 179.94 | 100.0000% | N/A |
+
+Peak GPU memory is N/A because this version reset the PyTorch peak counter but did not
+write its value into `report.json`; observed `nvidia-smi` snapshots are not substituted
+for an exact peak.
+
+### COCO frozen test metrics (%)
+
+| Direction | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Text→image | 64.5980 | 53.5906 | 15.5354 | 8.5610 | 4.5836 | 53.5906 | 77.6769 | 85.6098 | 91.6713 | 64.5980 | 69.1638 |
+| Image→text | 57.8905 | 74.4400 | 52.2880 | 32.6620 | 18.9020 | 14.8827 | 52.2700 | 65.2987 | 75.5787 | 81.5361 | 64.7513 |
+| Equal-direction mean | 61.2443 | 64.0153 | 33.9117 | 20.6115 | 11.7428 | 34.2366 | 64.9735 | 75.4542 | 83.6250 | 73.0671 | 66.9576 |
+
+### GQA Balanced and CLEVR frozen test metrics (%)
+
+| Dataset | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| GQA Balanced | 52.1141 | 36.2697 | 14.4077 | 8.5292 | 4.6554 | 36.2697 | 72.0385 | 85.2918 | 93.1070 | 52.1141 | 59.5010 |
+| CLEVR | 84.9359 | 73.1707 | 19.8499 | 9.9993 | 5.0000 | 73.1707 | 99.2493 | 99.9933 | 100.0000 | 84.9359 | 88.7750 |
 
 ## EXP-001 — COCO independent LoRA baseline
 

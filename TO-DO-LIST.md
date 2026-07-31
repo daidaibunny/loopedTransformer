@@ -83,5 +83,5 @@
 - [x] Re-run final eight-V100 safety smokes for both trainers and every dataset-specific
   recurrent memory policy.
 - [ ] Complete the restartable six-run serial train/test queue on all full splits.
-- [ ] Evaluate the frozen original Qwen3-VL-Embedding-2B serially on the full COCO, GQA
+- [x] Evaluate the frozen original Qwen3-VL-Embedding-2B serially on the full COCO, GQA
   Balanced, and CLEVR test splits before restarting unfinished training experiments.
