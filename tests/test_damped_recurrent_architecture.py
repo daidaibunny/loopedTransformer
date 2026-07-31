@@ -134,6 +134,13 @@ def test_trainable_parameter_count_matches_no_lora_connector_free_design() -> No
 	assert trainable_count == 2_641_921
 
 
+def test_active_latent_slot_parameter_has_standard_contiguous_strides() -> None:
+	encoder = _build_encoder()
+
+	assert encoder.latent_slots.shape == (1, 8, 2048)
+	assert encoder.latent_slots.stride() == (8 * 2048, 2048, 1)
+
+
 def test_training_averages_one_shared_auxiliary_loss_across_all_rounds() -> None:
 	class _FakeEncoder(nn.Module):
 		def __init__(self) -> None:

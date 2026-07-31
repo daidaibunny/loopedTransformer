@@ -171,9 +171,11 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		self.base_embedding_model = base_embedding_model
 		self.latent_placeholder_id = latent_placeholder_id
 		self.pad_token_id = pad_token_id
-		self.latent_slots = nn.Parameter(
-			master_slot_initialization[:, : config.num_latent_slots].clone(),
-		)
+		active_slot_initialization = master_slot_initialization[
+			0,
+			: config.num_latent_slots,
+		].clone()
+		self.latent_slots = nn.Parameter(active_slot_initialization.unsqueeze(0))
 		self.eos_delta = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
 		self.late_fusion = EOSConditionedSlotFusion(
 			hidden_size=config.hidden_size,
