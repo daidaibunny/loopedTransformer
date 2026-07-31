@@ -263,6 +263,66 @@ GQA Balanced and CLEVR remain one-way image-question-to-answer retrieval tasks u
 current manifests. Reverse answer-to-question/image retrieval would require a new
 candidate gallery and relevance definition, so it is not reported as a symmetric metric.
 
+## EXP-SMOKE-004 — Pure recurrent v2 safety and GQA evaluation batch search
+
+- Status/date: passed, 2026-07-31. Training smoke ran from 07:05:59Z until the
+  batch-24 evaluation started at 07:08:07Z; batch 24 passed at 07:09:34Z. The
+  independent batch-32 evaluation ran from 07:10:41Z to 07:12:14Z.
+- Objective: verify the corrected pure-recurrent/no-LoRA training path, rolling
+  one-checkpoint policy, Pass 1–4 export, CPU Gloo evaluation collectives, and the
+  largest tested GQA evaluation batch. This is a runtime smoke, not a formal quality
+  result.
+- Route/node: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB.
+- Code: `main` commit `bc9f232772f72d823bb225bab50655a36e163739`,
+  executed from detached worktree
+  `/home/mnt/liyiwei/loopedTransformer_worktrees/recurrent_smoke_bc9f232`.
+  The code passed 170 local tests before submission.
+- Model: `recurrent_latent_slot_qwen3vl_no_lora_v1`, K=4 latent slots, R=4
+  total passes, frozen backbone, 8,430,081 training parameters and 4,233,729
+  inference parameters. Backbone SHA-256:
+  `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1`.
+- Training smoke: GQA Balanced train manifest, 1,024 consumed sample rows, exact
+  unique-image count N/A, no validation, 2 optimizer steps, FP16, scaled dot-product
+  attention, gradient checkpointing enabled, seed 42, AdamW, cosine schedule,
+  per-device batch 8, contrastive global batch 64, gradient accumulation 8, optimizer
+  global batch 512, and 4 data workers. Final InfoNCE weight was 1.0 in both steps.
+- Training efficiency: 68.72 seconds as recorded by `training_result.json`; the
+  second step reached 32.00 samples/second; exact peak allocated GPU memory was
+  7.07 GiB. Both steps had finite loss and gradient norm and passed recurrence,
+  slot-collapse, and pooling-collapse guards.
+- Checkpoint: the smoke explicitly saved its final resumable checkpoint. Exactly one
+  file remained: `step000002.pt`, 96.61 MiB, SHA-256
+  `1adbf8eedf556b4dab30aa888c67d9fce51e3f71940a19d862afcb2decb1f027`.
+- Evaluation protocol: partial GQA test prefixes from the authoritative full test
+  manifest SHA-256
+  `ba1442bb782bb4627efc081111009e833dbbe6a5451a9f0264075cf662318b2b`;
+  FP16, scaled dot-product attention, 8 Gloo ranks, 4 workers, and all four loop-pass
+  embeddings exported. The smoke checkpoint had only two optimizer updates, so its
+  partial-prefix retrieval metrics are intentionally excluded from the formal model
+  comparison.
+
+| Per-device batch | Test-prefix rows | Unique images | Encoded items | Encoding wall time | Encoding throughput | Exact peak GPU memory | Total evaluation time |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 24 | 384 | 204 | 523 | 39.03 s | 13.40 items/s | 5.29 GiB | 72.27 s |
+| 32 | 512 | 245 | 686 | 41.22 s | 16.64 items/s | 5.71 GiB | 74.64 s |
+
+Both settings ran two full query batches per rank. Batch 32 improved measured encoding
+throughput by 24.19% over batch 24 while remaining far below the 32 GiB device limit.
+Therefore GQA recurrent evaluation uses per-device batch 32; recurrent training remains
+per-device batch 8.
+
+- Evidence: tmux
+  `rls_v2_gqa_train_eval_b24_bc9f232_v3_20260731`, log and outputs under
+  `/home/mnt/liyiwei/outputs/rls_v2_gqa_train_eval_b24_bc9f232_v3_20260731`;
+  tmux `rls_v2_gqa_eval_b32_bc9f232_20260731`, log and outputs under
+  `/home/mnt/liyiwei/outputs/rls_v2_gqa_eval_b32_bc9f232_20260731`.
+- Submission notes: two earlier attempts stopped before model execution—one used the
+  system Python without `qwen_vl_utils`, and one detected that the shared checkout had
+  advanced to a newer `main` commit. The successful run used the established project
+  environment and a commit-pinned worktree. Neither failed attempt produced a
+  checkpoint or quality result.
+
 ## Required record for every new experiment
 
 1. Identity: unique ID, objective, terminal status, start/end time, route, node, exact code

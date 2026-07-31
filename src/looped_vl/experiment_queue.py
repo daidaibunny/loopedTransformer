@@ -59,7 +59,7 @@ def default_experiments() -> list[ExperimentSpec]:
 		for dataset in BASELINE_DATASETS
 	] + [
 		ExperimentSpec("recurrent", "coco", 8, 4, 8, 4, False),
-		ExperimentSpec("recurrent", "gqa_balanced", 8, 4, 8, 4, True),
+		ExperimentSpec("recurrent", "gqa_balanced", 8, 4, 32, 4, True),
 		ExperimentSpec("recurrent", "clevr", 8, 4, 8, 4, False),
 	]
 

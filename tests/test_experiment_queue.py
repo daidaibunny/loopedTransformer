@@ -31,6 +31,7 @@ def test_default_queue_contains_six_serial_single_dataset_experiments() -> None:
 		True,
 		False,
 	]
+	assert experiments[4].evaluation_batch_size == 32
 
 
 def test_baseline_and_recurrent_commands_share_checkpoint_and_test_contract(
