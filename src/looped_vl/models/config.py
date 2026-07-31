@@ -10,14 +10,6 @@ import yaml
 
 ALLOWED_SLOT_COUNTS = (0, 1, 2, 4, 8, 16)
 ALLOWED_LOOP_PASSES = (1, 2, 3, 4)
-REQUIRED_LORA_TARGETS = (
-	"q_proj",
-	"k_proj",
-	"v_proj",
-	"up_proj",
-	"down_proj",
-	"gate_proj",
-)
 
 
 @dataclass(frozen=True)
@@ -47,12 +39,6 @@ class RecurrentModelConfig:
 	fusion_dropout: float = 0.0
 	fusion_residual_gate_init: float = 0.0
 	fuse_after_final_decoder_norm: bool = True
-	lora_layer_start: int = 12
-	lora_layer_end: int = 20
-	lora_rank: int = 32
-	lora_alpha: int = 32
-	lora_dropout: float = 0.0
-	lora_target_modules: tuple[str, ...] = REQUIRED_LORA_TARGETS
 	temperature: float = 0.02
 	warm_slot_weight: float = 1.0
 	warm_diversity_weight: float = 0.05
@@ -97,12 +83,6 @@ class RecurrentModelConfig:
 			raise ValueError("late fusion must use zero dropout and a zero gate")
 		if not self.fuse_after_final_decoder_norm:
 			raise ValueError("late fusion must run after the final decoder norm")
-		if (self.lora_layer_start, self.lora_layer_end) != (12, 20):
-			raise ValueError("LoRA layers must use Python indexes [12, 20)")
-		if (self.lora_rank, self.lora_alpha, self.lora_dropout) != (32, 32, 0.0):
-			raise ValueError("LoRA must use rank 32, alpha 32, and zero dropout")
-		if self.lora_target_modules != REQUIRED_LORA_TARGETS:
-			raise ValueError("LoRA target modules do not match v1.0")
 		if self.temperature != 0.02:
 			raise ValueError("InfoNCE temperature must remain 0.02")
 		if (self.warm_slot_weight, self.warm_diversity_weight) != (1.0, 0.05):
@@ -143,7 +123,6 @@ class RecurrentModelConfig:
 			raise ValueError("Model configuration must be a YAML mapping")
 		recurrent = _mapping(value, "recurrent_connector")
 		fusion = _mapping(value, "fusion")
-		lora = _mapping(value, "lora")
 		loss = _mapping(value, "loss")
 		config = cls(
 			model_name=str(value["model_name"]),
@@ -169,12 +148,6 @@ class RecurrentModelConfig:
 			fusion_dropout=float(fusion["dropout"]),
 			fusion_residual_gate_init=float(fusion["residual_gate_init"]),
 			fuse_after_final_decoder_norm=bool(fusion["fuse_after_final_decoder_norm"]),
-			lora_layer_start=int(lora["layer_start"]),
-			lora_layer_end=int(lora["layer_end"]),
-			lora_rank=int(lora["rank"]),
-			lora_alpha=int(lora["alpha"]),
-			lora_dropout=float(lora["dropout"]),
-			lora_target_modules=tuple(lora["target_modules"]),
 			temperature=float(loss["temperature"]),
 			warm_slot_weight=float(loss["warm_slot_weight"]),
 			warm_diversity_weight=float(loss["warm_diversity_weight"]),

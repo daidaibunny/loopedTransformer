@@ -21,7 +21,6 @@ from looped_vl.models.latent_slot_inserter import (
 	AugmentedSequence,
 	augment_before_last_valid_token,
 )
-from looped_vl.models.lora import inject_loop_layer_lora
 from looped_vl.models.recurrent_connector import RecurrentConnector
 from looped_vl.models.recurrent_decoder_block import (
 	build_dynamic_attention_mask,
@@ -144,8 +143,6 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		master_slot_initialization: torch.Tensor,
 		latent_placeholder_id: int,
 		pad_token_id: int,
-		*,
-		enable_lora: bool,
 	) -> None:
 		super().__init__()
 		config.validate()
@@ -171,9 +168,6 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		)
 		self.warmup_embedding_head = WarmupEmbeddingHead(config.hidden_size)
 		self.activation_checkpointing_enabled = False
-		self.injected_lora_modules: tuple[str, ...] = ()
-		if enable_lora:
-			self.inject_lora()
 
 	@property
 	def multimodal_model(self) -> nn.Module:
@@ -184,20 +178,6 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 	def language_model(self) -> nn.Module:
 		"""Return the official 28-layer language decoder."""
 		return self.multimodal_model.language_model
-
-	def inject_lora(self) -> tuple[str, ...]:
-		"""Inject the shared Stage-2 LoRA modules exactly once."""
-		if self.injected_lora_modules:
-			return self.injected_lora_modules
-		self.injected_lora_modules = inject_loop_layer_lora(
-			layers=self.language_model.layers,
-			layer_start=self.config.lora_layer_start,
-			layer_end=self.config.lora_layer_end,
-			rank=self.config.lora_rank,
-			alpha=self.config.lora_alpha,
-			dropout=self.config.lora_dropout,
-		)
-		return self.injected_lora_modules
 
 	def set_activation_checkpointing(self, enabled: bool) -> None:
 		"""Enable full-sequence decoder recomputation for memory-safe training."""

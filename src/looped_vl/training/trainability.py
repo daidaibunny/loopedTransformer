@@ -54,9 +54,7 @@ def configure_trainable_parameters(model: nn.Module) -> TrainableParameterGroups
 			parameter.requires_grad_(True)
 			warm_start.append(name)
 			continue
-		if name.startswith(JOINT_ONLY_PREFIXES) or (
-			".lora_a." in name or ".lora_b." in name
-		):
+		if name.startswith(JOINT_ONLY_PREFIXES):
 			parameter.requires_grad_(True)
 			joint_only.append(name)
 	if not warm_start or not joint_only:

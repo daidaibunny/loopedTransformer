@@ -269,8 +269,6 @@ def _run_architecture_acceptance(
 			"--dataset-root",
 			str(dataset_root),
 		]
-		if mode == "full_forward":
-			command.append("--enable-lora")
 		return_code = _run_logged(
 			command,
 			cwd=project_root,

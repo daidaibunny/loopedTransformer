@@ -20,3 +20,16 @@ run manifests, metrics, gradient audits, and status files remain preserved.
 
 Recovery: rerun the corresponding smoke test from its preserved manifest and
 the unchanged Qwen3-VL-Embedding-2B base checkpoint.
+
+## 2026-07-31
+
+- `src/looped_vl/models/lora.py`
+
+Reason: this custom LoRA implementation was incorrectly coupled to the recurrent model.
+The formal recurrent experiment must keep the entire Qwen backbone frozen and train only
+the recurrent slots, connector, training-only warm-start head, EOS delta, and
+EOS-conditioned slot attention pooling plus zero-gated residual fusion.
+
+Recovery: the removed implementation remains available in Git history. The independent
+LoRA baseline continues to use its separate PEFT implementation under
+`src/looped_vl/baseline/`.

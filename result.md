@@ -32,11 +32,16 @@ the current experiments.
 | --- | --- | --- | --- | --- |
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA | Passed | Passed | Interrupted | COCO and GQA |
-| Backbone + recurrent latent slots | Pending | Pending | Pending | No |
+| Frozen backbone + recurrent latent slots (no LoRA) | Pending | Pending | Pending | No |
 
 The first CLEVR LoRA attempt was interrupted by the 2026-07-31 experiment reorder.
 Its latest resumable state is step 100 (25,600 processed train rows); it has no final
 adapter or test metrics and is not a completed result.
+
+The recurrent definition was corrected on 2026-07-31 to contain no LoRA. Earlier
+recurrent smokes used 8,912,896 unintended LoRA parameters in Layers 13–20 and are
+invalid for selecting the pure recurrent formal configuration. No full recurrent
+training or test result was produced under that superseded definition.
 
 ## EXP-000A/B/C — Frozen backbone
 
@@ -189,9 +194,9 @@ diagnostics, not additional independent tests.
 | Backbone + LoRA | Passed | Text→image | 72.0247 | 62.0832 | 16.8581 | 9.0672 | 4.7439 | 62.0832 | 84.2903 | 90.6717 | 94.8780 | 72.0247 | 76.2017 |
 | Backbone + LoRA | Passed | Image→text | 64.0410 | 78.4600 | 57.8000 | 35.8980 | 20.5160 | 15.6867 | 57.7787 | 71.7680 | 82.0300 | 85.0017 | 70.5028 |
 | Backbone + LoRA | Passed | Equal-direction mean | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
-| Backbone + recurrent latent slots | Pending | Text→image | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| Backbone + recurrent latent slots | Pending | Image→text | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| Backbone + recurrent latent slots | Pending | Equal-direction mean | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Frozen backbone + recurrent latent slots (no LoRA) | Pending | Text→image | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Frozen backbone + recurrent latent slots (no LoRA) | Pending | Image→text | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Frozen backbone + recurrent latent slots (no LoRA) | Pending | Equal-direction mean | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
 GQA Balanced and CLEVR remain one-way image-question-to-answer retrieval tasks under the
 current manifests. Reverse answer-to-question/image retrieval would require a new
@@ -218,9 +223,11 @@ header level groups results by dataset; the second level lists the compared metr
 COCO uses the equal-direction mean of text-to-image and image-to-text. GQA Balanced and
 CLEVR use answer retrieval. Compare metrics only within the same dataset.
 
-The recurrent parameter count is the current training-time count on `main`; its
-training-only warm-start embedding head can be discarded for inference. `N/A` means the
-corresponding full held-out test result does not exist.
+The pure recurrent parameter count is 8,430,081 during training. This consists of
+4,233,729 inference parameters plus a 4,196,352-parameter training-only warm-start
+embedding head that is discarded for inference. The frozen backbone has no trainable
+parameters in this experiment. `N/A` means the corresponding full held-out test result
+does not exist.
 
 <table>
 <thead>
@@ -279,10 +286,10 @@ corresponding full held-out test result does not exist.
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 </tr>
 <tr>
-<td>Backbone + recurrent latent slots</td>
+<td>Frozen backbone + recurrent latent slots (no LoRA)</td>
 <td>4</td>
 <td>4</td>
-<td>17,342,977</td>
+<td>8,430,081</td>
 <td>Pending</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>

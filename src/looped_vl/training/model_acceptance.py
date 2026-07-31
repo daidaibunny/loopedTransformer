@@ -80,7 +80,6 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 		master_slot_path=args.master_slot_path,
 		config=config,
 		device=device,
-		enable_lora=args.enable_lora,
 		dtype=runtime_dtype,
 		attention_implementation=resolved_attention_implementation,
 		max_length=args.max_length,
@@ -201,7 +200,6 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--dataset-root", type=Path, required=True)
 	parser.add_argument("--split", choices=("train", "validation"), default="train")
 	parser.add_argument("--index", type=int, default=17)
-	parser.add_argument("--enable-lora", action="store_true")
 	parser.add_argument(
 		"--attention-implementation",
 		choices=ATTENTION_IMPLEMENTATIONS,

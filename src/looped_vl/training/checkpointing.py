@@ -265,7 +265,7 @@ def load_training_checkpoint(
 		and metadata.get("training_protocol") != expected_training_protocol
 	):
 		raise ValueError(
-			"Checkpoint training protocol does not match the active single-stage run",
+			"Checkpoint training protocol does not match the active pure recurrent run",
 		)
 	model_parameters = dict(model.named_parameters())
 	for name, value in payload["trainable_parameter_state"].items():

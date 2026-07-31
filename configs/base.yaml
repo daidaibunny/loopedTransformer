@@ -27,21 +27,6 @@ fusion:
   residual_gate_init: 0.0
   fuse_after_final_decoder_norm: true
 
-lora:
-  layer_start: 12
-  layer_end: 20
-  rank: 32
-  alpha: 32
-  dropout: 0.0
-  bias: none
-  target_modules:
-    - q_proj
-    - k_proj
-    - v_proj
-    - up_proj
-    - down_proj
-    - gate_proj
-
 loss:
   temperature: 0.02
   warm_slot_weight: 1.0

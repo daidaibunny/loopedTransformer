@@ -1,3 +1,4 @@
+from inspect import signature
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from looped_vl.models.latent_slot_inserter import (
 	augment_before_last_valid_token,
 	create_or_load_master_slot_initialization,
 )
+from looped_vl.models.loading import load_recurrent_components
 from looped_vl.models.recurrent_connector import RecurrentConnector, RMSNorm
 from looped_vl.models.recurrent_decoder_block import (
 	build_dynamic_attention_mask,
@@ -139,16 +141,12 @@ def test_base_configuration_matches_v1_specification() -> None:
 	assert config.detach_prefix_kv_cache is True
 	assert config.recurrent_bottleneck_dim == 512
 	assert config.fusion_attention_dim == 256
-	assert config.lora_rank == 32
-	assert config.lora_alpha == 32
-	assert config.lora_target_modules == (
-		"q_proj",
-		"k_proj",
-		"v_proj",
-		"up_proj",
-		"down_proj",
-		"gate_proj",
-	)
+	assert not any(name.startswith("lora_") for name in vars(config))
+
+
+def test_recurrent_loader_and_model_expose_no_lora_switch() -> None:
+	assert "enable_lora" not in signature(load_recurrent_components).parameters
+	assert "enable_lora" not in signature(RecurrentQwen3VLEmbedding).parameters
 
 
 def test_configuration_accepts_only_required_slot_and_loop_sweeps() -> None:

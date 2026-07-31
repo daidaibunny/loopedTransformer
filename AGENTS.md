@@ -4,6 +4,9 @@
 
 - This repository is exclusively for Recurrent Latent-Slot Qwen3-VL-Embedding work.
 - Do not add, import, or run PoLar code in this repository.
+- The formal recurrent model is pure recurrent and must contain no LoRA modules or
+  parameters. LoRA belongs only to the independent comparison code under
+  `src/looped_vl/baseline/`.
 - Implement the attached v1.0 specification exactly, keeping forward activation updates
   separate from the trainable-parameter allowlist for each stage.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
@@ -75,6 +78,8 @@
 - Keep the final adapter or final recurrent learned weights separately from the rolling
   resumable checkpoint. Evaluation reads those final learned weights, not an intermediate
   optimizer checkpoint.
+- Reject recurrent checkpoints containing LoRA parameters or the superseded
+  `single_stage_warm_start_v1` protocol.
 
 ## Verification
 

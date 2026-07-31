@@ -434,7 +434,7 @@ def _train_one_epoch(
 			scheduler=scheduler,
 			rank=rank,
 			gradient_scaler=gradient_scaler,
-			expected_training_protocol="single_stage_warm_start_v1",
+			expected_training_protocol="pure_recurrent_single_stage_v1",
 		)
 		if cursor.stage != 0:
 			raise ValueError("Resume checkpoint is not from single-stage training")
@@ -904,7 +904,6 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		master_slot_path=args.master_slot_path,
 		config=model_config,
 		device=device,
-		enable_lora=True,
 		dtype=training_precision.parameter_dtype,
 		attention_implementation=resolved_attention_implementation,
 		max_length=args.max_length,
@@ -957,7 +956,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		)
 	manifest = {
 		"scope": "recurrent_latent_slot_qwen3vl_v1",
-		"training_protocol": "single_stage_warm_start_v1",
+		"training_protocol": "pure_recurrent_single_stage_v1",
 		"formal_training_stages": 1,
 		"hostname": socket.gethostname(),
 		"git_commit": git_commit,

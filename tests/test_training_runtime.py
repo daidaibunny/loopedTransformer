@@ -245,8 +245,13 @@ def test_checkpoint_restores_gradient_scaler_state(tmp_path: Path) -> None:
 	assert restored_scaler.scale == 4096.0
 
 
-def test_checkpoint_rejects_the_old_two_stage_protocol_before_loading(
+@pytest.mark.parametrize(
+	"old_protocol",
+	["two_stage_v1", "single_stage_warm_start_v1"],
+)
+def test_checkpoint_rejects_non_pure_recurrent_protocol_before_loading(
 	tmp_path: Path,
+	old_protocol: str,
 ) -> None:
 	model = nn.Linear(3, 2)
 	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
@@ -273,17 +278,17 @@ def test_checkpoint_rejects_the_old_two_stage_protocol_before_loading(
 			gradient_accumulation_step=0,
 		),
 		rank_rng_states=[capture_rng_state()],
-		metadata={"training_protocol": "two_stage_v1"},
+		metadata={"training_protocol": old_protocol},
 	)
 
-	with pytest.raises(ValueError, match="single-stage"):
+	with pytest.raises(ValueError, match="pure recurrent"):
 		load_training_checkpoint(
 			path=checkpoint_path,
 			model=model,
 			optimizer=optimizer,
 			scheduler=scheduler,
 			rank=0,
-			expected_training_protocol="single_stage_warm_start_v1",
+			expected_training_protocol="pure_recurrent_single_stage_v1",
 		)
 
 

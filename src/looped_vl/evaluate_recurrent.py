@@ -55,7 +55,7 @@ INFERENCE_PARAMETER_PREFIXES = (
 def _is_inference_parameter(name: str) -> bool:
 	return name in INFERENCE_PARAMETER_PREFIXES[:2] or name.startswith(
 		INFERENCE_PARAMETER_PREFIXES[2:],
-	) or ".lora_a." in name or ".lora_b." in name
+	)
 
 
 def load_recurrent_inference_checkpoint(
@@ -79,6 +79,8 @@ def load_recurrent_inference_checkpoint(
 	state = payload.get("trainable_parameter_state")
 	if not isinstance(state, dict):
 		raise ValueError("Recurrent checkpoint parameter state is missing")
+	if any("lora_" in str(name).lower() for name in state):
+		raise ValueError("Pure recurrent checkpoints must not contain LoRA parameters")
 	model_parameters = dict(model.named_parameters())
 	expected_names = {
 		name for name in model_parameters if _is_inference_parameter(name)
@@ -452,7 +454,6 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 		master_slot_path=args.master_slot_path,
 		config=model_config,
 		device=device,
-		enable_lora=True,
 		dtype=runtime_dtype,
 		attention_implementation=resolved_attention,
 		max_length=args.max_length,

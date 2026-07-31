@@ -89,3 +89,7 @@
   Balanced, and CLEVR test splits before restarting unfinished training experiments.
 - [x] Standardize the cross-model result table to one primary row per dataset: COCO uses
   the equal-direction mean; GQA Balanced and CLEVR use answer retrieval.
+- [x] Remove the incorrectly coupled Layers 13–20 LoRA modules from recurrent
+  configuration, training, evaluation, checkpoints, and parameter accounting.
+- [ ] Re-run all recurrent safety and throughput smokes under the pure recurrent protocol;
+  older recurrent smokes contained LoRA and cannot select the formal configuration.

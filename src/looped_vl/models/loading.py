@@ -28,7 +28,6 @@ def load_recurrent_components(
 	config: RecurrentModelConfig,
 	device: torch.device,
 	*,
-	enable_lora: bool,
 	dtype: torch.dtype = torch.bfloat16,
 	attention_implementation: str = "sdpa",
 	max_length: int = 8192,
@@ -68,6 +67,5 @@ def load_recurrent_components(
 		master_slot_initialization=master_slots,
 		latent_placeholder_id=processor.latent_placeholder_id,
 		pad_token_id=processor.pad_token_id,
-		enable_lora=enable_lora,
 	).to(device=device, dtype=dtype)
 	return LoadedRecurrentComponents(model=model, processor=processor)
