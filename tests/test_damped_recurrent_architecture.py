@@ -50,10 +50,10 @@ def test_locked_configuration_uses_eight_slots_and_parameter_free_damping() -> N
 
 def test_result_identity_is_single_stage_and_explicitly_excludes_lora() -> None:
 	assert DAMPED_RECURRENT_ARCHITECTURE == (
-		"damped_mid_decoder_latent_slot_recurrence_no_lora_v2"
+		"damped_mid_decoder_latent_slot_recurrence_no_lora_v3"
 	)
 	assert DAMPED_RECURRENT_TRAINING_PROTOCOL == (
-		"pure_recurrent_single_stage_full_objective_v3"
+		"pure_recurrent_single_stage_eos_weighted_aux_v4"
 	)
 	assert pure_recurrent_result_identity() == {
 		"architecture": DAMPED_RECURRENT_ARCHITECTURE,
@@ -75,8 +75,9 @@ def test_encoder_keeps_only_active_slots_and_has_no_recurrent_connector() -> Non
 def test_auxiliary_head_matches_shared_256_dimensional_specification() -> None:
 	head = AuxiliarySlotRetrievalHead(hidden_size=32, output_size=8)
 	slots = torch.randn(3, 4, 32)
+	eos = torch.randn(3, 32)
 
-	embeddings = head(slots)
+	embeddings = head(slots, eos)
 
 	assert embeddings.shape == (3, 8)
 	assert head.projection.bias is None
@@ -161,6 +162,7 @@ def test_training_averages_one_shared_auxiliary_loss_across_all_rounds() -> None
 			return SimpleNamespace(
 				embeddings=final_embeddings,
 				loop_slot_hidden_states=loop_slots,
+				conditioning_eos_hidden_state=values,
 				slot_hidden_states=loop_slots[-1],
 				diagnostics={
 					"fusion_gate": zero,

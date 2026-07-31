@@ -8,7 +8,7 @@
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
 - The locked recurrent architecture is
-  `damped_mid_decoder_latent_slot_recurrence_no_lora_v2`. The attachment's LoRA and
+  `damped_mid_decoder_latent_slot_recurrence_no_lora_v3`. The attachment's LoRA and
   two-stage sections are explicitly excluded by the user.
 - Use one training stage and one full-data epoch. All trainable recurrent parameters are
   active from the first optimizer step.
@@ -22,6 +22,11 @@
   `EOS-conditioned slot attention pooling` (`EOS 条件化槽位注意力池化`). Do not shorten
   it to ordinary pooling. Call the subsequent gated residual addition
   `zero-gated residual fusion`.
+- The training-only auxiliary head must use the fixed layer-20 EOS from Pass 1 as a
+  query over the current pass slots. RMS-normalize EOS and slots, scale their dot
+  products by the square root of 2048, softmax across slots, sum the raw slots with
+  those weights, then apply the shared RMSNorm, bias-free 256-dimensional projection,
+  and L2 normalization. It must never use mean pooling in a formal run.
 
 ## Remote execution
 
@@ -89,8 +94,8 @@
   parameters, or any superseded training protocol.
 - Every recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata, and
   `report.json` must declare architecture
-  `damped_mid_decoder_latent_slot_recurrence_no_lora_v2`, protocol
-  `pure_recurrent_single_stage_full_objective_v3`, `backbone_frozen: true`,
+  `damped_mid_decoder_latent_slot_recurrence_no_lora_v3`, protocol
+  `pure_recurrent_single_stage_eos_weighted_aux_v4`, `backbone_frozen: true`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
 - Recurrent training runs for exactly one epoch with final InfoNCE weight 1.0 at every

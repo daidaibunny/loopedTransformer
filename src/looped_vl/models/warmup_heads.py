@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -25,17 +27,50 @@ class RMSNorm(nn.Module):
 
 
 class AuxiliarySlotRetrievalHead(nn.Module):
-	"""Mean-pool all slots, RMS-normalize, project to 256, and L2-normalize."""
+	"""Use fixed layer-20 EOS to softly select slots for auxiliary retrieval."""
 
 	def __init__(self, hidden_size: int = 2048, output_size: int = 256) -> None:
 		super().__init__()
 		self.normalization = RMSNorm(hidden_size)
 		self.projection = nn.Linear(hidden_size, output_size, bias=False)
 
-	def forward(self, slot_hidden_states: torch.Tensor) -> torch.Tensor:
-		"""Produce one shared auxiliary retrieval embedding for a recurrent round."""
+	def pool_slots(
+		self,
+		slot_hidden_states: torch.Tensor,
+		conditioning_eos_hidden_state: torch.Tensor,
+	) -> tuple[torch.Tensor, torch.Tensor]:
+		"""Return the EOS-weighted raw slot sum and its normalized attention weights."""
 		if slot_hidden_states.ndim != 3 or slot_hidden_states.shape[1] == 0:
 			raise ValueError("At least one contextual slot is required")
-		pooled = slot_hidden_states.mean(dim=1)
+		if (
+			conditioning_eos_hidden_state.ndim != 2
+			or conditioning_eos_hidden_state.shape[0] != slot_hidden_states.shape[0]
+			or conditioning_eos_hidden_state.shape[1] != slot_hidden_states.shape[2]
+		):
+			raise ValueError(
+				"Conditioning EOS must have shape [batch, hidden] matching the slots",
+			)
+		normalized_eos = self.normalization(conditioning_eos_hidden_state).float()
+		normalized_slots = self.normalization(slot_hidden_states).float()
+		scores = torch.einsum("bd,bkd->bk", normalized_eos, normalized_slots)
+		scores = scores / math.sqrt(slot_hidden_states.shape[-1])
+		attention_weights = F.softmax(scores, dim=-1)
+		pooled = torch.einsum(
+			"bk,bkd->bd",
+			attention_weights.to(slot_hidden_states.dtype),
+			slot_hidden_states,
+		)
+		return pooled, attention_weights
+
+	def forward(
+		self,
+		slot_hidden_states: torch.Tensor,
+		conditioning_eos_hidden_state: torch.Tensor,
+	) -> torch.Tensor:
+		"""Produce one EOS-conditioned auxiliary embedding for a recurrent round."""
+		pooled, _ = self.pool_slots(
+			slot_hidden_states,
+			conditioning_eos_hidden_state,
+		)
 		normalized = self.normalization(pooled)
 		return F.normalize(self.projection(normalized), p=2, dim=-1)

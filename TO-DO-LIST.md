@@ -72,8 +72,8 @@
   from weight 0.2 to 1.0.
 - [x] Remove the Qwen3-0.6B semantic decoder and its loss, data, checkpoint, and command
   paths from recurrent training.
-- [x] Pool all latent slots in the auxiliary slot retrieval head after removing the obsolete
-  semantic/retrieval slot partition.
+- [x] Replace auxiliary mean pooling with fixed layer-20 EOS-conditioned soft weighting
+  over every current-pass slot; retain one shared training-only RMSNorm and projection.
 - [x] Group baseline inputs by text/vision modality before Qwen preprocessing and restore
   their exact logical pair order before the contrastive loss.
 - [x] Cross-audit baseline and recurrent runs as source-pure one-epoch training followed
@@ -108,7 +108,7 @@
   auxiliary retrieval head applied after every complete recurrent pass.
 - [x] Lock one-stage training to fixed loss weights: final InfoNCE 1.0, mean per-round
   auxiliary InfoNCE 0.1, and absolute-cosine final-slot diversity 0.05.
-- [x] Reject old recurrent checkpoints through the v2 architecture and v3 training
+- [x] Reject old recurrent checkpoints through the v3 architecture and v4 training
   protocol identity.
 - [ ] Run a new eight-V100 architecture, gradient, memory, and throughput smoke for the
   damped connector-free model before launching any formal recurrent experiment.

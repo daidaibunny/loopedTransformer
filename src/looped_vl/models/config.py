@@ -10,8 +10,8 @@ import yaml
 
 ALLOWED_SLOT_COUNTS = (0, 1, 2, 4, 8, 16)
 ALLOWED_LOOP_PASSES = (1, 2, 3, 4)
-DAMPED_RECURRENT_ARCHITECTURE = "damped_mid_decoder_latent_slot_recurrence_no_lora_v2"
-DAMPED_RECURRENT_TRAINING_PROTOCOL = "pure_recurrent_single_stage_full_objective_v3"
+DAMPED_RECURRENT_ARCHITECTURE = "damped_mid_decoder_latent_slot_recurrence_no_lora_v3"
+DAMPED_RECURRENT_TRAINING_PROTOCOL = "pure_recurrent_single_stage_eos_weighted_aux_v4"
 PURE_RECURRENT_ARCHITECTURE = DAMPED_RECURRENT_ARCHITECTURE
 PURE_RECURRENT_TRAINING_PROTOCOL = DAMPED_RECURRENT_TRAINING_PROTOCOL
 
@@ -29,7 +29,7 @@ def pure_recurrent_result_identity() -> dict[str, object]:
 
 @dataclass(frozen=True)
 class RecurrentModelConfig:
-	"""Every structural constant fixed by the damped no-LoRA v2 specification."""
+	"""Every structural constant fixed by the damped no-LoRA v3 specification."""
 
 	model_name: str = "Qwen/Qwen3-VL-Embedding-2B"
 	seed: int = 42
@@ -50,7 +50,7 @@ class RecurrentModelConfig:
 	fusion_residual_gate_init: float = 0.0
 	fuse_after_final_decoder_norm: bool = True
 	auxiliary_output_dim: int = 256
-	auxiliary_pooling: str = "mean_slots"
+	auxiliary_pooling: str = "eos_conditioned_weighted_slots"
 	auxiliary_normalization: str = "rmsnorm"
 	auxiliary_bias: bool = False
 	temperature: float = 0.02
@@ -99,11 +99,14 @@ class RecurrentModelConfig:
 		if self.auxiliary_output_dim != 256:
 			raise ValueError("auxiliary retrieval embeddings must have dimension 256")
 		if (
-			self.auxiliary_pooling != "mean_slots"
+			self.auxiliary_pooling != "eos_conditioned_weighted_slots"
 			or self.auxiliary_normalization != "rmsnorm"
 			or self.auxiliary_bias
 		):
-			raise ValueError("auxiliary head must use mean slots, RMSNorm, and no bias")
+			raise ValueError(
+				"auxiliary head must use EOS-conditioned weighted slots, RMSNorm, "
+				"and no bias",
+			)
 		if self.temperature != 0.02:
 			raise ValueError("InfoNCE temperature must remain 0.02")
 		if (

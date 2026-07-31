@@ -70,14 +70,15 @@ def test_reasoning_pair_uses_image_question_and_answer(source: str) -> None:
 def test_auxiliary_embedding_head_outputs_unit_normalized_vectors(slot_count: int) -> None:
 	head = AuxiliarySlotRetrievalHead(hidden_size=32, output_size=32)
 	slots = torch.randn(3, slot_count, 32)
+	eos = torch.randn(3, 32)
 
-	embeddings = head(slots)
+	embeddings = head(slots, eos)
 
 	assert embeddings.shape == (3, 32)
 	assert torch.allclose(embeddings.norm(dim=-1), torch.ones(3), atol=1e-6)
 
 
-def test_auxiliary_embedding_head_pools_every_latent_slot() -> None:
+def test_auxiliary_embedding_head_uses_eos_conditioned_soft_weights() -> None:
 	head = AuxiliarySlotRetrievalHead(hidden_size=2, output_size=2)
 	with torch.no_grad():
 		head.projection.weight.copy_(torch.eye(2))
@@ -85,16 +86,37 @@ def test_auxiliary_embedding_head_pools_every_latent_slot() -> None:
 		[
 			[
 				[2.0, 0.0],
-				[2.0, 0.0],
-				[0.0, 0.0],
 				[0.0, 0.0],
 			],
 		],
 	)
+	eos = torch.tensor([[2.0, 0.0]])
 
-	embeddings = head(slots)
+	pooled, weights = head.pool_slots(slots, eos)
+	embeddings = head(slots, eos)
+	expected_score = (4.0 / (2.0 + head.normalization.eps)) / (2.0**0.5)
+	expected_weights = torch.softmax(torch.tensor([[expected_score, 0.0]]), dim=-1)
 
+	assert weights.shape == (1, 2)
+	assert torch.allclose(weights, expected_weights)
+	assert torch.allclose(weights.sum(dim=-1), torch.ones(1))
+	assert torch.allclose(pooled, torch.tensor([[2.0 * expected_weights[0, 0], 0.0]]))
 	assert torch.allclose(embeddings, torch.tensor([[1.0, 0.0]]))
+
+
+def test_auxiliary_embedding_requires_slots_even_when_eos_selects_them() -> None:
+	head = AuxiliarySlotRetrievalHead(hidden_size=4, output_size=3)
+	slots = torch.randn(2, 3, 4, requires_grad=True)
+	eos = torch.randn(2, 4, requires_grad=True)
+
+	embeddings = head(slots, eos)
+	loss = embeddings[:, 0].sum()
+	slot_gradient, eos_gradient = torch.autograd.grad(loss, (slots, eos))
+
+	assert torch.isfinite(slot_gradient).all()
+	assert slot_gradient.abs().sum() > 0
+	assert torch.isfinite(eos_gradient).all()
+	assert eos_gradient.abs().sum() > 0
 
 
 def test_model_inputs_are_grouped_by_modality_and_keep_original_indices() -> None:

@@ -14,6 +14,7 @@ class _FakeEncoder(nn.Module):
 		return SimpleNamespace(
 			embeddings=embeddings,
 			loop_slot_hidden_states=(slots, slots + 1),
+			conditioning_eos_hidden_state=embeddings + 20,
 			slot_hidden_states=slots,
 			diagnostics={
 				"fusion_gate": mean,
@@ -47,6 +48,12 @@ def test_grouped_encoder_restores_original_order_and_weights_diagnostics() -> No
 		3.0,
 		4.0,
 		5.0,
+	]
+	assert output.conditioning_eos_hidden_state[:, 0].tolist() == [
+		21.0,
+		22.0,
+		23.0,
+		24.0,
 	]
 	assert output.diagnostics["fusion_gate"].item() == 2.5
 	assert output.diagnostics["recurrent_pass_cosine"][0].item() == 6.5

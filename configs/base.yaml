@@ -21,7 +21,7 @@ fusion:
   fuse_after_final_decoder_norm: true
 
 auxiliary_head:
-  pooling: mean_slots
+  pooling: eos_conditioned_weighted_slots
   input_dim: 2048
   output_dim: 256
   normalization: rmsnorm

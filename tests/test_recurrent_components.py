@@ -147,10 +147,10 @@ def test_base_configuration_matches_v1_specification() -> None:
 
 def test_pure_recurrent_result_identity_explicitly_excludes_lora() -> None:
 	assert PURE_RECURRENT_ARCHITECTURE == (
-		"damped_mid_decoder_latent_slot_recurrence_no_lora_v2"
+		"damped_mid_decoder_latent_slot_recurrence_no_lora_v3"
 	)
 	assert PURE_RECURRENT_TRAINING_PROTOCOL == (
-		"pure_recurrent_single_stage_full_objective_v3"
+		"pure_recurrent_single_stage_eos_weighted_aux_v4"
 	)
 	assert pure_recurrent_result_identity() == {
 		"architecture": PURE_RECURRENT_ARCHITECTURE,
@@ -285,7 +285,7 @@ def test_recurrent_components_run_after_bfloat16_precision_alignment() -> None:
 	fusion = EOSConditionedSlotFusion(hidden_size=32, attention_dim=8).to(torch.bfloat16)
 	hidden_states = torch.randn(2, 5, 32, dtype=torch.bfloat16)
 
-	auxiliary_output = auxiliary_head(hidden_states)
+	auxiliary_output = auxiliary_head(hidden_states[:, :4], hidden_states[:, -1])
 	fusion_output = fusion(hidden_states[:, -1], hidden_states[:, :4])
 
 	assert auxiliary_output.dtype == torch.bfloat16
@@ -470,6 +470,11 @@ def test_each_reported_pass_runs_its_loop_count_then_the_shared_suffix(
 	for actual, expected_embedding in zip(output.loop_embeddings, expected, strict=True):
 		assert torch.allclose(actual, expected_embedding)
 	assert torch.equal(output.embeddings, output.loop_embeddings[-1])
+	assert torch.equal(
+		output.conditioning_eos_hidden_state,
+		torch.tensor([[2.0, 0.0]]),
+	)
+	assert torch.equal(output.eos_hidden_state, torch.tensor([[2.0, 1.0]]))
 	assert len(full_loop_calls) == 1
 	assert len(dynamic_loop_calls) == 2
 	suffix_inputs = model.language_model.suffix_layer.inputs

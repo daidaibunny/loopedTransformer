@@ -43,6 +43,7 @@ class RecurrentEmbeddingOutput:
 	embeddings: torch.Tensor
 	loop_embeddings: tuple[torch.Tensor, ...] | None
 	loop_slot_hidden_states: tuple[torch.Tensor, ...]
+	conditioning_eos_hidden_state: torch.Tensor
 	slot_hidden_states: torch.Tensor
 	eos_hidden_state: torch.Tensor
 	attention_weights: torch.Tensor | None
@@ -226,6 +227,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 					embeddings=output.embeddings,
 					loop_embeddings=(output.embeddings,),
 					loop_slot_hidden_states=output.loop_slot_hidden_states,
+					conditioning_eos_hidden_state=output.conditioning_eos_hidden_state,
 					slot_hidden_states=output.slot_hidden_states,
 					eos_hidden_state=output.eos_hidden_state,
 					attention_weights=output.attention_weights,
@@ -274,6 +276,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			embeddings=embeddings,
 			loop_embeddings=None,
 			loop_slot_hidden_states=(),
+			conditioning_eos_hidden_state=eos_hidden_state,
 			slot_hidden_states=hidden_states[:, :0],
 			eos_hidden_state=eos_hidden_state,
 			attention_weights=None,
@@ -480,6 +483,10 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 					),
 				)
 		pass_one_full_hidden_states = hidden_states
+		conditioning_eos_hidden_state = _gather_sequence_positions(
+			pass_one_full_hidden_states,
+			augmented.eos_positions,
+		)
 		pass_one_proposed_slots = _gather_sequence_positions(hidden_states, slot_positions)
 		slot_states = damped_recurrent_update(
 			initial_slot_states,
@@ -586,6 +593,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 				else None
 			),
 			loop_slot_hidden_states=tuple(loop_slot_hidden_states),
+			conditioning_eos_hidden_state=conditioning_eos_hidden_state,
 			slot_hidden_states=final_output["slot_hidden_states"],
 			eos_hidden_state=final_output["eos_hidden_state"],
 			attention_weights=final_output["attention_weights"],

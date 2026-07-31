@@ -36,19 +36,21 @@ the current experiments.
 
 The recurrent definition was locked again on 2026-07-31. It contains no LoRA, no
 recurrent connector, 8 active latent slots, 4 total passes, slots-only extra passes,
-and parameter-free damping with step size 1/4. Earlier recurrent trials used either
-unintended LoRA or the removed learned connector and are invalid for selecting the
+and parameter-free damping with step size 1/4. Its training-only auxiliary head uses
+the fixed layer-20 EOS from Pass 1 to softly weight the current pass slots; mean pooling
+is only an invalidated ablation. Earlier recurrent trials used unintended LoRA, the
+removed learned connector, or mean auxiliary pooling and are invalid for selecting the
 current formal configuration. No full recurrent training or test result exists under
 the current definition.
 
 Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
 and `report.json` must identify the architecture as
-`damped_mid_decoder_latent_slot_recurrence_no_lora_v2`, the training protocol as
-`pure_recurrent_single_stage_full_objective_v3`, `backbone_frozen` as true,
+`damped_mid_decoder_latent_slot_recurrence_no_lora_v3`, the training protocol as
+`pure_recurrent_single_stage_eos_weighted_aux_v4`, `backbone_frozen` as true,
 `lora_enabled` as false, and `formal_training_stages` as 1. A recurrent checkpoint
 missing this identity, or containing LoRA or connector parameters, is not eligible.
 
-The v3 recurrent optimizer has one stage and visits the full train split exactly once.
+The v4 recurrent optimizer has one stage and visits the full train split exactly once.
 At every optimizer step, final InfoNCE has weight 1.0, the mean of the four shared-head
 per-round auxiliary InfoNCE losses has weight 0.1, and final-slot diversity has weight
 0.05. All 2,641,921 trainable parameters follow the same learning-rate schedule from the

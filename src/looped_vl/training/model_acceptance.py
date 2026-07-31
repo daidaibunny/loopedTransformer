@@ -153,6 +153,11 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 			)
 		if len(output.loop_slot_hidden_states) != config.num_total_loop_passes:
 			raise RuntimeError("Full recurrent acceptance did not return every slot round")
+		if output.conditioning_eos_hidden_state.shape != (1, config.hidden_size):
+			raise RuntimeError("Layer-20 conditioning EOS has an unexpected shape")
+		if not torch.isfinite(output.conditioning_eos_hidden_state).all():
+			raise RuntimeError("Layer-20 conditioning EOS contains non-finite values")
+		auxiliary_attention_weights = []
 		for pass_number, pass_embedding in enumerate(output.loop_embeddings, start=1):
 			if pass_embedding.shape != (1, config.hidden_size):
 				raise RuntimeError(
@@ -167,6 +172,46 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 				raise RuntimeError(
 					f"Pass {pass_number} norm error is too large: {pass_norm_error}",
 				)
+			pass_slots = output.loop_slot_hidden_states[pass_number - 1]
+			auxiliary_embedding = components.model.auxiliary_embedding_head(
+				pass_slots,
+				output.conditioning_eos_hidden_state,
+			)
+			_, pass_attention_weights = (
+				components.model.auxiliary_embedding_head.pool_slots(
+					pass_slots,
+					output.conditioning_eos_hidden_state,
+				)
+			)
+			if auxiliary_embedding.shape != (1, config.auxiliary_output_dim):
+				raise RuntimeError(
+					f"Pass {pass_number} auxiliary embedding has an unexpected shape",
+				)
+			if not torch.isfinite(auxiliary_embedding).all():
+				raise RuntimeError(
+					f"Pass {pass_number} auxiliary embedding contains non-finite values",
+				)
+			auxiliary_norm_error = (
+				auxiliary_embedding.float().norm(dim=-1) - 1
+			).abs().max().item()
+			if auxiliary_norm_error >= 5e-3:
+				raise RuntimeError(
+					f"Pass {pass_number} auxiliary norm error is too large: "
+					f"{auxiliary_norm_error}",
+				)
+			if not torch.allclose(
+				pass_attention_weights.sum(dim=-1),
+				torch.ones(1, device=device),
+				atol=1e-5,
+				rtol=1e-5,
+			):
+				raise RuntimeError(
+					f"Pass {pass_number} auxiliary slot weights do not sum to one",
+				)
+			auxiliary_attention_weights.append(
+				pass_attention_weights.float().cpu().tolist(),
+			)
+		result["auxiliary_attention_weights_by_pass"] = auxiliary_attention_weights
 		expected_dynamic_tokens = config.num_latent_slots
 		expected_counts = (expected_dynamic_tokens,) * config.num_extra_loop_passes
 		if tuple(output.diagnostics["extra_pass_dynamic_token_counts"]) != expected_counts:

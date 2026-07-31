@@ -19,6 +19,7 @@ from looped_vl.training.step import (
 class _EncoderOutput(Protocol):
 	embeddings: torch.Tensor
 	loop_slot_hidden_states: tuple[torch.Tensor, ...]
+	conditioning_eos_hidden_state: torch.Tensor
 	slot_hidden_states: torch.Tensor
 	diagnostics: dict[str, Any]
 
@@ -29,6 +30,7 @@ class GroupedEncoderOutput:
 
 	embeddings: torch.Tensor
 	loop_slot_hidden_states: tuple[torch.Tensor, ...]
+	conditioning_eos_hidden_state: torch.Tensor
 	slot_hidden_states: torch.Tensor
 	diagnostics: dict[str, Any]
 
@@ -73,6 +75,10 @@ def _encode_grouped_batches(
 		tuple(output.slot_hidden_states for output in outputs),
 		dim=0,
 	).index_select(0, restore_order)
+	conditioning_eos_hidden_state = torch.cat(
+		tuple(output.conditioning_eos_hidden_state for output in outputs),
+		dim=0,
+	).index_select(0, restore_order)
 	loop_pass_count = len(outputs[0].loop_slot_hidden_states)
 	if loop_pass_count == 0 or any(
 		len(output.loop_slot_hidden_states) != loop_pass_count
@@ -113,6 +119,7 @@ def _encode_grouped_batches(
 	return GroupedEncoderOutput(
 		embeddings=embeddings,
 		loop_slot_hidden_states=loop_slot_hidden_states,
+		conditioning_eos_hidden_state=conditioning_eos_hidden_state,
 		slot_hidden_states=slot_hidden_states,
 		diagnostics=diagnostics,
 	)
@@ -143,6 +150,9 @@ class RecurrentTrainingModel(nn.Module):
 		if output.embeddings.shape[0] != 2 * local_batch_size:
 			raise ValueError("Combined encoder batch must contain query then candidate rows")
 		query_embeddings, candidate_embeddings = output.embeddings.split(local_batch_size)
+		query_eos, candidate_eos = output.conditioning_eos_hidden_state.split(
+			local_batch_size,
+		)
 		embedding_pairs = {
 			"final": (query_embeddings, candidate_embeddings),
 		}
@@ -152,8 +162,8 @@ class RecurrentTrainingModel(nn.Module):
 		):
 			query_slots, candidate_slots = pass_slot_states.split(local_batch_size)
 			embedding_pairs[f"loop_pass_{pass_index}"] = (
-				self.encoder.auxiliary_embedding_head(query_slots),
-				self.encoder.auxiliary_embedding_head(candidate_slots),
+				self.encoder.auxiliary_embedding_head(query_slots, query_eos),
+				self.encoder.auxiliary_embedding_head(candidate_slots, candidate_eos),
 			)
 		contrastive_losses = distributed_multi_positive_info_nce_losses(
 			embedding_pairs=embedding_pairs,

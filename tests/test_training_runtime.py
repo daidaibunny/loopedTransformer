@@ -285,7 +285,7 @@ def test_checkpoint_rejects_non_pure_recurrent_protocol_before_loading(
 			optimizer=optimizer,
 			scheduler=scheduler,
 			rank=0,
-			expected_training_protocol="pure_recurrent_single_stage_full_objective_v3",
+			expected_training_protocol="pure_recurrent_single_stage_eos_weighted_aux_v4",
 		)
 
 
