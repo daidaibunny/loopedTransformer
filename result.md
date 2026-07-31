@@ -227,3 +227,28 @@ memory and are not selected. Eight workers did not improve the selected batch-32
    and all required metrics.
 6. Efficiency: wall time, stable throughput, peak GPU memory, and noteworthy failures.
 7. Evidence: tmux name, command, log path, output path, and comparability limitations.
+
+## All-model horizontal comparison
+
+This final table is the complete at-a-glance comparison matrix. It contains one primary
+row for every model and dataset combination, including combinations that are interrupted
+or still pending. Only full held-out test results appear as numbers; smoke losses,
+partial-test metrics, and values from other candidate galleries are excluded.
+
+For COCO, each metric is the equal-direction mean of text-to-image and image-to-text.
+For GQA Balanced and CLEVR, each metric is answer retrieval. Results are directly
+comparable only between rows from the same dataset. The recurrent parameter count is the
+current training-time count on `main`; its training-only warm-start embedding head can be
+discarded for inference.
+
+| Dataset | Model | Status | Latent slots K | Loop passes R | Added trainable parameters | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| COCO | Frozen original Qwen3-VL-Embedding-2B | Passed | 0 | 1 | 0 | 61.2443 | 64.0153 | 33.9117 | 20.6115 | 11.7428 | 34.2366 | 64.9735 | 75.4542 | 83.6250 | 73.0671 | 66.9576 |
+| COCO | Independent LoRA baseline | Passed | 0 | 1 | 31,195,136 | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
+| COCO | Recurrent latent-slot model | Pending | 4 | 4 | 17,342,977 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| GQA Balanced | Frozen original Qwen3-VL-Embedding-2B | Passed | 0 | 1 | 0 | 52.1141 | 36.2697 | 14.4077 | 8.5292 | 4.6554 | 36.2697 | 72.0385 | 85.2918 | 93.1070 | 52.1141 | 59.5010 |
+| GQA Balanced | Independent LoRA baseline | Passed | 0 | 1 | 31,195,136 | 74.9712 | 62.9035 | 17.9043 | 9.3473 | 4.8056 | 62.9035 | 89.5214 | 93.4727 | 96.1123 | 74.9712 | 79.3467 |
+| GQA Balanced | Recurrent latent-slot model | Pending | 4 | 4 | 17,342,977 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| CLEVR | Frozen original Qwen3-VL-Embedding-2B | Passed | 0 | 1 | 0 | 84.9359 | 73.1707 | 19.8499 | 9.9993 | 5.0000 | 73.1707 | 99.2493 | 99.9933 | 100.0000 | 84.9359 | 88.7750 |
+| CLEVR | Independent LoRA baseline | Interrupted | 0 | 1 | 31,195,136 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| CLEVR | Recurrent latent-slot model | Pending | 4 | 4 | 17,342,977 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
