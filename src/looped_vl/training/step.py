@@ -149,13 +149,13 @@ def compose_training_loss(
 	slot_infonce: torch.Tensor,
 	slot_diversity: torch.Tensor,
 ) -> torch.Tensor:
-	"""Apply warm-start or joint weights without changing optimizer ownership."""
-	if phase == "warm_start":
-		return slot_infonce + 0.05 * slot_diversity + 0.0 * final_infonce
-	if phase in {"joint_activation", "joint"}:
+	"""Keep final retrieval active while reducing auxiliary slot emphasis after 35%."""
+	if phase == "auxiliary_emphasis":
+		return final_infonce + slot_infonce + 0.05 * slot_diversity
+	if phase == "standard":
 		return (
 			final_infonce
 			+ 0.2 * slot_infonce
 			+ 0.05 * slot_diversity
 		)
-	raise ValueError("phase must be warm_start, joint_activation, or joint")
+	raise ValueError("phase must be auxiliary_emphasis or standard")

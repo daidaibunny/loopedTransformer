@@ -10,7 +10,7 @@ import yaml
 
 @dataclass(frozen=True)
 class TrainingConfig:
-	"""Optimization values for a one-epoch run with an initial warm-start window."""
+	"""Optimization values for a one-epoch full-objective run."""
 
 	optimizer: str
 	learning_rate: float
@@ -22,8 +22,7 @@ class TrainingConfig:
 	precision: str
 	lr_scheduler: str
 	warmup_ratio: float
-	warm_start_epoch_fraction: float
-	joint_activation_warmup_ratio: float
+	auxiliary_emphasis_epoch_fraction: float
 
 	@classmethod
 	def from_yaml(cls, path: str | Path) -> TrainingConfig:
@@ -42,16 +41,15 @@ class TrainingConfig:
 			precision=str(value["precision"]),
 			lr_scheduler=str(value["lr_scheduler"]),
 			warmup_ratio=float(value["warmup_ratio"]),
-			warm_start_epoch_fraction=float(value["warm_start_epoch_fraction"]),
-			joint_activation_warmup_ratio=float(
-				value["joint_activation_warmup_ratio"],
+			auxiliary_emphasis_epoch_fraction=float(
+				value["auxiliary_emphasis_epoch_fraction"],
 			),
 		)
 		config.validate()
 		return config
 
 	def validate(self) -> None:
-		"""Enforce the fixed optimizer and dynamic warm-start protocol."""
+		"""Enforce the fixed optimizer and full-objective protocol."""
 		if self.optimizer != "AdamW":
 			raise ValueError("optimizer must be AdamW")
 		if self.learning_rate != 1e-5 or self.weight_decay != 0.01:
@@ -66,10 +64,8 @@ class TrainingConfig:
 			raise ValueError("precision must remain bf16")
 		if self.lr_scheduler != "cosine" or self.warmup_ratio != 0.03:
 			raise ValueError("scheduler must be cosine with warmup ratio 0.03")
-		if self.warm_start_epoch_fraction != 0.35:
-			raise ValueError("warm-start window must cover exactly 0.35 epoch")
-		if self.joint_activation_warmup_ratio != 0.03:
-			raise ValueError("joint parameter activation warmup ratio must be 0.03")
+		if self.auxiliary_emphasis_epoch_fraction != 0.35:
+			raise ValueError("auxiliary-emphasis window must cover exactly 0.35 epoch")
 
 	def gradient_accumulation_steps(
 		self,

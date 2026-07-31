@@ -18,7 +18,6 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from torch import nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -336,24 +335,9 @@ def _training_phase(
 	training_plan: OneEpochTrainingPlan,
 ) -> str:
 	"""Return the loss and learning-rate phase for the next optimizer update."""
-	if global_step < training_plan.warm_start_optimizer_steps:
-		return "warm_start"
-	if global_step < (
-		training_plan.warm_start_optimizer_steps
-		+ training_plan.joint_activation_optimizer_steps
-	):
-		return "joint_activation"
-	return "joint"
-
-
-def _clear_parameter_gradients(
-	model: nn.Module,
-	parameter_names: tuple[str, ...],
-) -> None:
-	"""Prevent frozen-window gradients from creating AdamW momentum state."""
-	parameters = dict(model.named_parameters())
-	for name in parameter_names:
-		parameters[name].grad = None
+	if global_step < training_plan.auxiliary_emphasis_optimizer_steps:
+		return "auxiliary_emphasis"
+	return "standard"
 
 
 def _distributed_data_parallel_options() -> dict[str, bool]:
@@ -408,15 +392,13 @@ def _train_one_epoch(
 	optimizer, scheduler = build_optimizer_and_scheduler(
 		training_model,
 		training_config,
-		warm_start_parameter_names=tuple(
-			f"encoder.{name}" for name in parameter_groups.warm_start
+		recurrent_core_parameter_names=tuple(
+			f"encoder.{name}" for name in parameter_groups.recurrent_core
 		),
-		joint_parameter_names=tuple(
-			f"encoder.{name}" for name in parameter_groups.joint_only
+		final_fusion_parameter_names=tuple(
+			f"encoder.{name}" for name in parameter_groups.final_fusion
 		),
 		total_steps=training_plan.optimizer_steps,
-		warm_start_steps=training_plan.warm_start_optimizer_steps,
-		joint_activation_steps=training_plan.joint_activation_optimizer_steps,
 	)
 	gradient_scaler = torch.cuda.amp.GradScaler(
 		enabled=training_precision.gradient_scaling_enabled,
@@ -490,8 +472,8 @@ def _train_one_epoch(
 			output_dir / "trainable_parameters.json",
 			{
 				"formal_training_stages": 1,
-				"warm_start_names": parameter_groups.warm_start,
-				"joint_only_names": parameter_groups.joint_only,
+				"recurrent_core_names": parameter_groups.recurrent_core,
+				"final_fusion_names": parameter_groups.final_fusion,
 				"trainable_names": parameter_groups.all,
 				"trainable_parameter_count": sum(
 					parameter.numel()
@@ -508,8 +490,8 @@ def _train_one_epoch(
 				"epoch_batch_start": training_plan.start_batch,
 				"epoch_batch_end": training_plan.end_batch,
 				"optimizer_steps": training_plan.optimizer_steps,
-				"warm_start_optimizer_steps": (
-					training_plan.warm_start_optimizer_steps
+				"auxiliary_emphasis_optimizer_steps": (
+					training_plan.auxiliary_emphasis_optimizer_steps
 				),
 			},
 		)
@@ -621,25 +603,15 @@ def _train_one_epoch(
 				processed_samples=cursor.processed_samples + contrastive_global_batch_size,
 			)
 			continue
-		if phase == "warm_start":
-			_clear_parameter_gradients(
-				training_model.encoder,
-				parameter_groups.joint_only,
-			)
 		gradient_scaler.unscale_(optimizer)
 		gradient_audit = None
 		if cursor.global_step in {
 			0,
-			training_plan.warm_start_optimizer_steps,
+			training_plan.auxiliary_emphasis_optimizer_steps,
 		}:
-			allowed_names = (
-				parameter_groups.warm_start
-				if phase == "warm_start"
-				else parameter_groups.all
-			)
 			gradient_audit = audit_gradient_scope(
 				training_model.encoder,
-				allowed_names=allowed_names,
+				allowed_names=parameter_groups.all,
 			)
 			if rank == 0:
 				_write_json(
@@ -738,10 +710,10 @@ def _train_one_epoch(
 				**averages,
 				**finalized_diagnostics,
 				"gradient_norm": float(gradient_norm.detach().float().item()),
-				"warm_start_learning_rate": used_learning_rates[0],
-				"joint_learning_rate": used_learning_rates[1],
-				"next_warm_start_learning_rate": float(scheduler.get_last_lr()[0]),
-				"next_joint_learning_rate": float(scheduler.get_last_lr()[1]),
+				"recurrent_core_learning_rate": used_learning_rates[0],
+				"final_fusion_learning_rate": used_learning_rates[1],
+				"next_recurrent_core_learning_rate": float(scheduler.get_last_lr()[0]),
+				"next_final_fusion_learning_rate": float(scheduler.get_last_lr()[1]),
 				"gradient_scale": float(gradient_scaler.get_scale()),
 				"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
 				"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
@@ -832,7 +804,7 @@ def _train_one_epoch(
 
 
 def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
-	"""Run one continuous epoch with a dynamic warm-start window."""
+	"""Run one continuous epoch with the final objective active throughout."""
 	if args.checkpoint_every <= 0:
 		raise ValueError("checkpoint_every must be positive")
 	if args.max_checkpoints != 1:
@@ -857,10 +829,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			"smoke_save_final_checkpoint requires smoke_optimizer_steps",
 		)
 	if args.smoke_optimizer_steps and not (
-		0 < args.smoke_warm_start_steps < args.smoke_optimizer_steps
+		0 < args.smoke_auxiliary_emphasis_steps < args.smoke_optimizer_steps
 	):
 		raise ValueError(
-			"smoke_warm_start_steps must leave at least one joint smoke step",
+			"smoke_auxiliary_emphasis_steps must leave at least one standard smoke step",
 		)
 	rank, world_size, local_rank, device = _initialize_distributed(args.expected_world_size)
 	logging.basicConfig(
@@ -933,19 +905,16 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		loader_batches=len(loader),
 		gradient_accumulation_steps=gradient_accumulation_steps,
 		optimizer_global_batch_size=parallel_batch_sizes.optimizer_global_batch_size,
-		warm_start_epoch_fraction=training_config.warm_start_epoch_fraction,
-		joint_activation_warmup_ratio=training_config.joint_activation_warmup_ratio,
+		auxiliary_emphasis_epoch_fraction=(
+			training_config.auxiliary_emphasis_epoch_fraction
+		),
 	)
 	if args.smoke_optimizer_steps:
 		training_plan = replace(
 			training_plan,
-			warm_start_optimizer_steps=args.smoke_warm_start_steps,
-			joint_optimizer_steps=(
-				training_plan.optimizer_steps - args.smoke_warm_start_steps
-			),
-			joint_activation_optimizer_steps=min(
-				training_plan.joint_activation_optimizer_steps,
-				args.smoke_optimizer_steps - args.smoke_warm_start_steps,
+			auxiliary_emphasis_optimizer_steps=args.smoke_auxiliary_emphasis_steps,
+			standard_optimizer_steps=(
+				training_plan.optimizer_steps - args.smoke_auxiliary_emphasis_steps
 			),
 		)
 	if (
@@ -991,9 +960,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"training_config": asdict(training_config),
 		"schedule": {
 			"epochs": 1,
-			"policy": "single_optimizer_dynamic_warm_start",
-			"warm_start_formula": "ceil(0.35 * train_rows / optimizer_global_batch_size)",
-			"warm_start_basis": "project_loop_depth_estimate_not_lame_official_setting",
+			"policy": "full_final_objective_with_auxiliary_slot_emphasis",
+			"auxiliary_emphasis_formula": (
+				"ceil(0.35 * train_rows / optimizer_global_batch_size)"
+			),
 			"resolved_training_plan": asdict(training_plan),
 			"loader_batches_per_rank": len(loader),
 			"distributed_sampler_total_rows": sampler.total_size,
@@ -1009,8 +979,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		),
 		"multi_positive_contrastive_loss": True,
 		"combined_contrastive_all_gather": True,
-		"warm_start_final_infonce_weight": 0.0,
-		"joint_optimizer_state_during_warm_start": "no_grad_no_momentum",
+		"final_infonce_weight_all_steps": 1.0,
+		"all_parameter_groups_active_from_step_one": True,
 		"resume_per_device_batch_size": args.resume_per_device_batch_size,
 		"max_additional_optimizer_steps": args.max_additional_optimizer_steps,
 		"max_length": args.max_length,
@@ -1025,7 +995,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			}
 		],
 		"smoke_optimizer_steps": args.smoke_optimizer_steps,
-		"smoke_warm_start_steps": args.smoke_warm_start_steps,
+		"smoke_auxiliary_emphasis_steps": args.smoke_auxiliary_emphasis_steps,
 		"checkpoint_every": args.checkpoint_every,
 		"formal_training_log_interval": FORMAL_TRAINING_LOG_INTERVAL,
 		"max_checkpoints": args.max_checkpoints,
@@ -1064,7 +1034,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			)
 		_write_json(
 			output_dir / "status.json",
-			{"status": "training", "phase": "warm_start"},
+			{"status": "training", "phase": "auxiliary_emphasis"},
 		)
 	training_start = time.perf_counter()
 	final_cursor = _train_one_epoch(
@@ -1169,7 +1139,7 @@ def parse_args() -> argparse.Namespace:
 		default=True,
 	)
 	parser.add_argument("--smoke-optimizer-steps", type=int, default=0)
-	parser.add_argument("--smoke-warm-start-steps", type=int, default=1)
+	parser.add_argument("--smoke-auxiliary-emphasis-steps", type=int, default=1)
 	parser.add_argument("--smoke-gradient-accumulation-steps", type=int, default=1)
 	parser.add_argument("--smoke-save-final-checkpoint", action="store_true")
 	return parser.parse_args()

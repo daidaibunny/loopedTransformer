@@ -25,7 +25,6 @@ from looped_vl.evaluate_frozen import (
 	DistributedEncodingDataset,
 	EncodingItem,
 	_close_batch_images,
-	_initialize_distributed,
 	aggregate_coco_directions,
 	build_answer_gallery,
 	build_coco_relevance,
@@ -53,6 +52,57 @@ INFERENCE_PARAMETER_PREFIXES = (
 	"recurrent_connector.",
 	"late_fusion.",
 )
+
+
+def _initialize_evaluation_distributed(
+	expected_world_size: int,
+) -> tuple[int, int, int, torch.device]:
+	"""Use CPU collectives so rank-zero scoring never creates a GPU barrier timeout."""
+	local_rank = int(os.environ["LOCAL_RANK"])
+	torch.cuda.set_device(local_rank)
+	device = torch.device("cuda", local_rank)
+	dist.init_process_group(backend="gloo")
+	rank = dist.get_rank()
+	world_size = dist.get_world_size()
+	if world_size != expected_world_size:
+		raise RuntimeError(f"Expected {expected_world_size} ranks, found {world_size}")
+	return rank, world_size, local_rank, device
+
+
+def _summarize_evaluation_runtime(
+	*,
+	runtimes: list[dict[str, Any]],
+	total_encoded_items: int,
+	total_seconds: float,
+) -> dict[str, float | int]:
+	"""Return wall throughput and the maximum exact allocated-memory peak."""
+	if not runtimes or total_encoded_items <= 0 or total_seconds <= 0:
+		raise ValueError("Runtime summary inputs must be non-empty and positive")
+	encoding_wall_seconds = max(float(item["encoding_seconds"]) for item in runtimes)
+	if encoding_wall_seconds <= 0:
+		raise ValueError("Encoding wall time must be positive")
+	return {
+		"total_seconds": total_seconds,
+		"encoding_wall_seconds": encoding_wall_seconds,
+		"encoded_items": total_encoded_items,
+		"encoding_items_per_second": total_encoded_items / encoding_wall_seconds,
+		"peak_gpu_memory_bytes": max(
+			int(item["peak_gpu_memory_bytes"]) for item in runtimes
+		),
+	}
+
+
+def _primary_final_pass_metrics(
+	*,
+	source: str,
+	loop_metrics: dict[str, Any],
+	final_pass: int,
+) -> dict[str, float]:
+	"""Select the one primary metric row used by the cross-model result table."""
+	final = loop_metrics[str(final_pass)]
+	if source == "coco":
+		return dict(final["aggregate"]["metrics"])
+	return dict(final["metrics"])
 
 
 def _is_inference_parameter(name: str) -> bool:
@@ -227,6 +277,7 @@ def _encode_group(
 	args: argparse.Namespace,
 	rank: int,
 	world_size: int,
+	device: torch.device,
 	output_dir: Path,
 ) -> dict[str, Any]:
 	global_indices = list(range(rank, len(items), world_size))
@@ -251,6 +302,7 @@ def _encode_group(
 	index_chunks: list[torch.Tensor] = []
 	embedding_chunks: dict[int, list[torch.Tensor]] = defaultdict(list)
 	start = time.perf_counter()
+	processed = 0
 	for batch_number, batch in enumerate(loader, start=1):
 		try:
 			processed = processor.prepare(batch["model_inputs"], device=torch.device("cuda"))
@@ -269,10 +321,11 @@ def _encode_group(
 				raise RuntimeError(
 					"Final retrieval embedding does not equal the last loop-pass embedding",
 				)
-			for pass_number, embeddings in enumerate(output.loop_embeddings, start=1):
-				validate_embeddings(embeddings, len(batch["global_indices"]))
-				embedding_chunks[pass_number].append(embeddings.float().cpu())
-			index_chunks.append(torch.tensor(batch["global_indices"], dtype=torch.long))
+				for pass_number, embeddings in enumerate(output.loop_embeddings, start=1):
+					validate_embeddings(embeddings, len(batch["global_indices"]))
+					embedding_chunks[pass_number].append(embeddings.float().cpu())
+				index_chunks.append(torch.tensor(batch["global_indices"], dtype=torch.long))
+				processed += len(batch["global_indices"])
 		finally:
 			_close_batch_images(batch["model_inputs"])
 		if batch_number == 1 or batch_number % args.log_every_batches == 0:
@@ -280,7 +333,7 @@ def _encode_group(
 				"status": "encoding",
 				"rank": rank,
 				"group": name,
-				"processed": sum(chunk.shape[0] for chunk in index_chunks),
+					"processed": processed,
 				"rank_items": len(global_indices),
 				"elapsed_seconds": time.perf_counter() - start,
 			}
@@ -288,6 +341,8 @@ def _encode_group(
 				json.dumps(progress, indent=2, sort_keys=True) + "\n",
 				encoding="utf-8",
 			)
+	torch.cuda.synchronize(device)
+	seconds = time.perf_counter() - start
 	indices = torch.cat(index_chunks) if index_chunks else torch.empty(0, dtype=torch.long)
 	for pass_number, chunks in embedding_chunks.items():
 		torch.save(
@@ -301,7 +356,7 @@ def _encode_group(
 		"rank": rank,
 		"group": name,
 		"items": len(global_indices),
-		"seconds": time.perf_counter() - start,
+		"seconds": seconds,
 	}
 
 
@@ -433,13 +488,18 @@ def _score_passes(
 
 def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	"""Run distributed source-pure recurrent evaluation."""
-	rank, world_size, local_rank, device = _initialize_distributed(args.expected_world_size)
+	if not torch.cuda.is_available():
+		raise RuntimeError("CUDA is required; CPU fallback is disabled")
+	rank, world_size, local_rank, device = _initialize_evaluation_distributed(
+		args.expected_world_size,
+	)
 	output_dir = Path(args.output_dir)
 	if rank == 0:
 		if output_dir.exists():
 			raise FileExistsError(f"Output directory already exists: {output_dir}")
 		(output_dir / "embedding_cache").mkdir(parents=True)
 	dist.barrier()
+	evaluation_start = time.perf_counter()
 	resolved_attention = resolve_attention_implementation(args.attention_implementation)
 	runtime_dtype = resolve_torch_dtype(args.runtime_precision)
 	model_config = RecurrentModelConfig.from_yaml(args.model_config)
@@ -455,6 +515,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	base_hash = base_hash_objects[0]
 	if base_hash is None:
 		raise RuntimeError("Failed to broadcast the base checkpoint hash")
+	model_load_start = time.perf_counter()
 	components = load_recurrent_components(
 		model_root=args.model_root,
 		master_slot_path=args.master_slot_path,
@@ -473,6 +534,14 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 		expected_model_config=model_config.__dict__,
 	)
 	components.model.eval()
+	model_load_seconds = time.perf_counter() - model_load_start
+	inference_parameter_count = sum(
+		parameter.numel()
+		for name, parameter in components.model.named_parameters()
+		if _is_inference_parameter(name)
+	)
+	torch.cuda.reset_peak_memory_stats(device)
+	encoding_start = time.perf_counter()
 	runtime_rows = []
 	for name, items in groups.items():
 		runtime_rows.append(
@@ -484,9 +553,26 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 				args=args,
 				rank=rank,
 				world_size=world_size,
+				device=device,
 				output_dir=output_dir,
 			),
 		)
+	torch.cuda.synchronize(device)
+	encoding_seconds = time.perf_counter() - encoding_start
+	local_runtime = {
+		"rank": rank,
+		"logical_device": local_rank,
+		"device_name": torch.cuda.get_device_name(local_rank),
+		"model_load_seconds": model_load_seconds,
+		"encoding_seconds": encoding_seconds,
+		"encoded_items": sum(int(row["items"]) for row in runtime_rows),
+		"peak_gpu_memory_bytes": torch.cuda.max_memory_allocated(device),
+		"groups": runtime_rows,
+	}
+	gathered_runtimes: list[dict[str, Any] | None] = [
+		None for _ in range(world_size)
+	]
+	dist.all_gather_object(gathered_runtimes, local_runtime)
 	dist.barrier()
 	report = None
 	if rank == 0:
@@ -500,11 +586,24 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 			device=device,
 			score_batch_size=args.score_batch_size,
 		)
+		primary_metrics = _primary_final_pass_metrics(
+			source=args.source,
+			loop_metrics=loop_metrics,
+			final_pass=model_config.num_total_loop_passes,
+		)
+		runtimes = [item for item in gathered_runtimes if item is not None]
+		total_encoded_items = sum(len(items) for items in groups.values())
+		runtime = _summarize_evaluation_runtime(
+			runtimes=runtimes,
+			total_encoded_items=total_encoded_items,
+			total_seconds=time.perf_counter() - evaluation_start,
+		)
 		report = {
 			"status": "passed",
 			"scope": "single_dataset_recurrent_test",
 			"source": args.source,
 			"metric_scale": METRIC_SCALE,
+			"metrics": primary_metrics,
 			"loop_passes": loop_metrics,
 			"protocol": {
 				"dataset_root": str(dataset_root),
@@ -520,17 +619,19 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 				"checkpoint": str(args.checkpoint),
 				"base_checkpoint_sha256": base_hash,
 				"checkpoint_metadata": metadata,
+				"inference_parameter_count": inference_parameter_count,
 				"runtime_precision": args.runtime_precision,
 				"requested_attention_implementation": args.attention_implementation,
 				"resolved_attention_implementation": resolved_attention,
 			},
 			"distributed": {
 				"hostname": socket.gethostname(),
+				"backend": "gloo",
 				"world_size": world_size,
 				"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-				"local_rank": local_rank,
-				"runtime_rows": runtime_rows,
+				"ranks": runtimes,
 			},
+			"runtime": runtime,
 		}
 		(output_dir / "report.json").write_text(
 			json.dumps(report, indent=2, sort_keys=True) + "\n",

@@ -1,4 +1,4 @@
-"""Strict parameter groups for warm-start and joint optimization."""
+"""Strict trainable groups for a full-objective recurrent optimizer."""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-WARM_START_PREFIXES = (
+RECURRENT_CORE_PREFIXES = (
 	"latent_slots",
 	"recurrent_connector.",
 	"warmup_embedding_head.",
 )
-JOINT_ONLY_PREFIXES = (
+FINAL_FUSION_PREFIXES = (
 	"eos_delta",
 	"late_fusion.",
 )
@@ -20,15 +20,15 @@ JOINT_ONLY_PREFIXES = (
 
 @dataclass(frozen=True)
 class TrainableParameterGroups:
-	"""Names updated throughout training or only after the warm-start window."""
+	"""Recurrent-core and final-fusion names updated throughout the full epoch."""
 
-	warm_start: tuple[str, ...]
-	joint_only: tuple[str, ...]
+	recurrent_core: tuple[str, ...]
+	final_fusion: tuple[str, ...]
 
 	@property
 	def all(self) -> tuple[str, ...]:
 		"""Return every parameter owned by the single optimizer."""
-		return self.warm_start + self.joint_only
+		return self.recurrent_core + self.final_fusion
 
 
 def align_trainable_parameter_dtype(model: nn.Module, dtype: torch.dtype) -> tuple[str, ...]:
@@ -47,21 +47,21 @@ def align_trainable_parameter_dtype(model: nn.Module, dtype: torch.dtype) -> tup
 def configure_trainable_parameters(model: nn.Module) -> TrainableParameterGroups:
 	"""Freeze the backbone and enable both optimizer groups exactly once."""
 	model.requires_grad_(False)
-	warm_start: list[str] = []
-	joint_only: list[str] = []
+	recurrent_core: list[str] = []
+	final_fusion: list[str] = []
 	for name, parameter in model.named_parameters():
-		if name.startswith(WARM_START_PREFIXES):
+		if name.startswith(RECURRENT_CORE_PREFIXES):
 			parameter.requires_grad_(True)
-			warm_start.append(name)
+			recurrent_core.append(name)
 			continue
-		if name.startswith(JOINT_ONLY_PREFIXES):
+		if name.startswith(FINAL_FUSION_PREFIXES):
 			parameter.requires_grad_(True)
-			joint_only.append(name)
-	if not warm_start or not joint_only:
-		raise RuntimeError("Warm-start and joint-only parameter groups must both be non-empty")
+			final_fusion.append(name)
+	if not recurrent_core or not final_fusion:
+		raise RuntimeError("Recurrent-core and final-fusion groups must both be non-empty")
 	return TrainableParameterGroups(
-		warm_start=tuple(warm_start),
-		joint_only=tuple(joint_only),
+		recurrent_core=tuple(recurrent_core),
+		final_fusion=tuple(final_fusion),
 	)
 
 

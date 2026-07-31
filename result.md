@@ -46,8 +46,15 @@ training or test result was produced under that superseded definition.
 Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
 and `report.json` must identify the architecture as
 `recurrent_latent_slot_qwen3vl_no_lora_v1`, the training protocol as
-`pure_recurrent_single_stage_v1`, `backbone_frozen` as true, and `lora_enabled` as
+`pure_recurrent_full_objective_v2`, `backbone_frozen` as true, and `lora_enabled` as
 false. A recurrent checkpoint missing this identity is not eligible for this comparison.
+
+The v2 recurrent optimizer runs for one epoch with final InfoNCE weight 1.0 throughout.
+During the first 35% of optimizer steps, auxiliary slot InfoNCE has weight 1.0; afterward
+it has weight 0.2. Slot-diversity weight remains 0.05. Every recurrent trainable parameter
+group follows the same learning-rate schedule from the first step. The superseded v1
+protocol disabled final InfoNCE and final-fusion updates during the first 35% and is not
+eligible for the formal comparison.
 
 ## EXP-000A/B/C — Frozen backbone
 
@@ -230,7 +237,7 @@ COCO uses the equal-direction mean of text-to-image and image-to-text. GQA Balan
 CLEVR use answer retrieval. Compare metrics only within the same dataset.
 
 The pure recurrent parameter count is 8,430,081 during training. This consists of
-4,233,729 inference parameters plus a 4,196,352-parameter training-only warm-start
+4,233,729 inference parameters plus a 4,196,352-parameter training-only auxiliary slot
 embedding head that is discarded for inference. The frozen backbone has no trainable
 parameters in this experiment. `N/A` means the corresponding full held-out test result
 does not exist.

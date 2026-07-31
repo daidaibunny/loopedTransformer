@@ -31,10 +31,10 @@ def test_pure_recurrent_trainability_freezes_the_entire_backbone() -> None:
 				"warmup_embedding_head",
 			)
 		)
-		for name in groups.warm_start
+		for name in groups.recurrent_core
 	)
-	assert any(name.startswith("eos_delta") for name in groups.joint_only)
-	assert any(name.startswith("late_fusion") for name in groups.joint_only)
+	assert any(name.startswith("eos_delta") for name in groups.final_fusion)
+	assert any(name.startswith("late_fusion") for name in groups.final_fusion)
 	assert not any(name.startswith("base_embedding_model") for name in groups.all)
 	assert not any("lora_" in name.lower() for name in groups.all)
 	assert not any(

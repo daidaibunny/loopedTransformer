@@ -65,12 +65,13 @@
 - [x] Average baseline loss and embedding norms over every microbatch and every rank,
   while skipping scheduler advancement after a non-finite FP16 optimizer step.
 - [x] Replace recurrent Stage 1/Stage 2 with one continuous one-epoch task whose
-  warm-start length is `ceil(0.35 * train_rows / optimizer_global_batch_size)`.
-- [x] Keep joint-only learning rates at zero during warm-start, discard their gradients
-  before AdamW, and smoothly activate them without restarting the optimizer.
+  auxiliary-emphasis length is `ceil(0.35 * train_rows / optimizer_global_batch_size)`.
+- [x] Keep final InfoNCE at weight 1.0 for the full epoch and activate every recurrent
+  parameter group from step one; use the first 35% only to raise auxiliary slot InfoNCE
+  from weight 0.2 to 1.0.
 - [x] Remove the Qwen3-0.6B semantic decoder and its loss, data, checkpoint, and command
   paths from recurrent training.
-- [x] Pool all latent slots in the warm-start retrieval head after removing the obsolete
+- [x] Pool all latent slots in the auxiliary slot retrieval head after removing the obsolete
   semantic/retrieval slot partition.
 - [x] Group baseline inputs by text/vision modality before Qwen preprocessing and restore
   their exact logical pair order before the contrastive loss.
@@ -93,5 +94,7 @@
   configuration, training, evaluation, checkpoints, and parameter accounting.
 - [x] Stamp every recurrent manifest, training result, checkpoint, and test report with
   the pure-recurrent/no-LoRA identity and reject incompatible result inputs.
+- [x] Use CPU Gloo collectives for recurrent evaluation and record the final-pass primary
+  metrics, per-pass metrics, exact peak GPU memory, and global encoding throughput.
 - [ ] Re-run all recurrent safety and throughput smokes under the pure recurrent protocol;
   older recurrent smokes contained LoRA and cannot select the formal configuration.

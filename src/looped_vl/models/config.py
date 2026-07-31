@@ -11,7 +11,7 @@ import yaml
 ALLOWED_SLOT_COUNTS = (0, 1, 2, 4, 8, 16)
 ALLOWED_LOOP_PASSES = (1, 2, 3, 4)
 PURE_RECURRENT_ARCHITECTURE = "recurrent_latent_slot_qwen3vl_no_lora_v1"
-PURE_RECURRENT_TRAINING_PROTOCOL = "pure_recurrent_single_stage_v1"
+PURE_RECURRENT_TRAINING_PROTOCOL = "pure_recurrent_full_objective_v2"
 
 
 def pure_recurrent_result_identity() -> dict[str, object]:
@@ -98,7 +98,7 @@ class RecurrentModelConfig:
 		if self.temperature != 0.02:
 			raise ValueError("InfoNCE temperature must remain 0.02")
 		if (self.warm_slot_weight, self.warm_diversity_weight) != (1.0, 0.05):
-			raise ValueError("warm-start loss weights must remain 1.0 and 0.05")
+			raise ValueError("auxiliary-emphasis loss weights must remain 1.0 and 0.05")
 		if (
 			self.joint_final_weight,
 			self.joint_slot_weight,

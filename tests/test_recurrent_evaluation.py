@@ -5,7 +5,11 @@ import pytest
 import torch
 from torch import nn
 
+from looped_vl import evaluate_recurrent
 from looped_vl.evaluate_recurrent import (
+	_initialize_evaluation_distributed,
+	_primary_final_pass_metrics,
+	_summarize_evaluation_runtime,
 	build_loop_metric_series,
 	load_recurrent_inference_checkpoint,
 	parse_args,
@@ -183,6 +187,79 @@ def test_loop_metric_series_reports_previous_and_r1_percentage_point_deltas() ->
 		"map": pytest.approx(4.0),
 		"p_at_1": pytest.approx(1.0),
 	}
+
+
+def test_recurrent_evaluation_uses_cpu_collectives(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	events: list[tuple[str, object]] = []
+	monkeypatch.setenv("LOCAL_RANK", "3")
+	monkeypatch.setattr(
+		evaluate_recurrent.torch.cuda,
+		"set_device",
+		lambda rank: events.append(("set_device", rank)),
+	)
+	monkeypatch.setattr(
+		evaluate_recurrent.dist,
+		"init_process_group",
+		lambda **kwargs: events.append(("init_process_group", kwargs)),
+	)
+	monkeypatch.setattr(evaluate_recurrent.dist, "get_rank", lambda: 2)
+	monkeypatch.setattr(evaluate_recurrent.dist, "get_world_size", lambda: 8)
+
+	rank, world_size, local_rank, device = _initialize_evaluation_distributed(8)
+
+	assert events == [
+		("set_device", 3),
+		("init_process_group", {"backend": "gloo"}),
+	]
+	assert (rank, world_size, local_rank, device) == (
+		2,
+		8,
+		3,
+		torch.device("cuda", 3),
+	)
+
+
+def test_recurrent_runtime_summary_reports_global_throughput_and_peak_memory() -> None:
+	summary = _summarize_evaluation_runtime(
+		runtimes=[
+			{
+				"encoding_seconds": 10.0,
+				"encoded_items": 50,
+				"peak_gpu_memory_bytes": 12_000,
+			},
+			{
+				"encoding_seconds": 12.5,
+				"encoded_items": 50,
+				"peak_gpu_memory_bytes": 15_000,
+			},
+		],
+		total_encoded_items=100,
+		total_seconds=20.0,
+	)
+
+	assert summary == {
+		"total_seconds": 20.0,
+		"encoding_wall_seconds": 12.5,
+		"encoded_items": 100,
+		"encoding_items_per_second": 8.0,
+		"peak_gpu_memory_bytes": 15_000,
+	}
+
+
+def test_final_pass_primary_metrics_use_coco_equal_direction_mean() -> None:
+	metrics = {"map": 40.0}
+	assert _primary_final_pass_metrics(
+		source="coco",
+		loop_metrics={"4": {"aggregate": {"metrics": metrics}}},
+		final_pass=4,
+	) == metrics
+	assert _primary_final_pass_metrics(
+		source="gqa_balanced",
+		loop_metrics={"4": {"metrics": metrics}},
+		final_pass=4,
+	) == metrics
 
 
 def test_recurrent_evaluation_uses_aligned_manifest_without_legacy_gqa_root(

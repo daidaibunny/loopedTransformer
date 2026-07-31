@@ -79,11 +79,16 @@
   resumable checkpoint. Evaluation reads those final learned weights, not an intermediate
   optimizer checkpoint.
 - Reject recurrent checkpoints containing LoRA parameters or the superseded
-  `single_stage_warm_start_v1` protocol.
+  `single_stage_warm_start_v1` and `pure_recurrent_single_stage_v1` protocols.
 - Every recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata, and
   `report.json` must declare architecture `recurrent_latent_slot_qwen3vl_no_lora_v1`,
-  protocol `pure_recurrent_single_stage_v1`, `backbone_frozen: true`, and
+  protocol `pure_recurrent_full_objective_v2`, `backbone_frozen: true`, and
   `lora_enabled: false`. Reject missing or conflicting identities.
+- Recurrent training runs for exactly one epoch with final InfoNCE weight 1.0 at every
+  optimizer step. The first 35% of the epoch only increases the auxiliary slot InfoNCE
+  weight from 0.2 to 1.0; it must not freeze final-fusion parameters or disable the final
+  retrieval objective. All trainable groups use the same learning-rate schedule from
+  step one.
 
 ## Verification
 

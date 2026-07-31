@@ -151,7 +151,7 @@ def test_base_configuration_matches_v1_specification() -> None:
 
 def test_pure_recurrent_result_identity_explicitly_excludes_lora() -> None:
 	assert PURE_RECURRENT_ARCHITECTURE == "recurrent_latent_slot_qwen3vl_no_lora_v1"
-	assert PURE_RECURRENT_TRAINING_PROTOCOL == "pure_recurrent_single_stage_v1"
+	assert PURE_RECURRENT_TRAINING_PROTOCOL == "pure_recurrent_full_objective_v2"
 	assert pure_recurrent_result_identity() == {
 		"architecture": PURE_RECURRENT_ARCHITECTURE,
 		"training_protocol": PURE_RECURRENT_TRAINING_PROTOCOL,

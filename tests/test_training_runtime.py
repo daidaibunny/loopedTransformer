@@ -36,7 +36,6 @@ from looped_vl.training.schedule import (
 from looped_vl.training.step import compose_training_loss
 from looped_vl.training.train import (
 	_accumulate_metric_tensors,
-	_clear_parameter_gradients,
 	_distributed_data_parallel_options,
 	_finalize_metric_tensors,
 	_optimizer_step_limit,
@@ -110,7 +109,7 @@ def test_recurrent_ddp_options_support_gradient_accumulation() -> None:
 	}
 
 
-def test_single_training_config_matches_optimizer_and_warm_start_protocol() -> None:
+def test_single_training_config_matches_full_objective_protocol() -> None:
 	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
 
 	assert config.optimizer == "AdamW"
@@ -123,8 +122,7 @@ def test_single_training_config_matches_optimizer_and_warm_start_protocol() -> N
 	assert config.precision == "bf16"
 	assert config.lr_scheduler == "cosine"
 	assert config.warmup_ratio == 0.03
-	assert config.warm_start_epoch_fraction == 0.35
-	assert config.joint_activation_warmup_ratio == 0.03
+	assert config.auxiliary_emphasis_epoch_fraction == 0.35
 
 
 def test_seed_42_reproduces_python_numpy_and_torch_streams() -> None:
@@ -161,11 +159,9 @@ def test_checkpoint_restores_trainable_values_optimizer_scheduler_and_cursor(
 	optimizer, scheduler = build_optimizer_and_scheduler(
 		model,
 		config,
-		warm_start_parameter_names=("0.weight", "0.bias"),
-		joint_parameter_names=(),
+		recurrent_core_parameter_names=("0.weight", "0.bias"),
+		final_fusion_parameter_names=(),
 		total_steps=10,
-		warm_start_steps=3,
-		joint_activation_steps=1,
 	)
 	cursor = TrainingCursor(
 		stage=1,
@@ -207,11 +203,9 @@ def test_checkpoint_restores_gradient_scaler_state(tmp_path: Path) -> None:
 	optimizer, scheduler = build_optimizer_and_scheduler(
 		model,
 		config,
-		warm_start_parameter_names=("weight", "bias"),
-		joint_parameter_names=(),
+		recurrent_core_parameter_names=("weight", "bias"),
+		final_fusion_parameter_names=(),
 		total_steps=10,
-		warm_start_steps=3,
-		joint_activation_steps=1,
 	)
 	saved_scaler = _FakeGradientScaler(scale=4096.0)
 	restored_scaler = _FakeGradientScaler(scale=1.0)
@@ -247,7 +241,11 @@ def test_checkpoint_restores_gradient_scaler_state(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
 	"old_protocol",
-	["two_stage_v1", "single_stage_warm_start_v1"],
+	[
+		"two_stage_v1",
+		"single_stage_warm_start_v1",
+		"pure_recurrent_single_stage_v1",
+	],
 )
 def test_checkpoint_rejects_non_pure_recurrent_protocol_before_loading(
 	tmp_path: Path,
@@ -258,11 +256,9 @@ def test_checkpoint_rejects_non_pure_recurrent_protocol_before_loading(
 	optimizer, scheduler = build_optimizer_and_scheduler(
 		model,
 		config,
-		warm_start_parameter_names=("weight", "bias"),
-		joint_parameter_names=(),
+		recurrent_core_parameter_names=("weight", "bias"),
+		final_fusion_parameter_names=(),
 		total_steps=10,
-		warm_start_steps=3,
-		joint_activation_steps=1,
 	)
 	checkpoint_path = tmp_path / "old-protocol.pt"
 	save_training_checkpoint(
@@ -288,7 +284,7 @@ def test_checkpoint_rejects_non_pure_recurrent_protocol_before_loading(
 			optimizer=optimizer,
 			scheduler=scheduler,
 			rank=0,
-			expected_training_protocol="pure_recurrent_single_stage_v1",
+			expected_training_protocol="pure_recurrent_full_objective_v2",
 		)
 
 
@@ -595,61 +591,56 @@ def test_metric_accumulation_stays_on_device_until_step_boundary() -> None:
 	assert _finalize_metric_tensors(accumulator, count=2) == {"loss": pytest.approx(3.0)}
 
 
-def test_warm_start_and_joint_loss_weights_are_exact_without_decoder() -> None:
+def test_final_retrieval_loss_is_active_during_the_entire_epoch() -> None:
 	components = {
 		"final_infonce": torch.tensor(10.0),
 		"slot_infonce": torch.tensor(2.0),
 		"slot_diversity": torch.tensor(4.0),
 	}
 
-	warm_start = compose_training_loss(phase="warm_start", **components)
-	joint = compose_training_loss(phase="joint", **components)
+	warm_start = compose_training_loss(phase="auxiliary_emphasis", **components)
+	joint = compose_training_loss(phase="standard", **components)
 
-	assert warm_start.item() == pytest.approx(2.0 + 0.05 * 4.0)
+	assert warm_start.item() == pytest.approx(10.0 + 2.0 + 0.05 * 4.0)
 	assert joint.item() == pytest.approx(10.0 + 0.2 * 2.0 + 0.05 * 4.0)
 
 
-def test_joint_parameter_learning_rate_is_zero_then_smoothly_activates() -> None:
+def test_every_recurrent_parameter_group_uses_the_same_lr_from_step_one() -> None:
 	model = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 1))
 	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
 	optimizer, scheduler = build_optimizer_and_scheduler(
 		model,
 		config,
-		warm_start_parameter_names=("0.weight", "0.bias"),
-		joint_parameter_names=("1.weight", "1.bias"),
+		recurrent_core_parameter_names=("0.weight", "0.bias"),
+		final_fusion_parameter_names=("1.weight", "1.bias"),
 		total_steps=20,
-		warm_start_steps=5,
-		joint_activation_steps=3,
 	)
 
-	assert optimizer.param_groups[1]["lr"] == 0.0
+	assert optimizer.param_groups[0]["lr"] > 0.0
+	assert optimizer.param_groups[1]["lr"] == optimizer.param_groups[0]["lr"]
 	for _ in range(5):
 		optimizer.step()
 		scheduler.step()
-	assert optimizer.param_groups[1]["lr"] > 0.0
-	assert optimizer.param_groups[1]["lr"] <= config.learning_rate
+		assert optimizer.param_groups[1]["lr"] == optimizer.param_groups[0]["lr"]
 
 
-def test_warm_start_discards_joint_gradients_and_adamw_momentum() -> None:
+def test_first_optimizer_step_updates_both_recurrent_parameter_groups() -> None:
 	model = nn.Sequential(nn.Linear(2, 2), nn.Linear(2, 1))
 	config = TrainingConfig.from_yaml(Path("configs/train.yaml"))
 	optimizer, _ = build_optimizer_and_scheduler(
 		model,
 		config,
-		warm_start_parameter_names=("0.weight", "0.bias"),
-		joint_parameter_names=("1.weight", "1.bias"),
+		recurrent_core_parameter_names=("0.weight", "0.bias"),
+		final_fusion_parameter_names=("1.weight", "1.bias"),
 		total_steps=20,
-		warm_start_steps=5,
-		joint_activation_steps=3,
 	)
 	model(torch.ones(1, 2)).sum().backward()
 
-	_clear_parameter_gradients(model, ("1.weight", "1.bias"))
 	optimizer.step()
 
 	assert model[0].weight in optimizer.state
-	assert model[1].weight not in optimizer.state
-	assert model[1].bias not in optimizer.state
+	assert model[1].weight in optimizer.state
+	assert model[1].bias in optimizer.state
 
 
 def test_training_phase_transitions_without_a_second_formal_stage() -> None:
@@ -657,16 +648,14 @@ def test_training_phase_transitions_without_a_second_formal_stage() -> None:
 		start_batch=0,
 		end_batch=100,
 		optimizer_steps=20,
-		warm_start_optimizer_steps=5,
-		joint_optimizer_steps=15,
-		joint_activation_optimizer_steps=3,
+		auxiliary_emphasis_optimizer_steps=5,
+		standard_optimizer_steps=15,
 	)
 
-	assert _training_phase(0, plan) == "warm_start"
-	assert _training_phase(4, plan) == "warm_start"
-	assert _training_phase(5, plan) == "joint_activation"
-	assert _training_phase(7, plan) == "joint_activation"
-	assert _training_phase(8, plan) == "joint"
+	assert _training_phase(0, plan) == "auxiliary_emphasis"
+	assert _training_phase(4, plan) == "auxiliary_emphasis"
+	assert _training_phase(5, plan) == "standard"
+	assert _training_phase(19, plan) == "standard"
 
 
 def test_explicit_commit_allows_a_non_git_launch_directory(tmp_path: Path) -> None:

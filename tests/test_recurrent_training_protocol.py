@@ -109,7 +109,7 @@ def test_recurrent_losses_match_independent_multi_positive_losses() -> None:
 		"train_rows",
 		"optimizer_global_batch_size",
 		"loader_batches",
-		"expected_warm_start_steps",
+		"expected_auxiliary_emphasis_steps",
 	),
 	(
 		(100_000, 256, 1_563, 137),
@@ -119,11 +119,11 @@ def test_recurrent_losses_match_independent_multi_positive_losses() -> None:
 		(699_989, 512, 10_938, 479),
 	),
 )
-def test_warm_start_uses_fraction_of_rows_not_loop_count(
+def test_auxiliary_emphasis_uses_fraction_of_rows_not_loop_count(
 	train_rows: int,
 	optimizer_global_batch_size: int,
 	loader_batches: int,
-	expected_warm_start_steps: int,
+	expected_auxiliary_emphasis_steps: int,
 ) -> None:
 	gradient_accumulation_steps = 4 if optimizer_global_batch_size == 256 else 8
 	plan = resolve_one_epoch_training_plan(
@@ -131,8 +131,7 @@ def test_warm_start_uses_fraction_of_rows_not_loop_count(
 		loader_batches=loader_batches,
 		gradient_accumulation_steps=gradient_accumulation_steps,
 		optimizer_global_batch_size=optimizer_global_batch_size,
-		warm_start_epoch_fraction=0.35,
-		joint_activation_warmup_ratio=0.03,
+		auxiliary_emphasis_epoch_fraction=0.35,
 	)
 
 	assert plan.start_batch == 0
@@ -140,20 +139,24 @@ def test_warm_start_uses_fraction_of_rows_not_loop_count(
 	assert plan.optimizer_steps == loader_batches // gradient_accumulation_steps + (
 		loader_batches % gradient_accumulation_steps != 0
 	)
-	assert plan.warm_start_optimizer_steps == expected_warm_start_steps
-	assert plan.joint_optimizer_steps == plan.optimizer_steps - expected_warm_start_steps
-	assert plan.joint_activation_optimizer_steps >= 1
+	assert (
+		plan.auxiliary_emphasis_optimizer_steps
+		== expected_auxiliary_emphasis_steps
+	)
+	assert (
+		plan.standard_optimizer_steps
+		== plan.optimizer_steps - expected_auxiliary_emphasis_steps
+	)
 
 
-def test_one_epoch_training_plan_rejects_no_joint_training_window() -> None:
-	with pytest.raises(ValueError, match="joint optimizer step"):
+def test_one_epoch_training_plan_rejects_no_standard_training_window() -> None:
+	with pytest.raises(ValueError, match="standard optimizer step"):
 		resolve_one_epoch_training_plan(
 			train_rows=8,
 			loader_batches=1,
 			gradient_accumulation_steps=1,
 			optimizer_global_batch_size=8,
-			warm_start_epoch_fraction=0.35,
-			joint_activation_warmup_ratio=0.03,
+			auxiliary_emphasis_epoch_fraction=0.35,
 		)
 
 
