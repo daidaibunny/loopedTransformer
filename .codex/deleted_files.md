@@ -36,8 +36,8 @@ LoRA baseline continues to use its separate PEFT implementation under
 
 ### Approved remote checkpoint cleanup
 
-The following disposable checkpoints and their `latest_checkpoint.json` pointers will
-be deleted from the `8XV100` route immediately after this deletion record is pushed:
+The following disposable checkpoints and their `latest_checkpoint.json` pointers were
+deleted from the `8XV100` route after this deletion record was pushed:
 
 - `/home/mnt/liyiwei/outputs/final_recurrent_smoke_1c30e73_20260730/checkpoints/step000003.pt`
   - Size: 208,378,826 bytes
@@ -52,7 +52,8 @@ Reason: both files preserve optimizer state for completed disposable smoke runs.
 newer smoke's parameters, throughput, memory, checkpoint checksum, and evidence paths are
 already recorded in `result.md`. Neither file is eligible for a formal quality result or
 needed by a queued experiment. Their manifests, metrics, gradient audits, status files,
-and evaluation reports remain preserved.
+and evaluation reports remain preserved. Including both pointer files, the cleanup
+released 309,683,217 bytes.
 
 Recovery: rerun the preserved smoke command from its run manifest against the immutable
 Qwen3-VL-Embedding-2B base checkpoint. The three completed full LoRA experiments retain
