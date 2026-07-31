@@ -80,6 +80,10 @@
   optimizer checkpoint.
 - Reject recurrent checkpoints containing LoRA parameters or the superseded
   `single_stage_warm_start_v1` protocol.
+- Every recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata, and
+  `report.json` must declare architecture `recurrent_latent_slot_qwen3vl_no_lora_v1`,
+  protocol `pure_recurrent_single_stage_v1`, `backbone_frozen: true`, and
+  `lora_enabled: false`. Reject missing or conflicting identities.
 
 ## Verification
 

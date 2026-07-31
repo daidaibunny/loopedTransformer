@@ -10,6 +10,7 @@ from looped_vl.evaluate_recurrent import (
 	load_recurrent_inference_checkpoint,
 	parse_args,
 )
+from looped_vl.models.config import pure_recurrent_result_identity
 
 
 class _TinyInferenceModel(nn.Module):
@@ -31,6 +32,14 @@ def _checkpoint_state(model: nn.Module) -> dict[str, torch.Tensor]:
 	}
 
 
+def _checkpoint_metadata() -> dict[str, object]:
+	return {
+		**pure_recurrent_result_identity(),
+		"model_checkpoint_sha256": "base-hash",
+		"model_config": {"num_total_loop_passes": 4},
+	}
+
+
 def test_inference_checkpoint_loads_only_pure_recurrent_parameters(
 	tmp_path: Path,
 ) -> None:
@@ -41,10 +50,7 @@ def test_inference_checkpoint_loads_only_pure_recurrent_parameters(
 		{
 			"format_version": 1,
 			"trainable_parameter_state": state,
-			"metadata": {
-				"model_checkpoint_sha256": "base-hash",
-				"model_config": {"num_total_loop_passes": 4},
-			},
+			"metadata": _checkpoint_metadata(),
 		},
 		path,
 	)
@@ -77,10 +83,7 @@ def test_inference_checkpoint_rejects_lora_parameters(tmp_path: Path) -> None:
 		{
 			"format_version": 1,
 			"trainable_parameter_state": state,
-			"metadata": {
-				"model_checkpoint_sha256": "base-hash",
-				"model_config": {"num_total_loop_passes": 4},
-			},
+			"metadata": _checkpoint_metadata(),
 		},
 		path,
 	)
@@ -106,8 +109,8 @@ def test_inference_checkpoint_rejects_wrong_base_hash_and_missing_parameter(
 			"format_version": 1,
 			"trainable_parameter_state": state,
 			"metadata": {
+				**_checkpoint_metadata(),
 				"model_checkpoint_sha256": "wrong-hash",
-				"model_config": {"num_total_loop_passes": 4},
 			},
 		},
 		path,
@@ -125,6 +128,32 @@ def test_inference_checkpoint_rejects_wrong_base_hash_and_missing_parameter(
 	payload["metadata"]["model_checkpoint_sha256"] = "base-hash"
 	torch.save(payload, path)
 	with pytest.raises(ValueError, match="Missing inference parameters"):
+		load_recurrent_inference_checkpoint(
+			model,
+			path,
+			expected_base_hash="base-hash",
+			expected_model_config={"num_total_loop_passes": 4},
+		)
+
+
+def test_inference_checkpoint_rejects_missing_no_lora_result_identity(
+	tmp_path: Path,
+) -> None:
+	model = _TinyInferenceModel()
+	path = tmp_path / "checkpoint.pt"
+	torch.save(
+		{
+			"format_version": 1,
+			"trainable_parameter_state": _checkpoint_state(model),
+			"metadata": {
+				"model_checkpoint_sha256": "base-hash",
+				"model_config": {"num_total_loop_passes": 4},
+			},
+		},
+		path,
+	)
+
+	with pytest.raises(ValueError, match="pure recurrent result identity"):
 		load_recurrent_inference_checkpoint(
 			model,
 			path,

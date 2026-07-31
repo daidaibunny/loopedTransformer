@@ -23,7 +23,11 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from looped_vl.models.config import RecurrentModelConfig
+from looped_vl.models.config import (
+	PURE_RECURRENT_TRAINING_PROTOCOL,
+	RecurrentModelConfig,
+	pure_recurrent_result_identity,
+)
 from looped_vl.models.latent_slot_inserter import create_or_load_master_slot_initialization
 from looped_vl.models.loading import load_recurrent_components
 from looped_vl.recurrent_data import RecurrentAlignedDataset
@@ -434,7 +438,7 @@ def _train_one_epoch(
 			scheduler=scheduler,
 			rank=rank,
 			gradient_scaler=gradient_scaler,
-			expected_training_protocol="pure_recurrent_single_stage_v1",
+			expected_training_protocol=PURE_RECURRENT_TRAINING_PROTOCOL,
 		)
 		if cursor.stage != 0:
 			raise ValueError("Resume checkpoint is not from single-stage training")
@@ -956,7 +960,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		)
 	manifest = {
 		"scope": "recurrent_latent_slot_qwen3vl_v1",
-		"training_protocol": "pure_recurrent_single_stage_v1",
+		**pure_recurrent_result_identity(),
 		"formal_training_stages": 1,
 		"hostname": socket.gethostname(),
 		"git_commit": git_commit,
@@ -1029,7 +1033,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	all_manifests: list[dict[str, Any] | None] = [None for _ in range(world_size)]
 	dist.all_gather_object(all_manifests, manifest)
 	checkpoint_metadata = {
-		"training_protocol": manifest["training_protocol"],
+		**pure_recurrent_result_identity(),
 		"git_commit": manifest["git_commit"],
 		"model_checkpoint_sha256": checkpoint_hash_before,
 		"model_config": manifest["model_config"],
@@ -1085,8 +1089,15 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		raise RuntimeError("Original Qwen checkpoint changed during training")
 	result = None
 	if rank == 0:
+		trainable_parameter_count = sum(
+			parameter.numel()
+			for parameter in training_model.parameters()
+			if parameter.requires_grad
+		)
 		result = {
 			"status": "passed",
+			**pure_recurrent_result_identity(),
+			"trainable_parameter_count": trainable_parameter_count,
 			"final_cursor": asdict(final_cursor),
 			"runtime_seconds": time.perf_counter() - training_start,
 			"model_checkpoint_sha256_before": checkpoint_hash_before,

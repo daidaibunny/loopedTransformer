@@ -10,6 +10,18 @@ import yaml
 
 ALLOWED_SLOT_COUNTS = (0, 1, 2, 4, 8, 16)
 ALLOWED_LOOP_PASSES = (1, 2, 3, 4)
+PURE_RECURRENT_ARCHITECTURE = "recurrent_latent_slot_qwen3vl_no_lora_v1"
+PURE_RECURRENT_TRAINING_PROTOCOL = "pure_recurrent_single_stage_v1"
+
+
+def pure_recurrent_result_identity() -> dict[str, object]:
+	"""Return the immutable architecture fields required in every recurrent result."""
+	return {
+		"architecture": PURE_RECURRENT_ARCHITECTURE,
+		"training_protocol": PURE_RECURRENT_TRAINING_PROTOCOL,
+		"backbone_frozen": True,
+		"lora_enabled": False,
+	}
 
 
 @dataclass(frozen=True)

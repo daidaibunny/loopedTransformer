@@ -32,7 +32,10 @@ from looped_vl.evaluate_frozen import (
 	compute_ranking_metrics,
 	encoding_collate,
 )
-from looped_vl.models.config import RecurrentModelConfig
+from looped_vl.models.config import (
+	RecurrentModelConfig,
+	pure_recurrent_result_identity,
+)
 from looped_vl.models.loading import load_recurrent_components
 from looped_vl.recurrent_data import RecurrentAlignedDataset, load_aligned_records
 from looped_vl.runtime import (
@@ -81,6 +84,9 @@ def load_recurrent_inference_checkpoint(
 		raise ValueError("Recurrent checkpoint parameter state is missing")
 	if any("lora_" in str(name).lower() for name in state):
 		raise ValueError("Pure recurrent checkpoints must not contain LoRA parameters")
+	expected_identity = pure_recurrent_result_identity()
+	if any(metadata.get(key) != value for key, value in expected_identity.items()):
+		raise ValueError("Checkpoint does not declare the required pure recurrent result identity")
 	model_parameters = dict(model.named_parameters())
 	expected_names = {
 		name for name in model_parameters if _is_inference_parameter(name)
@@ -509,6 +515,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 				"ndcg_cutoff": 10,
 			},
 			"model": {
+				**pure_recurrent_result_identity(),
 				"model_root": str(args.model_root),
 				"checkpoint": str(args.checkpoint),
 				"base_checkpoint_sha256": base_hash,

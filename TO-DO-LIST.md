@@ -91,5 +91,7 @@
   the equal-direction mean; GQA Balanced and CLEVR use answer retrieval.
 - [x] Remove the incorrectly coupled Layers 13–20 LoRA modules from recurrent
   configuration, training, evaluation, checkpoints, and parameter accounting.
+- [x] Stamp every recurrent manifest, training result, checkpoint, and test report with
+  the pure-recurrent/no-LoRA identity and reject incompatible result inputs.
 - [ ] Re-run all recurrent safety and throughput smokes under the pure recurrent protocol;
   older recurrent smokes contained LoRA and cannot select the formal configuration.

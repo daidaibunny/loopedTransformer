@@ -43,6 +43,12 @@ recurrent smokes used 8,912,896 unintended LoRA parameters in Layers 13–20 and
 invalid for selecting the pure recurrent formal configuration. No full recurrent
 training or test result was produced under that superseded definition.
 
+Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
+and `report.json` must identify the architecture as
+`recurrent_latent_slot_qwen3vl_no_lora_v1`, the training protocol as
+`pure_recurrent_single_stage_v1`, `backbone_frozen` as true, and `lora_enabled` as
+false. A recurrent checkpoint missing this identity is not eligible for this comparison.
+
 ## EXP-000A/B/C — Frozen backbone
 
 - Status/date: all three passed, 2026-07-31. The serial full-test queue ran from

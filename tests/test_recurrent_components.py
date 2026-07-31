@@ -5,7 +5,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from looped_vl.models.config import RecurrentModelConfig
+from looped_vl.models.config import (
+	PURE_RECURRENT_ARCHITECTURE,
+	PURE_RECURRENT_TRAINING_PROTOCOL,
+	RecurrentModelConfig,
+	pure_recurrent_result_identity,
+)
 from looped_vl.models.late_slot_fusion import EOSConditionedSlotFusion
 from looped_vl.models.latent_slot_inserter import (
 	augment_before_last_valid_token,
@@ -142,6 +147,17 @@ def test_base_configuration_matches_v1_specification() -> None:
 	assert config.recurrent_bottleneck_dim == 512
 	assert config.fusion_attention_dim == 256
 	assert not any(name.startswith("lora_") for name in vars(config))
+
+
+def test_pure_recurrent_result_identity_explicitly_excludes_lora() -> None:
+	assert PURE_RECURRENT_ARCHITECTURE == "recurrent_latent_slot_qwen3vl_no_lora_v1"
+	assert PURE_RECURRENT_TRAINING_PROTOCOL == "pure_recurrent_single_stage_v1"
+	assert pure_recurrent_result_identity() == {
+		"architecture": PURE_RECURRENT_ARCHITECTURE,
+		"training_protocol": PURE_RECURRENT_TRAINING_PROTOCOL,
+		"backbone_frozen": True,
+		"lora_enabled": False,
+	}
 
 
 def test_recurrent_loader_and_model_expose_no_lora_switch() -> None:
