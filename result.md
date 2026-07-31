@@ -55,6 +55,12 @@ per-round auxiliary InfoNCE losses has weight 0.1, and final-slot diversity has 
 first step. Inference retains 2,115,585 learned parameters; the 526,336-parameter
 auxiliary head is training-only.
 
+For every formal recurrent test, record all required metrics for Pass 1 through Pass 4.
+The concise comparison row must label these as 0, 1, 2, and 3 completed recurrent
+updates and report mAP change from the previous pass and from Pass 1. COCO uses its
+equal-direction mean in this concise row while retaining both direction-specific metric
+tables.
+
 ## EXP-000A/B/C — Frozen backbone
 
 - Status/date: all three passed, 2026-07-31. The serial full-test queue ran from

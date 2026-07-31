@@ -117,6 +117,10 @@
 - Compare model-quality metrics only within the same dataset and exact test manifest and
   candidate gallery. Do not treat values from different retrieval tasks as directly
   comparable.
+- Every recurrent report must retain the complete required metric set for Pass 1 through
+  Pass 4. It must also map Pass 1/2/3/4 to 0/1/2/3 completed recurrent updates and
+  summarize the primary mAP change from the previous pass and from Pass 1. For COCO, this
+  summary uses the equal-direction mean; direction-specific pass metrics remain required.
 - Report the weighted Mix result only for later mixed-dataset experiments.
 - Required metrics are mAP, P@1/5/10/20, R@1/5/10/20, MRR, and nDCG@10.
 - Use percentage values from 0 to 100. Aggregate COCO directions equally, then aggregate

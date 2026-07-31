@@ -104,6 +104,37 @@ def _primary_final_pass_metrics(
 	return dict(final["metrics"])
 
 
+def build_recurrent_improvement_summary(
+	*,
+	source: str,
+	loop_metrics: dict[str, Any],
+) -> dict[str, Any]:
+	"""Map every pass to its completed recurrent-update count and primary mAP gain."""
+	rows = []
+	for pass_key in sorted(loop_metrics, key=int):
+		pass_number = int(pass_key)
+		pass_metrics = loop_metrics[pass_key]
+		primary = pass_metrics["aggregate"] if source == "coco" else pass_metrics
+		rows.append(
+			{
+				"pass_number": pass_number,
+				"recurrent_updates": pass_number - 1,
+				"map": primary["metrics"]["map"],
+				"delta_from_previous_percentage_points": primary[
+					"delta_from_previous_percentage_points"
+				]["map"],
+				"delta_from_pass_1_percentage_points": primary[
+					"delta_from_r1_percentage_points"
+				]["map"],
+			},
+		)
+	return {
+		"primary_metric": "map",
+		"reference_pass": 1,
+		"rows": rows,
+	}
+
+
 def _is_inference_parameter(name: str) -> bool:
 	return name in INFERENCE_PARAMETER_PREFIXES[:2] or name.startswith(
 		INFERENCE_PARAMETER_PREFIXES[2:],
@@ -612,6 +643,10 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 			"metric_scale": METRIC_SCALE,
 			"metrics": primary_metrics,
 			"loop_passes": loop_metrics,
+			"recurrent_improvement_summary": build_recurrent_improvement_summary(
+				source=args.source,
+				loop_metrics=loop_metrics,
+			),
 			"protocol": {
 				"dataset_root": str(dataset_root),
 				"split": args.split,

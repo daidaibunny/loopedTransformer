@@ -14,6 +14,7 @@ from looped_vl.evaluate_recurrent import (
 	_primary_final_pass_metrics,
 	_summarize_evaluation_runtime,
 	build_loop_metric_series,
+	build_recurrent_improvement_summary,
 	load_recurrent_inference_checkpoint,
 	parse_args,
 )
@@ -212,6 +213,68 @@ def test_loop_metric_series_reports_previous_and_r1_percentage_point_deltas() ->
 		"map": pytest.approx(4.0),
 		"p_at_1": pytest.approx(1.0),
 	}
+
+
+@pytest.mark.parametrize(
+	("source", "loop_metrics", "expected_map", "expected_delta"),
+	[
+		(
+			"gqa_balanced",
+			{
+				"1": {
+					"metrics": {"map": 20.0},
+					"delta_from_previous_percentage_points": {"map": 0.0},
+					"delta_from_r1_percentage_points": {"map": 0.0},
+				},
+				"2": {
+					"metrics": {"map": 21.5},
+					"delta_from_previous_percentage_points": {"map": 1.5},
+					"delta_from_r1_percentage_points": {"map": 1.5},
+				},
+			},
+			[20.0, 21.5],
+			1.5,
+		),
+		(
+			"coco",
+			{
+				"1": {
+					"aggregate": {
+						"metrics": {"map": 40.0},
+						"delta_from_previous_percentage_points": {"map": 0.0},
+						"delta_from_r1_percentage_points": {"map": 0.0},
+					},
+				},
+				"2": {
+					"aggregate": {
+						"metrics": {"map": 43.0},
+						"delta_from_previous_percentage_points": {"map": 3.0},
+						"delta_from_r1_percentage_points": {"map": 3.0},
+					},
+				},
+			},
+			[40.0, 43.0],
+			3.0,
+		),
+	],
+)
+def test_recurrent_improvement_summary_maps_passes_to_recurrent_updates(
+	source: str,
+	loop_metrics: dict[str, object],
+	expected_map: list[float],
+	expected_delta: float,
+) -> None:
+	summary = build_recurrent_improvement_summary(
+		source=source,
+		loop_metrics=loop_metrics,
+	)
+
+	assert summary["primary_metric"] == "map"
+	assert summary["reference_pass"] == 1
+	assert [row["recurrent_updates"] for row in summary["rows"]] == [0, 1]
+	assert [row["map"] for row in summary["rows"]] == expected_map
+	assert summary["rows"][1]["delta_from_previous_percentage_points"] == expected_delta
+	assert summary["rows"][1]["delta_from_pass_1_percentage_points"] == expected_delta
 
 
 def test_recurrent_evaluation_uses_cpu_collectives(
