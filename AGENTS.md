@@ -8,6 +8,10 @@
   separate from the trainable-parameter allowlist for each stage.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
   only under experiment-specific output directories.
+- Always call the single-query attention from the final valid token over latent slots
+  `EOS-conditioned slot attention pooling` (`EOS 条件化槽位注意力池化`). Do not shorten
+  it to ordinary pooling. Call the subsequent gated residual addition
+  `zero-gated residual fusion`.
 
 ## Remote execution
 
