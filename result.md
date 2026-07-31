@@ -31,16 +31,12 @@ the current experiments.
 | Experiment | COCO | GQA Balanced | CLEVR | Comparable final metrics |
 | --- | --- | --- | --- | --- |
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
-| Backbone + LoRA | Passed | Passed | Interrupted | COCO and GQA |
+| Backbone + LoRA | Passed | Passed | Passed | All three datasets |
 | Frozen backbone + recurrent latent slots (no LoRA) | Pending | Pending | Pending | No |
 
-The first CLEVR LoRA attempt was interrupted by the 2026-07-31 experiment reorder.
-Its latest resumable state is step 100 (25,600 processed train rows); it has no final
-adapter or test metrics and is not a completed result.
-
 The recurrent definition was corrected on 2026-07-31 to contain no LoRA. Earlier
-recurrent smokes used 8,912,896 unintended LoRA parameters in Layers 13–20 and are
-invalid for selecting the pure recurrent formal configuration. No full recurrent
+recurrent trial runs used 8,912,896 unintended LoRA parameters in Layers 13–20 and
+are invalid for selecting the pure recurrent formal configuration. No full recurrent
 training or test result was produced under that superseded definition.
 
 Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
@@ -191,6 +187,58 @@ Coverage was 100%. Similarity was the dot product of L2-normalized embeddings.
 The answer gallery contained 1,833 normalized answers observed in training. Coverage
 was 99.9841%; answer accuracy equals P@1.
 
+## EXP-003 — CLEVR backbone + LoRA
+
+- Status/date: passed, 2026-07-31. Training resumed from step 100 at
+  2026-07-31T04:30:19Z, finished at 2026-07-31T06:42:28Z, and full-test evaluation
+  finished at 2026-07-31T06:50:34Z.
+- Objective: establish the unmodified-architecture LoRA answer-retrieval baseline on
+  full CLEVR.
+- Route/node: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB.
+- Code: commit `9930a8dcad3f764a80d31870773846266c15d2b2`.
+- Data: 699,989 train rows; 75,000 held-out test rows; no validation use. Train
+  manifest SHA-256
+  `f9d000f6a5258da38fa31f9f75b1ac6a65756039d4db15c5c3e8109aa770bf71`;
+  test manifest SHA-256
+  `d6d46dde537152465bb479684efd083ca6c6975d8a4d2fa3e3a1f1776395d094`.
+- Backbone SHA-256:
+  `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1` before and
+  after.
+- Trainable parameters: 31,195,136 LoRA parameters; rank 32, alpha 32, dropout 0;
+  all 28 decoder layers; `q_proj`, `k_proj`, `v_proj`, `up_proj`, `down_proj`,
+  and `gate_proj`.
+- Optimization: seed 42, 1 epoch, 2,735 optimizer steps, learning rate 5e-5,
+  weight decay 0.01, temperature 0.02, warmup ratio 0.02.
+- Runtime: FP16, scaled dot-product attention, gradient checkpointing enabled,
+  per-device batch 32, contrastive and optimizer global batch 256, 4 data workers.
+- Resume/checkpoints: resumed from step 100 (25,600 processed rows), checkpointed
+  every 100 steps, and retained at most 1 checkpoint during the resumed segment.
+  The final adapter SHA-256 is
+  `501464adf13ea00dcb937ec046ae9ed4d640e035117fa41c08fb804db7269786`.
+- Performance: the resumed segment took 7,929.74 seconds; the final full batch at
+  step 2,734 reached 91.27 samples/second; peak allocated memory was 6.54 GiB on
+  rank 0. Full-test evaluation took 432.40 seconds (173.45 rows/second).
+- Output:
+  `/home/mnt/liyiwei/outputs/six_full_train_test_9930a8d_20260730/baseline/clevr`.
+- Evidence: resume log
+  `/home/mnt/liyiwei/outputs/baseline_clevr_resume_9930a8d_20260731.log`; exact
+  commands are in `train/run_manifest.json` and
+  `train/resume_manifest_step000100.json`.
+
+The distributed sampler padded three rows so that all eight ranks received equal
+work. Therefore `training_result.json` records 699,992 processed rows while the
+dataset still contains exactly 699,989 unique train rows.
+
+### Test metrics (%)
+
+| mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 99.2076 | 98.4640 | 19.9997 | 10.0000 | 5.0000 | 98.4640 | 99.9987 | 100.0000 | 100.0000 | 99.2076 | 99.4138 |
+
+The answer gallery contained 28 normalized answers observed in training. Coverage
+was 100%; answer accuracy equals P@1.
+
 ## COCO bidirectional diagnostic metrics
 
 COCO is the only current dataset with two protocol-defined retrieval directions.
@@ -294,9 +342,10 @@ does not exist.
 <td>74.9712</td><td>62.9035</td><td>17.9043</td><td>9.3473</td><td>4.8056</td>
 <td>62.9035</td><td>89.5214</td><td>93.4727</td><td>96.1123</td><td>74.9712</td>
 <td>79.3467</td>
-<td>Interrupted</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Passed</td>
+<td>99.2076</td><td>98.4640</td><td>19.9997</td><td>10.0000</td><td>5.0000</td>
+<td>98.4640</td><td>99.9987</td><td>100.0000</td><td>100.0000</td><td>99.2076</td>
+<td>99.4138</td>
 </tr>
 <tr>
 <td>Frozen backbone + recurrent latent slots (no LoRA)</td>
