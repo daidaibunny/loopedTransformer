@@ -9,7 +9,6 @@ loop_start_layer: 12
 loop_end_layer: 20
 num_total_loop_passes: 4
 num_extra_loop_passes: 3
-slot_attention_mode: bidirectional
 update_prefix_in_extra_loops: false
 detach_prefix_kv_cache: true
 

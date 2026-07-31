@@ -246,7 +246,6 @@ def test_checkpoint_restores_gradient_scaler_state(tmp_path: Path) -> None:
 		"single_stage_warm_start_v1",
 		"pure_recurrent_single_stage_v1",
 		"pure_recurrent_full_objective_v2",
-		"pure_recurrent_single_stage_eos_weighted_aux_v4",
 	],
 )
 def test_checkpoint_rejects_non_pure_recurrent_protocol_before_loading(
@@ -286,9 +285,7 @@ def test_checkpoint_rejects_non_pure_recurrent_protocol_before_loading(
 			optimizer=optimizer,
 			scheduler=scheduler,
 			rank=0,
-			expected_training_protocol=(
-				"pure_recurrent_single_stage_bidirectional_slots_eos_weighted_aux_v5"
-			),
+			expected_training_protocol="pure_recurrent_single_stage_eos_weighted_aux_v4",
 		)
 
 

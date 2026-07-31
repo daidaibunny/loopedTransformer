@@ -36,25 +36,21 @@ the current experiments.
 
 The recurrent definition was locked again on 2026-07-31. It contains no LoRA, no
 recurrent connector, 8 active latent slots, 4 total passes, slots-only extra passes,
-parameter-free damping with step size 1/4, and bidirectional attention among latent
-slots. Only slot-query to slot-key visibility is made bidirectional. Prefix/input
-causality, slots' access to earlier valid input tokens, the slot-to-EOS block, EOS access
-to earlier inputs and slots, and padding masking remain unchanged. Its training-only
-auxiliary head uses the fixed layer-20 EOS from Pass 1 to softly weight the current pass
-slots; mean pooling is only an invalidated ablation. Earlier recurrent trials used
-unintended LoRA, the removed learned connector, mean auxiliary pooling, or causal
-slot-to-slot attention and are invalid for selecting the current formal configuration.
-No full recurrent training or test result exists under the current definition.
+and parameter-free damping with step size 1/4. Its training-only auxiliary head uses
+the fixed layer-20 EOS from Pass 1 to softly weight the current pass slots; mean pooling
+is only an invalidated ablation. Earlier recurrent trials used unintended LoRA, the
+removed learned connector, or mean auxiliary pooling and are invalid for selecting the
+current formal configuration. No full recurrent training or test result exists under
+the current definition.
 
 Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
 and `report.json` must identify the architecture as
-`damped_mid_decoder_bidirectional_slot_recurrence_no_lora_v4`, the training protocol as
-`pure_recurrent_single_stage_bidirectional_slots_eos_weighted_aux_v5`,
-`backbone_frozen` as true, `lora_enabled` as false, and `formal_training_stages` as 1.
-It must also record `slot_attention_mode` as `bidirectional`. A recurrent checkpoint
+`damped_mid_decoder_latent_slot_recurrence_no_lora_v3`, the training protocol as
+`pure_recurrent_single_stage_eos_weighted_aux_v4`, `backbone_frozen` as true,
+`lora_enabled` as false, and `formal_training_stages` as 1. A recurrent checkpoint
 missing this identity, or containing LoRA or connector parameters, is not eligible.
 
-The current recurrent optimizer has one stage and visits the full train split exactly once.
+The v4 recurrent optimizer has one stage and visits the full train split exactly once.
 At every optimizer step, final InfoNCE has weight 1.0, the mean of the four shared-head
 per-round auxiliary InfoNCE losses has weight 0.1, and final-slot diversity has weight
 0.05. All 2,641,921 trainable parameters follow the same learning-rate schedule from the
@@ -70,8 +66,7 @@ tables.
 ## Current recurrent parameter accounting
 
 The original Qwen3-VL-Embedding-2B backbone remains frozen and unchanged. The current
-recurrent model adds the following parameters. Bidirectional slot attention changes
-only the attention mask and adds zero parameters:
+recurrent model adds the following parameters:
 
 | Component | Formula | Parameters | Retained for inference |
 | --- | ---: | ---: | --- |
@@ -370,15 +365,14 @@ per-device batch 8.
   environment and a commit-pinned worktree. Neither failed attempt produced a
   checkpoint or quality result.
 
-## EXP-SMOKE-005 — Superseded causal-slot damped recurrence smoke
+## EXP-SMOKE-005 — Current damped recurrence with EOS-weighted auxiliary slots
 
-- Status/date: historical smoke passed, 2026-07-31; superseded by bidirectional slot
-  attention. Exact start/end timestamps were not separately recorded (`N/A`).
-- Objective: validate the then-current no-LoRA, no-connector architecture, select safe
+- Status/date: passed, 2026-07-31; exact start/end timestamps were not separately
+  recorded (`N/A`).
+- Objective: validate the current no-LoRA, no-connector architecture, select safe
   eight-V100 train/evaluation batch sizes, verify one-checkpoint retention, and exercise
-  the Pass 1–4 metric and recurrent-improvement report. This is a historical runtime
-  smoke and partial-prefix test, not a formal model-quality result. Its batch selection
-  must be revalidated for the current bidirectional-slot architecture.
+  the Pass 1–4 metric and recurrent-improvement report. This is a runtime smoke and
+  partial-prefix test, not a formal model-quality result.
 - Route/node/code: `8XV100`,
   `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB,
   `main` commit `6b82132f83304ebfeeba24715f77bef3a77ab99b`.
@@ -388,8 +382,6 @@ per-device batch 8.
   256-dimensional EOS-conditioned weighted-slot auxiliary head. Training has
   2,641,921 parameters; inference retains 2,115,585. Backbone SHA-256 remained
   `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1`.
-  Slots used causal slot-to-slot attention, so this checkpoint is incompatible with
-  architecture v4 and training protocol v5.
 - Data: GQA Balanced train has 943,000 rows and 72,140 images; the smoke consumed
   1,536 rows. The authoritative train manifest SHA-256 is
   `2022a835621ea4c072e1e09c5412b78d3322fdd1ac658485ac947859fb20abdb`.
