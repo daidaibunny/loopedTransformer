@@ -45,15 +45,16 @@ def test_locked_configuration_uses_eight_slots_and_parameter_free_damping() -> N
 	assert config.num_latent_slots == 8
 	assert config.num_total_loop_passes == 4
 	assert config.recurrent_step_size == pytest.approx(0.25)
+	assert config.slot_attention_mode == "bidirectional"
 	assert not any("connector" in name or name.startswith("lora_") for name in vars(config))
 
 
 def test_result_identity_is_single_stage_and_explicitly_excludes_lora() -> None:
 	assert DAMPED_RECURRENT_ARCHITECTURE == (
-		"damped_mid_decoder_latent_slot_recurrence_no_lora_v3"
+		"damped_mid_decoder_bidirectional_slot_recurrence_no_lora_v4"
 	)
 	assert DAMPED_RECURRENT_TRAINING_PROTOCOL == (
-		"pure_recurrent_single_stage_eos_weighted_aux_v4"
+		"pure_recurrent_single_stage_bidirectional_slots_eos_weighted_aux_v5"
 	)
 	assert pure_recurrent_result_identity() == {
 		"architecture": DAMPED_RECURRENT_ARCHITECTURE,
@@ -61,6 +62,7 @@ def test_result_identity_is_single_stage_and_explicitly_excludes_lora() -> None:
 		"backbone_frozen": True,
 		"lora_enabled": False,
 		"formal_training_stages": 1,
+		"slot_attention_mode": "bidirectional",
 	}
 
 

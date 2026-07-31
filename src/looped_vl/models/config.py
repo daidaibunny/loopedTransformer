@@ -11,8 +11,13 @@ import yaml
 ALLOWED_SLOT_COUNTS = (0, 1, 2, 4, 8, 16, 32, 64)
 ALLOWED_MASTER_SLOT_COUNTS = (16, 64)
 ALLOWED_LOOP_PASSES = (1, 2, 3, 4)
-DAMPED_RECURRENT_ARCHITECTURE = "damped_mid_decoder_latent_slot_recurrence_no_lora_v3"
-DAMPED_RECURRENT_TRAINING_PROTOCOL = "pure_recurrent_single_stage_eos_weighted_aux_v4"
+SLOT_ATTENTION_MODE = "bidirectional"
+DAMPED_RECURRENT_ARCHITECTURE = (
+	"damped_mid_decoder_bidirectional_slot_recurrence_no_lora_v4"
+)
+DAMPED_RECURRENT_TRAINING_PROTOCOL = (
+	"pure_recurrent_single_stage_bidirectional_slots_eos_weighted_aux_v5"
+)
 PURE_RECURRENT_ARCHITECTURE = DAMPED_RECURRENT_ARCHITECTURE
 PURE_RECURRENT_TRAINING_PROTOCOL = DAMPED_RECURRENT_TRAINING_PROTOCOL
 
@@ -25,12 +30,13 @@ def pure_recurrent_result_identity() -> dict[str, object]:
 		"backbone_frozen": True,
 		"lora_enabled": False,
 		"formal_training_stages": 1,
+		"slot_attention_mode": SLOT_ATTENTION_MODE,
 	}
 
 
 @dataclass(frozen=True)
 class RecurrentModelConfig:
-	"""Every structural constant fixed by the damped no-LoRA v3 specification."""
+	"""Every structural constant fixed by the damped no-LoRA v4 specification."""
 
 	model_name: str = "Qwen/Qwen3-VL-Embedding-2B"
 	seed: int = 42
@@ -42,6 +48,7 @@ class RecurrentModelConfig:
 	loop_start_layer: int = 12
 	loop_end_layer: int = 20
 	num_total_loop_passes: int = 4
+	slot_attention_mode: str = SLOT_ATTENTION_MODE
 	update_prefix_in_extra_loops: bool = False
 	detach_prefix_kv_cache: bool = True
 	fusion_type: str = "eos_conditioned_slot_attention"
@@ -87,6 +94,8 @@ class RecurrentModelConfig:
 			raise ValueError(
 				f"num_total_loop_passes must be one of {ALLOWED_LOOP_PASSES}",
 			)
+		if self.slot_attention_mode != SLOT_ATTENTION_MODE:
+			raise ValueError("slot_attention_mode must remain bidirectional")
 		if self.num_latent_slots == 0 and self.num_total_loop_passes != 1:
 			raise ValueError("The zero-slot base variant requires exactly one pass")
 		if (self.loop_start_layer, self.loop_end_layer) != (12, 20):
@@ -162,6 +171,7 @@ class RecurrentModelConfig:
 			loop_start_layer=int(value["loop_start_layer"]),
 			loop_end_layer=int(value["loop_end_layer"]),
 			num_total_loop_passes=int(value["num_total_loop_passes"]),
+			slot_attention_mode=str(value["slot_attention_mode"]),
 			update_prefix_in_extra_loops=bool(value["update_prefix_in_extra_loops"]),
 			detach_prefix_kv_cache=bool(value["detach_prefix_kv_cache"]),
 			fusion_type=str(fusion["type"]),

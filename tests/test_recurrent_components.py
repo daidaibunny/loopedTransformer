@@ -19,6 +19,7 @@ from looped_vl.models.latent_slot_inserter import (
 from looped_vl.models.loading import load_recurrent_components
 from looped_vl.models.recurrent_decoder_block import (
 	build_dynamic_attention_mask,
+	build_full_sequence_bidirectional_slot_mask,
 	detach_prefix_key_values,
 )
 from looped_vl.models.recurrent_qwen3vl_embedding import (
@@ -147,10 +148,10 @@ def test_base_configuration_matches_v1_specification() -> None:
 
 def test_pure_recurrent_result_identity_explicitly_excludes_lora() -> None:
 	assert PURE_RECURRENT_ARCHITECTURE == (
-		"damped_mid_decoder_latent_slot_recurrence_no_lora_v3"
+		"damped_mid_decoder_bidirectional_slot_recurrence_no_lora_v4"
 	)
 	assert PURE_RECURRENT_TRAINING_PROTOCOL == (
-		"pure_recurrent_single_stage_eos_weighted_aux_v4"
+		"pure_recurrent_single_stage_bidirectional_slots_eos_weighted_aux_v5"
 	)
 	assert pure_recurrent_result_identity() == {
 		"architecture": PURE_RECURRENT_ARCHITECTURE,
@@ -158,6 +159,7 @@ def test_pure_recurrent_result_identity_explicitly_excludes_lora() -> None:
 		"backbone_frozen": True,
 		"lora_enabled": False,
 		"formal_training_stages": 1,
+		"slot_attention_mode": "bidirectional",
 	}
 
 
@@ -186,6 +188,8 @@ def test_configuration_accepts_only_required_slot_and_loop_sweeps() -> None:
 		).validate()
 	with pytest.raises(ValueError, match="num_total_loop_passes"):
 		config.with_variant(num_total_loop_passes=5)
+	with pytest.raises(ValueError, match="slot_attention_mode"):
+		RecurrentModelConfig(slot_attention_mode="causal").validate()
 
 
 def test_slot_count_smoke_config_supports_64_active_slots() -> None:
@@ -342,7 +346,7 @@ def test_late_fusion_starts_as_identity_and_k1_attention_is_one() -> None:
 	assert result.gate.item() == pytest.approx(0.0)
 
 
-def test_dynamic_attention_mask_preserves_prefix_padding_and_slot_causality() -> None:
+def test_dynamic_attention_mask_uses_bidirectional_slots_and_prefix_padding() -> None:
 	prefix_attention_mask = torch.tensor(
 		[
 			[1, 1, 0],
@@ -360,10 +364,38 @@ def test_dynamic_attention_mask_preserves_prefix_padding_and_slot_causality() ->
 
 	assert visible.shape == (2, 1, 3, 6)
 	assert visible[0, 0].tolist() == [
-		[True, True, False, True, False, False],
-		[True, True, False, True, True, False],
+		[True, True, False, True, True, True],
+		[True, True, False, True, True, True],
 		[True, True, False, True, True, True],
 	]
+
+
+def test_full_sequence_mask_changes_only_slot_to_slot_attention() -> None:
+	attention_mask = torch.tensor(
+		[
+			[1, 1, 1, 1, 1, 0],
+			[1, 1, 1, 1, 1, 1],
+		],
+		dtype=torch.long,
+	)
+	slot_positions = torch.tensor([[2, 3], [3, 4]])
+
+	mask = build_full_sequence_bidirectional_slot_mask(
+		attention_mask=attention_mask,
+		slot_positions=slot_positions,
+		dtype=torch.float32,
+	)
+	visible = mask[:, 0] == 0
+
+	assert visible.shape == (2, 6, 6)
+	assert visible[0, 1, 2].item() is False
+	assert visible[0, 2, 3].item() is True
+	assert visible[0, 3, 2].item() is True
+	assert visible[0, 2, 4].item() is False
+	assert visible[0, 4, 2].item() is True
+	assert visible[0, :, 5].any().item() is False
+	assert visible[1, 3, 4].item() is True
+	assert visible[1, 4, 3].item() is True
 
 
 def test_prefix_key_value_cache_is_detached() -> None:
@@ -472,10 +504,6 @@ def test_each_reported_pass_runs_its_loop_count_then_the_shared_suffix(
 		dynamic_loop_calls.append(hidden_states.detach().clone())
 		return hidden_states + torch.tensor([1.0, 0.0])
 
-	monkeypatch.setattr(
-		"looped_vl.models.recurrent_qwen3vl_embedding.create_causal_mask",
-		lambda **_kwargs: torch.zeros(1, 1, 4, 4),
-	)
 	monkeypatch.setattr(
 		model,
 		"_run_full_layer_and_capture_prefix",

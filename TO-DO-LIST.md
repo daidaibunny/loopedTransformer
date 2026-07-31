@@ -108,8 +108,12 @@
   auxiliary retrieval head applied after every complete recurrent pass.
 - [x] Lock one-stage training to fixed loss weights: final InfoNCE 1.0, mean per-round
   auxiliary InfoNCE 0.1, and absolute-cosine final-slot diversity 0.05.
-- [x] Reject old recurrent checkpoints through the v3 architecture and v4 training
+- [x] Reject old recurrent checkpoints through the v4 architecture and v5 training
   protocol identity.
+- [x] Make slot-to-slot attention bidirectional in the full sequence and every extra
+  recurrent pass without changing any prefix/input, EOS, or padding visibility edge.
+- [ ] Revalidate architecture v4 and training protocol v5 with a short GPU safety and
+  throughput smoke before formal recurrent training.
 - [x] Run a new eight-V100 architecture, gradient, memory, and throughput smoke for the
   damped connector-free model before launching any formal recurrent experiment.
 - [ ] Compare K=8/16/32/64 on identical GQA Balanced smoke training rows and the same

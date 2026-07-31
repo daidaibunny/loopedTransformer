@@ -8,8 +8,8 @@
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
 - The locked recurrent architecture is
-  `damped_mid_decoder_latent_slot_recurrence_no_lora_v3`. The attachment's LoRA and
-  two-stage sections are explicitly excluded by the user.
+  `damped_mid_decoder_bidirectional_slot_recurrence_no_lora_v4`. The attachment's
+  LoRA and two-stage sections are explicitly excluded by the user.
 - Use one training stage and one full-data epoch. All trainable recurrent parameters are
   active from the first optimizer step.
 - Default to 8 active slots from the shared seed-42 16-slot initialization bank and 4
@@ -20,6 +20,11 @@
   existing 16-slot bank.
 - The recurrent update is parameter-free damping with step size `1 / R`. The model must
   contain no recurrent connector.
+- Latent slots use bidirectional attention with one another in the first full pass and
+  every extra recurrent pass. Only the slot-query by slot-key submatrix is opened:
+  prefix/input tokens remain causal and cannot read slots or EOS, slots retain causal
+  access to all earlier valid input tokens but cannot read EOS, EOS can read all earlier
+  input tokens and slots, and padding keys remain masked.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
   only under experiment-specific output directories.
 - Always call the single-query attention from the final valid token over latent slots
@@ -98,10 +103,10 @@
   parameters, or any superseded training protocol.
 - Every recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata, and
   `report.json` must declare architecture
-  `damped_mid_decoder_latent_slot_recurrence_no_lora_v3`, protocol
-  `pure_recurrent_single_stage_eos_weighted_aux_v4`, `backbone_frozen: true`,
-  `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
-  conflicting identities.
+  `damped_mid_decoder_bidirectional_slot_recurrence_no_lora_v4`, protocol
+  `pure_recurrent_single_stage_bidirectional_slots_eos_weighted_aux_v5`,
+  `backbone_frozen: true`, `lora_enabled: false`, `formal_training_stages: 1`, and
+  `slot_attention_mode: bidirectional`. Reject missing or conflicting identities.
 - Recurrent training runs for exactly one epoch with final InfoNCE weight 1.0 at every
   optimizer step. The mean of the four per-round auxiliary InfoNCE losses has weight 0.1,
   and final-slot diversity has weight 0.05, at every optimizer step. All trainable groups

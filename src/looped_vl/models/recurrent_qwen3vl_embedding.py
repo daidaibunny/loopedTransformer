@@ -9,7 +9,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
-from transformers.masking_utils import create_causal_mask
 from transformers.models.qwen3_vl.modeling_qwen3_vl import (
 	apply_rotary_pos_emb,
 	repeat_kv,
@@ -23,6 +22,7 @@ from looped_vl.models.latent_slot_inserter import (
 )
 from looped_vl.models.recurrent_decoder_block import (
 	build_dynamic_attention_mask,
+	build_full_sequence_bidirectional_slot_mask,
 	detach_prefix_key_values,
 )
 from looped_vl.models.warmup_heads import AuxiliarySlotRetrievalHead
@@ -417,13 +417,10 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		sequence_length = hidden_states.shape[1]
 		cache_position = torch.arange(sequence_length, device=hidden_states.device)
 		text_position_ids = position_ids[0]
-		causal_mask = create_causal_mask(
-			config=language_model.config,
-			input_embeds=hidden_states,
+		causal_mask = build_full_sequence_bidirectional_slot_mask(
 			attention_mask=augmented.attention_mask,
-			cache_position=cache_position,
-			past_key_values=None,
-			position_ids=text_position_ids,
+			slot_positions=augmented.slot_positions,
+			dtype=hidden_states.dtype,
 		)
 		position_embeddings = language_model.rotary_emb(hidden_states, position_ids)
 		deepstack_layers_executed: list[int] = []
