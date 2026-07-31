@@ -112,3 +112,5 @@
   protocol identity.
 - [x] Run a new eight-V100 architecture, gradient, memory, and throughput smoke for the
   damped connector-free model before launching any formal recurrent experiment.
+- [ ] Compare K=8/16/32/64 on identical GQA Balanced smoke training rows and the same
+  held-out test prefix using one shared seed-42 64-slot master bank.

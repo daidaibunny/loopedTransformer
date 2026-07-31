@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from looped_vl.models.config import (
+	ALLOWED_SLOT_COUNTS,
 	PURE_RECURRENT_TRAINING_PROTOCOL,
 	RecurrentModelConfig,
 	pure_recurrent_result_identity,
@@ -846,6 +847,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	project_root = Path(args.project_root)
 	git_commit = _resolve_git_commit(project_root, args.code_commit)
 	model_config = RecurrentModelConfig.from_yaml(args.model_config)
+	if args.num_latent_slots is not None:
+		model_config = model_config.with_variant(
+			num_latent_slots=args.num_latent_slots,
+		)
 	training_config = TrainingConfig.from_yaml(args.training_config)
 	model_checkpoint_path = Path(args.model_root) / "model.safetensors"
 	checkpoint_hash_before = checkpoint_sha256(model_checkpoint_path) if rank == 0 else None
@@ -1061,6 +1066,11 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument("--code-commit")
 	parser.add_argument("--model-config", type=Path, default=Path("configs/base.yaml"))
+	parser.add_argument(
+		"--num-latent-slots",
+		type=int,
+		choices=ALLOWED_SLOT_COUNTS,
+	)
 	parser.add_argument("--training-config", type=Path, default=Path("configs/train.yaml"))
 	parser.add_argument(
 		"--model-root",

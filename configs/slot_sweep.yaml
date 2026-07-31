@@ -1,6 +1,6 @@
 shared_master_initialization: artifacts/master_slot_init_seed42.pt
 seed: 42
-slot_counts: [1, 2, 4, 8, 16]
+slot_counts: [1, 2, 4, 8, 16, 32, 64]
 loop_pass_counts: [1, 2, 3, 4]
 baselines:
   base:

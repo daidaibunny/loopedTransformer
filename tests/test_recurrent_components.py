@@ -169,15 +169,30 @@ def test_recurrent_loader_and_model_expose_no_lora_switch() -> None:
 def test_configuration_accepts_only_required_slot_and_loop_sweeps() -> None:
 	config = RecurrentModelConfig()
 
-	for slot_count in (1, 2, 4, 8, 16):
-		config.with_variant(num_latent_slots=slot_count)
+	for slot_count in (1, 2, 4, 8, 16, 32, 64):
+		RecurrentModelConfig(
+			max_num_latent_slots=64,
+			num_latent_slots=slot_count,
+		).validate()
 	for loop_count in (1, 2, 3, 4):
 		config.with_variant(num_total_loop_passes=loop_count)
 
 	with pytest.raises(ValueError, match="num_latent_slots"):
 		config.with_variant(num_latent_slots=3)
+	with pytest.raises(ValueError, match="cannot exceed"):
+		RecurrentModelConfig(
+			max_num_latent_slots=16,
+			num_latent_slots=32,
+		).validate()
 	with pytest.raises(ValueError, match="num_total_loop_passes"):
 		config.with_variant(num_total_loop_passes=5)
+
+
+def test_slot_count_smoke_config_supports_64_active_slots() -> None:
+	config = RecurrentModelConfig.from_yaml(Path("configs/slot_count_smoke.yaml"))
+
+	assert config.max_num_latent_slots == 64
+	assert config.with_variant(num_latent_slots=64).num_latent_slots == 64
 
 
 def test_slots_are_inserted_immediately_before_each_last_valid_token() -> None:
@@ -266,6 +281,29 @@ def test_master_slot_initialization_is_seeded_once_and_sliced(tmp_path: Path) ->
 	assert full.shape == (1, 16, 32)
 	assert torch.equal(full, second_load)
 	assert torch.equal(full[:, :4], second_load[:, :4])
+
+
+def test_64_slot_master_bank_gives_every_sweep_the_same_prefix(tmp_path: Path) -> None:
+	path = tmp_path / "master_slot_init_seed42_kmax64.pt"
+	master = create_or_load_master_slot_initialization(
+		path=path,
+		max_num_latent_slots=64,
+		hidden_size=32,
+		seed=42,
+		mean=0.0,
+		std=0.02,
+	)
+	legacy_prefix = create_or_load_master_slot_initialization(
+		path=tmp_path / "master_slot_init_seed42.pt",
+		max_num_latent_slots=16,
+		hidden_size=32,
+		seed=42,
+		mean=0.0,
+		std=0.02,
+	)
+
+	assert master.shape == (1, 64, 32)
+	assert torch.equal(master[:, :16], legacy_prefix)
 
 
 def test_project_rms_norm_matches_torch_reference() -> None:

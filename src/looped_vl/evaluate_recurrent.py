@@ -32,6 +32,7 @@ from looped_vl.evaluate_frozen import (
 	encoding_collate,
 )
 from looped_vl.models.config import (
+	ALLOWED_SLOT_COUNTS,
 	RecurrentModelConfig,
 	pure_recurrent_result_identity,
 )
@@ -541,6 +542,10 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	resolved_attention = resolve_attention_implementation(args.attention_implementation)
 	runtime_dtype = resolve_torch_dtype(args.runtime_precision)
 	model_config = RecurrentModelConfig.from_yaml(args.model_config)
+	if args.num_latent_slots is not None:
+		model_config = model_config.with_variant(
+			num_latent_slots=args.num_latent_slots,
+		)
 	dataset_root = Path(args.dataset_root)
 	dataset = RecurrentAlignedDataset(dataset_root, args.split)
 	rows = _load_rows(dataset_root, args.split, args.max_rows)
@@ -695,6 +700,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--model-root", type=Path, required=True)
 	parser.add_argument("--master-slot-path", type=Path, required=True)
 	parser.add_argument("--model-config", type=Path, default=Path("configs/base.yaml"))
+	parser.add_argument(
+		"--num-latent-slots",
+		type=int,
+		choices=ALLOWED_SLOT_COUNTS,
+	)
 	parser.add_argument("--checkpoint", type=Path, required=True)
 	parser.add_argument("--output-dir", type=Path, required=True)
 	parser.add_argument("--split", choices=("test",), default="test")

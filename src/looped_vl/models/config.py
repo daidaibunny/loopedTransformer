@@ -8,7 +8,8 @@ from typing import Any
 
 import yaml
 
-ALLOWED_SLOT_COUNTS = (0, 1, 2, 4, 8, 16)
+ALLOWED_SLOT_COUNTS = (0, 1, 2, 4, 8, 16, 32, 64)
+ALLOWED_MASTER_SLOT_COUNTS = (16, 64)
 ALLOWED_LOOP_PASSES = (1, 2, 3, 4)
 DAMPED_RECURRENT_ARCHITECTURE = "damped_mid_decoder_latent_slot_recurrence_no_lora_v3"
 DAMPED_RECURRENT_TRAINING_PROTOCOL = "pure_recurrent_single_stage_eos_weighted_aux_v4"
@@ -74,10 +75,14 @@ class RecurrentModelConfig:
 			raise ValueError("seed must remain 42")
 		if self.hidden_size != 2048:
 			raise ValueError("hidden_size must remain 2048")
-		if self.max_num_latent_slots != 16:
-			raise ValueError("max_num_latent_slots must remain 16")
+		if self.max_num_latent_slots not in ALLOWED_MASTER_SLOT_COUNTS:
+			raise ValueError(
+				f"max_num_latent_slots must be one of {ALLOWED_MASTER_SLOT_COUNTS}",
+			)
 		if self.num_latent_slots not in ALLOWED_SLOT_COUNTS:
 			raise ValueError(f"num_latent_slots must be one of {ALLOWED_SLOT_COUNTS}")
+		if self.num_latent_slots > self.max_num_latent_slots:
+			raise ValueError("num_latent_slots cannot exceed max_num_latent_slots")
 		if self.num_total_loop_passes not in ALLOWED_LOOP_PASSES:
 			raise ValueError(
 				f"num_total_loop_passes must be one of {ALLOWED_LOOP_PASSES}",

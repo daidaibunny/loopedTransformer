@@ -432,6 +432,8 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 			str(tmp_path / "coco"),
 			"--output-dir",
 			str(tmp_path / "training"),
+			"--num-latent-slots",
+			"64",
 		],
 	)
 
@@ -445,6 +447,7 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	assert args.checkpoint_every == 100
 	assert args.max_checkpoints == 1
 	assert args.training_config == Path("configs/train.yaml")
+	assert args.num_latent_slots == 64
 	assert not hasattr(args, "start_stage")
 	assert not hasattr(args, "semantic_decoder_root")
 
