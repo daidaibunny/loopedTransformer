@@ -50,7 +50,11 @@ from looped_vl.training.checkpointing import (
 	validate_checkpoint_metadata,
 )
 from looped_vl.training.data import group_model_inputs_by_modality
-from looped_vl.training.schedule import BatchOffsetSampler
+from looped_vl.training.schedule import (
+	FORMAL_TRAINING_LOG_INTERVAL,
+	BatchOffsetSampler,
+	should_log_training_metrics,
+)
 
 LOGGER = logging.getLogger("baseline_train")
 
@@ -501,6 +505,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"max_pixels": args.max_pixels,
 		"seed": args.seed,
 		"checkpoint_every": args.checkpoint_every,
+		"formal_training_log_interval": FORMAL_TRAINING_LOG_INTERVAL,
 		"max_checkpoints": args.max_checkpoints,
 		"resume_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
 		"lora": {
@@ -541,6 +546,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	metric_samples = 0
 	metric_accumulator: dict[str, torch.Tensor] = {}
 	direction_counts: Counter[str] = Counter()
+	optimizer_steps_since_log = 0
 	torch.cuda.reset_peak_memory_stats(device)
 	full_loader_batches = len(loader)
 	for epoch in range(cursor.sampler_epoch, args.epochs):
@@ -634,6 +640,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 				)
 			scheduler.step()
 			global_step += 1
+			optimizer_steps_since_log += 1
 			cursor = TrainingCursor(
 				stage=0,
 				global_step=global_step,
@@ -642,49 +649,60 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 				gradient_accumulation_step=0,
 				processed_samples=total_samples,
 			)
-			torch.cuda.synchronize(device)
-			elapsed = time.perf_counter() - log_start
-			reduced_metrics, global_metric_samples = _reduce_logging_metrics(
-				metric_accumulator,
-				local_sample_count=metric_samples,
-			)
-			averages = _finalize_logging_metrics(
-				reduced_metrics,
-				sample_count=global_metric_samples,
-			)
-			global_direction_counts = _gather_direction_counts(
-				direction_counts,
-				world_size,
-			)
-			record = {
-				"epoch": epoch,
-				"global_step": global_step,
-				**averages,
-				"gradient_norm": float(gradient_norm.detach().float().item()),
-				"learning_rate": float(scheduler.get_last_lr()[0]),
-				"samples_per_second": log_samples / elapsed,
-				"total_samples": total_samples,
-				"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
-				"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
-				"contrastive_global_batch_size": batch_global_samples,
-				"optimizer_global_batch_size": global_metric_samples,
-				"direction_counts": dict(global_direction_counts),
-			}
-			if rank == 0:
-				_append_json_line(output_dir / "train_metrics.jsonl", record)
-				LOGGER.info(
-					"dataset=%s step=%d/%d loss=%.5f samples/s=%.2f",
-					args.dataset,
-					global_step,
-					total_steps,
-					record["loss"],
-					record["samples_per_second"],
+			if should_log_training_metrics(
+				optimizer_steps_since_log=optimizer_steps_since_log,
+				global_step=global_step,
+				optimizer_step_limit=total_steps,
+				force_every_step=args.max_optimizer_steps > 0,
+			):
+				torch.cuda.synchronize(device)
+				elapsed = time.perf_counter() - log_start
+				reduced_metrics, global_metric_samples = _reduce_logging_metrics(
+					metric_accumulator,
+					local_sample_count=metric_samples,
 				)
-			log_start = time.perf_counter()
-			log_samples = 0
-			metric_samples = 0
-			metric_accumulator = {}
-			direction_counts = Counter()
+				averages = _finalize_logging_metrics(
+					reduced_metrics,
+					sample_count=global_metric_samples,
+				)
+				global_direction_counts = _gather_direction_counts(
+					direction_counts,
+					world_size,
+				)
+				record = {
+					"epoch": epoch,
+					"global_step": global_step,
+					**averages,
+					"gradient_norm": float(gradient_norm.detach().float().item()),
+					"learning_rate": float(scheduler.get_last_lr()[0]),
+					"samples_per_second": log_samples / elapsed,
+					"total_samples": total_samples,
+					"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
+					"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
+					"contrastive_global_batch_size": batch_global_samples,
+					"optimizer_global_batch_size": (
+						global_metric_samples / optimizer_steps_since_log
+					),
+					"logged_global_samples": global_metric_samples,
+					"logged_optimizer_steps": optimizer_steps_since_log,
+					"direction_counts": dict(global_direction_counts),
+				}
+				if rank == 0:
+					_append_json_line(output_dir / "train_metrics.jsonl", record)
+					LOGGER.info(
+						"dataset=%s step=%d/%d loss=%.5f samples/s=%.2f",
+						args.dataset,
+						global_step,
+						total_steps,
+						record["loss"],
+						record["samples_per_second"],
+					)
+				log_start = time.perf_counter()
+				log_samples = 0
+				metric_samples = 0
+				metric_accumulator = {}
+				direction_counts = Counter()
+				optimizer_steps_since_log = 0
 			if (
 				not args.skip_checkpoint_save
 				and (

@@ -55,10 +55,12 @@ from looped_vl.training.model import RecurrentTrainingModel
 from looped_vl.training.optimizer import build_optimizer_and_scheduler
 from looped_vl.training.reproducibility import seed_everything
 from looped_vl.training.schedule import (
+	FORMAL_TRAINING_LOG_INTERVAL,
 	BatchOffsetSampler,
 	OneEpochTrainingPlan,
 	resolve_one_epoch_training_plan,
 	resolve_parallel_batch_sizes,
+	should_log_training_metrics,
 )
 from looped_vl.training.trainability import (
 	align_trainable_parameter_dtype,
@@ -523,6 +525,8 @@ def _train_one_epoch(
 	contrastive_batch_sizes: Counter[int] = Counter()
 	source_counts: Counter[str] = Counter()
 	direction_counts: Counter[str] = Counter()
+	optimizer_steps_since_log = 0
+	interval_gradient_scope_audited = False
 	step_start = time.perf_counter()
 	epoch = 0
 	sampler.set_epoch(epoch)
@@ -677,76 +681,106 @@ def _train_one_epoch(
 			)
 		scheduler.step()
 		global_step = cursor.global_step + 1
-		torch.cuda.synchronize(device)
-		reduced_accumulator, global_metric_samples = _reduce_metric_tensors(
-			accumulator,
-			local_sample_count=accumulated_local_samples,
+		optimizer_steps_since_log += 1
+		interval_gradient_scope_audited = (
+			interval_gradient_scope_audited or gradient_audit is not None
 		)
-		averages = _finalize_metric_tensors(
-			reduced_accumulator,
-			global_metric_samples,
+		next_step_changes_phase = (
+			global_step < optimizer_step_limit
+			and _training_phase(global_step, training_plan) != phase
 		)
-		finalized_diagnostics = {
-			key: [
-				averages.pop(f"{key}_pass{pass_index}")
-				for pass_index in range(
-					2,
-					training_model.encoder.config.num_total_loop_passes + 1,
+		if should_log_training_metrics(
+			optimizer_steps_since_log=optimizer_steps_since_log,
+			global_step=global_step,
+			optimizer_step_limit=optimizer_step_limit,
+			force_every_step=bool(
+				args.smoke_optimizer_steps or args.max_additional_optimizer_steps
+			),
+			force_boundary=next_step_changes_phase,
+		):
+			torch.cuda.synchronize(device)
+			reduced_accumulator, global_metric_samples = _reduce_metric_tensors(
+				accumulator,
+				local_sample_count=accumulated_local_samples,
+			)
+			averages = _finalize_metric_tensors(
+				reduced_accumulator,
+				global_metric_samples,
+			)
+			finalized_diagnostics = {
+				key: [
+					averages.pop(f"{key}_pass{pass_index}")
+					for pass_index in range(
+						2,
+						training_model.encoder.config.num_total_loop_passes + 1,
+					)
+				]
+				for key in (
+					"recurrent_pass_cosine",
+					"recurrent_pass_relative_update",
 				)
-			]
-			for key in (
-				"recurrent_pass_cosine",
-				"recurrent_pass_relative_update",
+			}
+			global_source_counts, global_direction_counts = _gather_training_counters(
+				source_counts=source_counts,
+				direction_counts=direction_counts,
+				world_size=world_size,
 			)
-		}
-		global_source_counts, global_direction_counts = _gather_training_counters(
-			source_counts=source_counts,
-			direction_counts=direction_counts,
-			world_size=world_size,
-		)
-		elapsed = time.perf_counter() - step_start
-		log_record = {
-			"formal_training_stage": 1,
-			"phase": phase,
-			"global_step": global_step,
-			**averages,
-			**finalized_diagnostics,
-			"gradient_norm": float(gradient_norm.detach().float().item()),
-			"warm_start_learning_rate": used_learning_rates[0],
-			"joint_learning_rate": used_learning_rates[1],
-			"next_warm_start_learning_rate": float(scheduler.get_last_lr()[0]),
-			"next_joint_learning_rate": float(scheduler.get_last_lr()[1]),
-			"gradient_scale": float(gradient_scaler.get_scale()),
-			"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
-			"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
-			"samples_per_second": accumulated_global_samples / elapsed,
-			"optimizer_global_batch_size": global_metric_samples,
-			"contrastive_global_batch_size_min": min(contrastive_batch_sizes),
-			"contrastive_global_batch_size_max": max(contrastive_batch_sizes),
-			"contrastive_microbatch_count": sum(contrastive_batch_sizes.values()),
-			"source_counts": dict(global_source_counts),
-			"direction_counts": dict(global_direction_counts),
-			"slot_collapse": averages["slot_pairwise_cosine"] > 0.98,
-			"pooling_collapse": (
-				training_model.encoder.config.num_latent_slots > 1
-				and averages["late_fusion_attention_entropy"] < 0.1
-			),
-			"recurrence_unused": (
-				global_step > 100 and averages["connector_output_norm"] < 1e-6
-			),
-			"gradient_scope_audited": gradient_audit is not None,
-		}
-		if rank == 0:
-			_append_json_line(output_dir / "train_metrics.jsonl", log_record)
-			LOGGER.info(
-				"phase=%s step=%d/%d loss=%.5f grad=%.5f samples/s=%.3f",
-				phase,
-				global_step,
-				optimizer_step_limit,
-				averages["total_loss"],
-				float(gradient_norm.detach().float().item()),
-				accumulated_global_samples / elapsed,
-			)
+			elapsed = time.perf_counter() - step_start
+			log_record = {
+				"formal_training_stage": 1,
+				"phase": phase,
+				"global_step": global_step,
+				**averages,
+				**finalized_diagnostics,
+				"gradient_norm": float(gradient_norm.detach().float().item()),
+				"warm_start_learning_rate": used_learning_rates[0],
+				"joint_learning_rate": used_learning_rates[1],
+				"next_warm_start_learning_rate": float(scheduler.get_last_lr()[0]),
+				"next_joint_learning_rate": float(scheduler.get_last_lr()[1]),
+				"gradient_scale": float(gradient_scaler.get_scale()),
+				"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
+				"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
+				"samples_per_second": accumulated_global_samples / elapsed,
+				"optimizer_global_batch_size": (
+					global_metric_samples / optimizer_steps_since_log
+				),
+				"logged_global_samples": global_metric_samples,
+				"logged_optimizer_steps": optimizer_steps_since_log,
+				"contrastive_global_batch_size_min": min(contrastive_batch_sizes),
+				"contrastive_global_batch_size_max": max(contrastive_batch_sizes),
+				"contrastive_microbatch_count": sum(contrastive_batch_sizes.values()),
+				"source_counts": dict(global_source_counts),
+				"direction_counts": dict(global_direction_counts),
+				"slot_collapse": averages["slot_pairwise_cosine"] > 0.98,
+				"pooling_collapse": (
+					training_model.encoder.config.num_latent_slots > 1
+					and averages["late_fusion_attention_entropy"] < 0.1
+				),
+				"recurrence_unused": (
+					global_step > 100 and averages["connector_output_norm"] < 1e-6
+				),
+				"gradient_scope_audited": interval_gradient_scope_audited,
+			}
+			if rank == 0:
+				_append_json_line(output_dir / "train_metrics.jsonl", log_record)
+				LOGGER.info(
+					"phase=%s step=%d/%d loss=%.5f grad=%.5f samples/s=%.3f",
+					phase,
+					global_step,
+					optimizer_step_limit,
+					averages["total_loss"],
+					float(gradient_norm.detach().float().item()),
+					accumulated_global_samples / elapsed,
+				)
+			accumulator = {}
+			accumulated_local_samples = 0
+			accumulated_global_samples = 0
+			contrastive_batch_sizes = Counter()
+			source_counts = Counter()
+			direction_counts = Counter()
+			optimizer_steps_since_log = 0
+			interval_gradient_scope_audited = False
+			step_start = time.perf_counter()
 		cursor = TrainingCursor(
 			stage=0,
 			global_step=global_step,
@@ -755,13 +789,6 @@ def _train_one_epoch(
 			gradient_accumulation_step=0,
 			processed_samples=processed_samples,
 		)
-		accumulator = {}
-		accumulated_local_samples = 0
-		accumulated_global_samples = 0
-		contrastive_batch_sizes = Counter()
-		source_counts = Counter()
-		direction_counts = Counter()
-		step_start = time.perf_counter()
 		if _should_save_checkpoint(
 			global_step=cursor.global_step,
 			optimizer_step_limit=optimizer_step_limit,
@@ -1001,6 +1028,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"smoke_optimizer_steps": args.smoke_optimizer_steps,
 		"smoke_warm_start_steps": args.smoke_warm_start_steps,
 		"checkpoint_every": args.checkpoint_every,
+		"formal_training_log_interval": FORMAL_TRAINING_LOG_INTERVAL,
 		"max_checkpoints": args.max_checkpoints,
 	}
 	all_manifests: list[dict[str, Any] | None] = [None for _ in range(world_size)]

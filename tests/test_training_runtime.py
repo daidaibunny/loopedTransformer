@@ -26,7 +26,11 @@ from looped_vl.training.checkpointing import (
 from looped_vl.training.config import TrainingConfig
 from looped_vl.training.optimizer import build_optimizer_and_scheduler
 from looped_vl.training.reproducibility import seed_everything
-from looped_vl.training.schedule import OneEpochTrainingPlan
+from looped_vl.training.schedule import (
+	FORMAL_TRAINING_LOG_INTERVAL,
+	OneEpochTrainingPlan,
+	should_log_training_metrics,
+)
 from looped_vl.training.step import compose_training_loss
 from looped_vl.training.train import (
 	_accumulate_metric_tensors,
@@ -51,6 +55,46 @@ class _FakeGradientScaler:
 
 	def load_state_dict(self, state_dict: dict[str, float]) -> None:
 		self.scale = state_dict["scale"]
+
+
+def test_formal_training_logs_every_fifty_steps_and_at_boundaries() -> None:
+	assert FORMAL_TRAINING_LOG_INTERVAL == 50
+	assert not should_log_training_metrics(
+		optimizer_steps_since_log=49,
+		global_step=49,
+		optimizer_step_limit=120,
+	)
+	assert should_log_training_metrics(
+		optimizer_steps_since_log=50,
+		global_step=50,
+		optimizer_step_limit=120,
+	)
+	assert should_log_training_metrics(
+		optimizer_steps_since_log=20,
+		global_step=120,
+		optimizer_step_limit=120,
+	)
+	assert should_log_training_metrics(
+		optimizer_steps_since_log=17,
+		global_step=67,
+		optimizer_step_limit=120,
+		force_boundary=True,
+	)
+
+
+def test_smoke_training_logs_every_optimizer_step() -> None:
+	assert should_log_training_metrics(
+		optimizer_steps_since_log=1,
+		global_step=1,
+		optimizer_step_limit=3,
+		force_every_step=True,
+	)
+	assert should_log_training_metrics(
+		optimizer_steps_since_log=1,
+		global_step=2,
+		optimizer_step_limit=3,
+		force_every_step=True,
+	)
 
 
 def test_recurrent_ddp_options_support_gradient_accumulation() -> None:

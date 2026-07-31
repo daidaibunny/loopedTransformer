@@ -10,6 +10,31 @@ from typing import Any
 
 from torch.utils.data import Sampler
 
+FORMAL_TRAINING_LOG_INTERVAL = 50
+
+
+def should_log_training_metrics(
+	*,
+	optimizer_steps_since_log: int,
+	global_step: int,
+	optimizer_step_limit: int,
+	force_every_step: bool = False,
+	force_boundary: bool = False,
+) -> bool:
+	"""Log smokes per step and formal runs every 50 steps or at a required boundary."""
+	if optimizer_steps_since_log <= 0:
+		raise ValueError("optimizer_steps_since_log must be positive")
+	if global_step <= 0 or optimizer_step_limit <= 0:
+		raise ValueError("optimizer step values must be positive")
+	if global_step > optimizer_step_limit:
+		raise ValueError("global_step cannot exceed optimizer_step_limit")
+	return (
+		force_every_step
+		or force_boundary
+		or optimizer_steps_since_log >= FORMAL_TRAINING_LOG_INTERVAL
+		or global_step == optimizer_step_limit
+	)
+
 
 @dataclass(frozen=True)
 class OneEpochTrainingPlan:
