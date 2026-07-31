@@ -252,3 +252,27 @@ discarded for inference.
 | CLEVR | Frozen original Qwen3-VL-Embedding-2B | Passed | 0 | 1 | 0 | 84.9359 | 73.1707 | 19.8499 | 9.9993 | 5.0000 | 73.1707 | 99.2493 | 99.9933 | 100.0000 | 84.9359 | 88.7750 |
 | CLEVR | Independent LoRA baseline | Interrupted | 0 | 1 | 31,195,136 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 | CLEVR | Recurrent latent-slot model | Pending | 4 | 4 | 17,342,977 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+
+### COCO bidirectional diagnostic metrics
+
+COCO is the only current dataset with two protocol-defined retrieval directions.
+Text-to-image uses each caption as a query over the image gallery. Image-to-text uses
+each image as a query over the caption gallery. The equal-direction mean remains the
+single primary COCO row in the all-model table above; the two directional rows below are
+diagnostics, not additional independent tests.
+
+| Model | Status | Direction | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Frozen original Qwen3-VL-Embedding-2B | Passed | Text→image | 64.5980 | 53.5906 | 15.5354 | 8.5610 | 4.5836 | 53.5906 | 77.6769 | 85.6098 | 91.6713 | 64.5980 | 69.1638 |
+| Frozen original Qwen3-VL-Embedding-2B | Passed | Image→text | 57.8905 | 74.4400 | 52.2880 | 32.6620 | 18.9020 | 14.8827 | 52.2700 | 65.2987 | 75.5787 | 81.5361 | 64.7513 |
+| Frozen original Qwen3-VL-Embedding-2B | Passed | Equal-direction mean | 61.2443 | 64.0153 | 33.9117 | 20.6115 | 11.7428 | 34.2366 | 64.9735 | 75.4542 | 83.6250 | 73.0671 | 66.9576 |
+| Independent LoRA baseline | Passed | Text→image | 72.0247 | 62.0832 | 16.8581 | 9.0672 | 4.7439 | 62.0832 | 84.2903 | 90.6717 | 94.8780 | 72.0247 | 76.2017 |
+| Independent LoRA baseline | Passed | Image→text | 64.0410 | 78.4600 | 57.8000 | 35.8980 | 20.5160 | 15.6867 | 57.7787 | 71.7680 | 82.0300 | 85.0017 | 70.5028 |
+| Independent LoRA baseline | Passed | Equal-direction mean | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
+| Recurrent latent-slot model | Pending | Text→image | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Recurrent latent-slot model | Pending | Image→text | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Recurrent latent-slot model | Pending | Equal-direction mean | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+
+GQA Balanced and CLEVR remain one-way image-question-to-answer retrieval tasks under the
+current manifests. Reverse answer-to-question/image retrieval would require a new
+candidate gallery and relevance definition, so it is not reported as a symmetric metric.
