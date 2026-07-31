@@ -63,6 +63,33 @@ updates and report mAP change from the previous pass and from Pass 1. COCO uses 
 equal-direction mean in this concise row while retaining both direction-specific metric
 tables.
 
+## Current recurrent parameter accounting
+
+The original Qwen3-VL-Embedding-2B backbone remains frozen and unchanged. The current
+recurrent model adds the following parameters:
+
+| Component | Formula | Parameters | Retained for inference |
+| --- | ---: | ---: | --- |
+| Eight latent slots | 8 × 2,048 | 16,384 | Yes |
+| EOS input delta | 2,048 | 2,048 | Yes |
+| Final EOS-conditioned slot attention | 4 × 2,048 × 256 + 1 gate | 2,097,153 | Yes |
+| Shared auxiliary RMSNorm | 2,048 | 2,048 | No |
+| Shared auxiliary projection | 2,048 × 256 | 524,288 | No |
+| **Inference-time addition** | — | **2,115,585** | — |
+| **Training-only addition** | — | **526,336** | No |
+| **Total trainable addition** | — | **2,641,921** | — |
+
+Relative to the model's nominal 2-billion-parameter size, the retained inference
+addition is approximately 0.106%, and the complete training-time addition is
+approximately 0.132%. These percentages use the nominal 2B name rather than claiming an
+unrecorded exact backbone parameter count.
+
+The independent full-backbone LoRA baseline trains 31,195,136 parameters. It therefore
+has 11.81 times as many trainable parameters as the current recurrent model and 14.75
+times as many added parameters as the recurrent inference path retains. The absolute
+trainable-parameter gap is 28,553,215. Parameter-count comparisons do not by themselves
+establish model quality; the formal recurrent results remain pending.
+
 ## EXP-000A/B/C — Frozen backbone
 
 - Status/date: all three passed, 2026-07-31. The serial full-test queue ran from
