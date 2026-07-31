@@ -61,6 +61,17 @@
 - Preserve the exact source ratio in train, validation, and test.
 - Never use test samples for tuning or checkpoint selection.
 
+## Checkpoint policy
+
+- Baseline and recurrent full training save an exact resumable checkpoint every 100
+  optimizer steps and at the end of the epoch.
+- Each experiment dynamically retains only its newest resumable checkpoint. Saving a new
+  checkpoint must remove the previous one only after the new file exists and the
+  latest-checkpoint pointer has been atomically published.
+- Keep the final adapter or final recurrent learned weights separately from the rolling
+  resumable checkpoint. Evaluation reads those final learned weights, not an intermediate
+  optimizer checkpoint.
+
 ## Verification
 
 - Add tests before implementation changes.

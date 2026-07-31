@@ -1,3 +1,4 @@
+import json
 import random
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from looped_vl.training.checkpointing import (
 	load_training_checkpoint,
 	prepare_training_output_directory,
 	prune_training_checkpoints,
+	publish_latest_training_checkpoint,
 	rebase_training_cursor_batch_size,
 	restore_rng_state,
 	save_training_checkpoint,
@@ -285,7 +287,7 @@ def test_checkpoint_rejects_the_old_two_stage_protocol_before_loading(
 		)
 
 
-def test_checkpoint_retention_keeps_only_the_four_newest_files(tmp_path: Path) -> None:
+def test_checkpoint_retention_keeps_only_the_latest_file(tmp_path: Path) -> None:
 	checkpoint_root = tmp_path / "checkpoints"
 	checkpoint_root.mkdir()
 	for step in range(1, 7):
@@ -295,19 +297,61 @@ def test_checkpoint_retention_keeps_only_the_four_newest_files(tmp_path: Path) -
 
 	removed = prune_training_checkpoints(
 		checkpoint_root,
-		max_checkpoints=4,
+		max_checkpoints=1,
 	)
 
 	assert [path.name for path in removed] == [
 		"step000001.pt",
 		"step000002.pt",
-	]
-	assert sorted(path.name for path in checkpoint_root.glob("*.pt")) == [
 		"step000003.pt",
 		"step000004.pt",
 		"step000005.pt",
+	]
+	assert sorted(path.name for path in checkpoint_root.glob("*.pt")) == [
 		"step000006.pt",
 	]
+
+
+def test_latest_checkpoint_pointer_is_published_before_old_file_is_removed(
+	tmp_path: Path,
+) -> None:
+	checkpoint_root = tmp_path / "train" / "checkpoints"
+	checkpoint_root.mkdir(parents=True)
+	old_checkpoint = checkpoint_root / "step000100.pt"
+	new_checkpoint = checkpoint_root / "step000200.pt"
+	old_checkpoint.write_bytes(b"old")
+	new_checkpoint.write_bytes(b"new")
+	cursor = TrainingCursor(
+		stage=0,
+		global_step=200,
+		sampler_epoch=0,
+		batch_in_epoch=200,
+		gradient_accumulation_step=0,
+		processed_samples=51200,
+	)
+
+	removed = publish_latest_training_checkpoint(
+		new_checkpoint,
+		cursor,
+		max_checkpoints=1,
+	)
+
+	assert removed == [old_checkpoint]
+	assert not old_checkpoint.exists()
+	assert new_checkpoint.exists()
+	assert json.loads(
+		(tmp_path / "train" / "latest_checkpoint.json").read_text(encoding="utf-8"),
+	) == {
+		"path": str(new_checkpoint),
+		"cursor": {
+			"batch_in_epoch": 200,
+			"global_step": 200,
+			"gradient_accumulation_step": 0,
+			"processed_samples": 51200,
+			"sampler_epoch": 0,
+			"stage": 0,
+		},
+	}
 
 
 def test_checkpoint_cursor_rebases_exact_sample_position_for_larger_batch() -> None:
@@ -397,7 +441,7 @@ def test_training_cli_defaults_to_per_device_batch_eight(
 	assert args.runtime_precision == "fp16"
 	assert args.initial_gradient_scale == 32.0
 	assert args.checkpoint_every == 100
-	assert args.max_checkpoints == 4
+	assert args.max_checkpoints == 1
 	assert args.training_config == Path("configs/train.yaml")
 	assert not hasattr(args, "start_stage")
 	assert not hasattr(args, "semantic_decoder_root")

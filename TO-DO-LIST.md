@@ -60,8 +60,8 @@
   text-to-image/image-to-text direction rule without changing manifest row counts.
 - [x] Require the baseline negative pool itself to contain 256 pairs and search
   eight-V100 batch-32 throughput without treating gradient accumulation as negatives.
-- [x] Add exact resumable baseline state and cap baseline/recurrent training checkpoints
-  at four files per experiment, including the final checkpoint.
+- [x] Add exact resumable baseline state and make baseline/recurrent training dynamically
+  retain only the latest checkpoint, including the end-of-epoch checkpoint.
 - [x] Average baseline loss and embedding norms over every microbatch and every rank,
   while skipping scheduler advancement after a non-finite FP16 optimizer step.
 - [x] Replace recurrent Stage 1/Stage 2 with one continuous one-epoch task whose
@@ -75,7 +75,7 @@
 - [x] Cross-audit baseline and recurrent runs as source-pure one-epoch training followed
   directly by held-out test, with no validation-based selection.
 - [x] Unify exact in-place resume, metric-log rollback, 100-step checkpoint cadence, and
-  rolling retention of at most four checkpoint files for both trainers.
+  rolling retention of only the latest checkpoint file for both trainers.
 - [x] Make recurrent loss and diagnostic logs sample-weighted across every microbatch and
   every distributed rank, and fail instead of silently losing a non-finite update.
 - [x] Add one restartable queue for the three baseline and three recurrent train/test
@@ -83,3 +83,5 @@
 - [x] Re-run final eight-V100 safety smokes for both trainers and every dataset-specific
   recurrent memory policy.
 - [ ] Complete the restartable six-run serial train/test queue on all full splits.
+- [ ] Evaluate the frozen original Qwen3-VL-Embedding-2B serially on the full COCO, GQA
+  Balanced, and CLEVR test splits before restarting unfinished training experiments.

@@ -47,7 +47,7 @@ def build_training_command(
 	output_root: Path,
 	world_size: int,
 	checkpoint_every: int = 100,
-	max_checkpoints: int = 4,
+	max_checkpoints: int = 1,
 ) -> list[str]:
 	"""Build one result-isolated eight-rank full training command."""
 	run.validate()
@@ -332,7 +332,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--run", action="append", type=_parse_run, required=True)
 	parser.add_argument("--world-size", type=int, default=8)
 	parser.add_argument("--checkpoint-every", type=int, default=100)
-	parser.add_argument("--max-checkpoints", type=int, choices=range(1, 5), default=4)
+	parser.add_argument("--max-checkpoints", type=int, choices=(1,), default=1)
 	parser.add_argument("--required-idle-seconds", type=float, default=120.0)
 	parser.add_argument("--poll-seconds", type=float, default=5.0)
 	return parser.parse_args()

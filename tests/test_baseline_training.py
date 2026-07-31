@@ -63,7 +63,7 @@ def test_logging_metrics_average_every_microbatch_by_sample_count() -> None:
 	}
 
 
-def test_baseline_cli_defaults_to_the_true_256_pair_batch_and_four_checkpoints(
+def test_baseline_cli_defaults_to_true_256_pair_batch_and_one_checkpoint(
 	monkeypatch: pytest.MonkeyPatch,
 	tmp_path: Path,
 ) -> None:
@@ -88,7 +88,7 @@ def test_baseline_cli_defaults_to_the_true_256_pair_batch_and_four_checkpoints(
 	assert args.expected_contrastive_global_batch_size == 256
 	assert args.initial_gradient_scale == 4096.0
 	assert args.checkpoint_every == 100
-	assert args.max_checkpoints == 4
+	assert args.max_checkpoints == 1
 	assert args.visual_length_buckets == 3
 	assert args.min_visual_bucket_size == 8
 

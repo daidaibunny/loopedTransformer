@@ -40,7 +40,7 @@ from looped_vl.training.checkpointing import (
 	capture_rng_state,
 	load_training_checkpoint,
 	prepare_training_output_directory,
-	prune_training_checkpoints,
+	publish_latest_training_checkpoint,
 	save_training_checkpoint,
 	truncate_metric_log,
 	validate_checkpoint_metadata,
@@ -208,8 +208,9 @@ def _save_checkpoint(
 			metadata=metadata,
 			gradient_scaler=gradient_scaler,
 		)
-		prune_training_checkpoints(
-			path.parent,
+		publish_latest_training_checkpoint(
+			path,
+			cursor,
 			max_checkpoints=max_checkpoints,
 		)
 	dist.barrier()
@@ -796,7 +797,7 @@ def _train_one_epoch(
 			smoke_optimizer_steps=args.smoke_optimizer_steps,
 			smoke_save_final_checkpoint=args.smoke_save_final_checkpoint,
 		):
-			checkpoint_path = _save_checkpoint(
+			_save_checkpoint(
 				output_dir=output_dir,
 				model=training_model,
 				optimizer=optimizer,
@@ -808,11 +809,6 @@ def _train_one_epoch(
 				gradient_scaler=gradient_scaler,
 				max_checkpoints=args.max_checkpoints,
 			)
-			if rank == 0:
-				_write_json(
-					output_dir / "latest_checkpoint.json",
-					{"path": str(checkpoint_path), "cursor": asdict(cursor)},
-				)
 		if cursor.global_step >= optimizer_step_limit:
 			break
 	if (
@@ -835,8 +831,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	"""Run one continuous epoch with a dynamic warm-start window."""
 	if args.checkpoint_every <= 0:
 		raise ValueError("checkpoint_every must be positive")
-	if args.max_checkpoints <= 0 or args.max_checkpoints > 4:
-		raise ValueError("max_checkpoints must be between 1 and 4")
+	if args.max_checkpoints != 1:
+		raise ValueError("max_checkpoints must be exactly 1")
 	if args.resume_per_device_batch_size is not None and args.resume_checkpoint is None:
 		raise ValueError("resume_per_device_batch_size requires resume_checkpoint")
 	if (
@@ -1150,7 +1146,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--num-workers", type=int, default=2)
 	parser.add_argument("--prefetch-factor", type=int, default=2)
 	parser.add_argument("--checkpoint-every", type=int, default=100)
-	parser.add_argument("--max-checkpoints", type=int, choices=range(1, 5), default=4)
+	parser.add_argument("--max-checkpoints", type=int, choices=(1,), default=1)
 	parser.add_argument("--resume-checkpoint", type=Path)
 	parser.add_argument("--resume-per-device-batch-size", type=int)
 	parser.add_argument("--max-additional-optimizer-steps", type=int, default=0)

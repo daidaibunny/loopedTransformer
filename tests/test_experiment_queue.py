@@ -44,7 +44,7 @@ def test_baseline_and_recurrent_commands_share_checkpoint_and_test_contract(
 		"world_size": 8,
 		"code_commit": "a" * 40,
 		"checkpoint_every": 100,
-		"max_checkpoints": 4,
+		"max_checkpoints": 1,
 		"resume_checkpoint": None,
 	}
 	for family in ("baseline", "recurrent"):
@@ -67,7 +67,7 @@ def test_baseline_and_recurrent_commands_share_checkpoint_and_test_contract(
 		)
 
 		assert _value_after(training, "--checkpoint-every") == "100"
-		assert _value_after(training, "--max-checkpoints") == "4"
+		assert _value_after(training, "--max-checkpoints") == "1"
 		assert "--validation" not in training
 		assert "validation" not in evaluation
 		if family == "baseline":

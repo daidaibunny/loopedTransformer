@@ -91,12 +91,12 @@ def build_training_command(
 	max_checkpoints: int,
 	resume_checkpoint: Path | None,
 ) -> list[str]:
-	"""Build one full one-epoch command with at most four rolling checkpoints."""
+	"""Build one full one-epoch command retaining only the latest checkpoint."""
 	spec.validate(world_size)
 	if checkpoint_every <= 0:
 		raise ValueError("checkpoint_every must be positive")
-	if not 1 <= max_checkpoints <= 4:
-		raise ValueError("max_checkpoints must be between one and four")
+	if max_checkpoints != 1:
+		raise ValueError("max_checkpoints must be exactly one")
 	train_output = _experiment_root(output_root, spec) / "train"
 	command = _torchrun_prefix(world_size)
 	if spec.family == "baseline":
@@ -500,7 +500,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--code-commit")
 	parser.add_argument("--world-size", type=int, default=8)
 	parser.add_argument("--checkpoint-every", type=int, default=100)
-	parser.add_argument("--max-checkpoints", type=int, choices=range(1, 5), default=4)
+	parser.add_argument("--max-checkpoints", type=int, choices=(1,), default=1)
 	parser.add_argument("--resume", action="store_true")
 	return parser.parse_args()
 

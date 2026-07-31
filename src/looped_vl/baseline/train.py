@@ -13,7 +13,6 @@ import sys
 import time
 from collections import Counter
 from contextlib import nullcontext
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +48,7 @@ from looped_vl.training.checkpointing import (
 	capture_rng_state,
 	load_training_checkpoint,
 	prepare_training_output_directory,
-	prune_training_checkpoints,
+	publish_latest_training_checkpoint,
 	save_training_checkpoint,
 	truncate_metric_log,
 	validate_checkpoint_metadata,
@@ -212,8 +211,9 @@ def _save_baseline_checkpoint(
 			metadata=metadata,
 			gradient_scaler=scaler,
 		)
-		prune_training_checkpoints(
-			path.parent,
+		publish_latest_training_checkpoint(
+			path,
+			cursor,
 			max_checkpoints=max_checkpoints,
 		)
 	dist.barrier()
@@ -322,8 +322,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	_validate_epoch_count(args.epochs)
 	if args.checkpoint_every <= 0:
 		raise ValueError("checkpoint_every must be positive")
-	if args.max_checkpoints <= 0 or args.max_checkpoints > 4:
-		raise ValueError("max_checkpoints must be between 1 and 4")
+	if args.max_checkpoints != 1:
+		raise ValueError("max_checkpoints must be exactly 1")
 	if args.initial_gradient_scale <= 0:
 		raise ValueError("initial_gradient_scale must be positive")
 	if args.visual_length_buckets <= 0:
@@ -731,7 +731,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 					or global_step == total_steps
 				)
 			):
-				saved_checkpoint = _save_baseline_checkpoint(
+				_save_baseline_checkpoint(
 					output_dir=output_dir,
 					model=training_model,
 					optimizer=optimizer,
@@ -743,11 +743,6 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 					world_size=world_size,
 					max_checkpoints=args.max_checkpoints,
 				)
-				if rank == 0:
-					_write_json(
-						output_dir / "latest_checkpoint.json",
-						{"path": str(saved_checkpoint), "cursor": asdict(cursor)},
-					)
 			if global_step >= total_steps:
 				break
 		if global_step >= total_steps:
@@ -828,7 +823,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--skip-adapter-save", action="store_true")
 	parser.add_argument("--skip-checkpoint-save", action="store_true")
 	parser.add_argument("--checkpoint-every", type=int, default=100)
-	parser.add_argument("--max-checkpoints", type=int, choices=range(1, 5), default=4)
+	parser.add_argument("--max-checkpoints", type=int, choices=(1,), default=1)
 	parser.add_argument("--resume-checkpoint", type=Path)
 	parser.add_argument("--learning-rate", type=float, default=5e-5)
 	parser.add_argument("--weight-decay", type=float, default=0.01)

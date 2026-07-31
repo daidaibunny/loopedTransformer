@@ -165,15 +165,45 @@ def prune_training_checkpoints(
 	*,
 	max_checkpoints: int,
 ) -> list[Path]:
-	"""Keep only the newest requested training checkpoint files."""
-	if max_checkpoints <= 0 or max_checkpoints > 4:
-		raise ValueError("max_checkpoints must be between 1 and 4")
+	"""Keep only the latest training checkpoint file."""
+	if max_checkpoints != 1:
+		raise ValueError("max_checkpoints must be exactly 1")
 	root = Path(checkpoint_root)
 	checkpoints = sorted(root.glob("*.pt"), key=_checkpoint_sort_key)
 	removed = checkpoints[:-max_checkpoints]
 	for path in removed:
 		path.unlink()
 	return removed
+
+
+def publish_latest_training_checkpoint(
+	checkpoint_path: str | Path,
+	cursor: TrainingCursor,
+	*,
+	max_checkpoints: int,
+) -> list[Path]:
+	"""Atomically publish the newest checkpoint pointer, then remove older files."""
+	checkpoint = Path(checkpoint_path)
+	if not checkpoint.is_file():
+		raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint}")
+	pointer = checkpoint.parent.parent / "latest_checkpoint.json"
+	temporary = pointer.with_suffix(pointer.suffix + ".tmp")
+	if temporary.exists():
+		raise FileExistsError(f"Temporary checkpoint pointer already exists: {temporary}")
+	temporary.write_text(
+		json.dumps(
+			{"path": str(checkpoint), "cursor": asdict(cursor)},
+			indent=2,
+			sort_keys=True,
+		)
+		+ "\n",
+		encoding="utf-8",
+	)
+	temporary.replace(pointer)
+	return prune_training_checkpoints(
+		checkpoint.parent,
+		max_checkpoints=max_checkpoints,
+	)
 
 
 def _trainable_parameter_state(model: nn.Module) -> dict[str, torch.Tensor]:

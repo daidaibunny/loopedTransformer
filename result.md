@@ -27,26 +27,15 @@ the current experiments.
 | Experiment | COCO | GQA Balanced | CLEVR | Comparable final metrics |
 | --- | --- | --- | --- | --- |
 | Frozen original Qwen3-VL-Embedding-2B | Pending | Pending | Pending | No |
-| Independent LoRA baseline | Passed | Passed | Running | COCO and GQA |
+| Independent LoRA baseline | Passed | Passed | Interrupted | COCO and GQA |
 | Recurrent latent-slot model | Pending | Pending | Pending | No |
 
 The frozen row cannot reuse the old 200-row smoke or an older mixed-data report. It must
 be evaluated on the exact test splits above.
 
-### Scheduled frozen evaluation
-
-- Status: waiting for the current six-experiment queue; no metrics exist yet.
-- Code: commit `5c752bc4d42ef4eb073bed91870daf98e0ed5a4b` in isolated worktree
-  `/home/mnt/liyiwei/loopedTransformer_worktrees/baseline_bucket_5c752bc`.
-- Runtime: 8 × V100, FP16, scaled dot-product attention, per-device batch 32,
-  4 workers, baseline-only visual-length bucketing with at most 3 buckets and at
-  least 8 items per bucket, zero trainable parameters, no validation.
-- Dataset order: COCO → GQA Balanced → CLEVR, using the split contract above.
-- Tmux: `frozen_base_full_test_after_six_5c752bc_v2_20260731`.
-- Output:
-  `/home/mnt/liyiwei/outputs/frozen_base_full_test_5c752bc_20260731`.
-- Log:
-  `/home/mnt/liyiwei/outputs/frozen_base_full_test_5c752bc_v2_20260731.tmux.log`.
+The first CLEVR LoRA attempt was interrupted by the 2026-07-31 experiment reorder.
+Its latest resumable state is step 100 (25,600 processed train rows); it has no final
+adapter or test metrics and is not a completed result.
 
 ## EXP-001 — COCO independent LoRA baseline
 
