@@ -78,3 +78,29 @@
 - Required metrics are mAP, P@1/5/10/20, R@1/5/10/20, MRR, and nDCG@10.
 - Use percentage values from 0 to 100. Aggregate COCO directions equally, then aggregate
   datasets with fixed weights COCO:GQA Balanced:CLEVR = 50:35:15.
+
+## Experiment result registry
+
+- The repository-root `result.md` is the mandatory central experiment comparison record.
+  Raw `run_manifest.json`, `training_result.json`, and `report.json` files remain the
+  source of truth.
+- Update `result.md` after every formal experiment reaches passed, failed, or interrupted
+  status. Also record a smoke run when it selects a production batch size, memory setting,
+  checkpoint policy, or other result-affecting runtime choice.
+- Never report a running experiment as completed. Use `Pending`, `Running`, `Failed`,
+  `Interrupted`, or `N/A` explicitly, and never infer a missing value.
+- Every record must contain:
+  - experiment identity, objective, terminal status, start/end time, route, node, and code
+    commit;
+  - dataset and split, sample rows, unique images, and manifest checksum;
+  - base-model checksum, architecture or recurrent pass count, trainable scope/count, and
+    final checkpoint or adapter checksum;
+  - seed, precision, attention implementation, GPU/world size, per-device batch,
+    contrastive global batch, optimizer global batch, optimizer, learning rate, schedule,
+    epochs/steps, and checkpoint policy;
+  - query/candidate gallery protocol, validation-use status, full required test metrics,
+    wall time, stable throughput, peak GPU memory, and evidence paths.
+- COCO records must contain text-to-image, image-to-text, and their equal-direction mean.
+  GQA Balanced and CLEVR records must contain their independent answer-retrieval results.
+- Do not combine a smoke metric, partial-test metric, old mixed-data metric, or another
+  project result with the current full single-dataset comparison.

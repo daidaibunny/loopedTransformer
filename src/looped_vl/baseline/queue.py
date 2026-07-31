@@ -135,6 +135,51 @@ def build_evaluation_command(
 	]
 
 
+def build_frozen_evaluation_command(
+	dataset: str,
+	*,
+	dataset_root: Path,
+	model_root: Path,
+	output_root: Path,
+	world_size: int,
+	batch_size: int,
+	num_workers: int,
+) -> list[str]:
+	"""Build one direct multi-rank test command for the untouched Qwen checkpoint."""
+	if dataset not in BASELINE_DATASETS:
+		raise ValueError(f"Unsupported baseline dataset: {dataset}")
+	for name, value in (
+		("world_size", world_size),
+		("batch_size", batch_size),
+		("num_workers", num_workers),
+	):
+		if value <= 0:
+			raise ValueError(f"{name} must be positive")
+	return [
+		sys.executable,
+		"-m",
+		"torch.distributed.run",
+		"--standalone",
+		f"--nproc_per_node={world_size}",
+		"-m",
+		"looped_vl.baseline.evaluate",
+		"--dataset",
+		dataset,
+		"--dataset-root",
+		str(dataset_root / dataset),
+		"--model-root",
+		str(model_root),
+		"--output-dir",
+		str(output_root / dataset),
+		"--expected-world-size",
+		str(world_size),
+		"--batch-size",
+		str(batch_size),
+		"--num-workers",
+		str(num_workers),
+	]
+
+
 def _write_json(path: Path, value: Any) -> None:
 	path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 

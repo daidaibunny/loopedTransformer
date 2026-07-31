@@ -1,4 +1,4 @@
-"""Distributed held-out retrieval evaluation for one saved LoRA adapter."""
+"""Distributed held-out retrieval evaluation for frozen Qwen or one LoRA adapter."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from looped_vl.baseline.data import (
 )
 from looped_vl.baseline.model import (
 	BaselineInputProcessor,
+	load_frozen_evaluation_model,
 	load_lora_evaluation_model,
 	pool_last_token,
 )
@@ -397,11 +398,12 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	rows = _load_rows(Path(args.dataset_root), args.max_test_rows)
 	groups, relevance = _build_groups(args.dataset, Path(args.dataset_root), rows)
 	model_root = Path(args.model_root)
-	adapter_root = Path(args.adapter_root)
+	adapter_root = Path(args.adapter_root) if args.adapter_root is not None else None
+	model_variant = "lora" if adapter_root is not None else "frozen_base"
 	base_hash_before = checkpoint_sha256(model_root / "model.safetensors") if rank == 0 else None
 	adapter_hash = (
 		checkpoint_sha256(adapter_root / "adapter_model.safetensors")
-		if rank == 0
+		if rank == 0 and adapter_root is not None
 		else None
 	)
 	processor = BaselineInputProcessor.from_pretrained(
@@ -410,12 +412,26 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 		min_pixels=args.min_pixels,
 		max_pixels=args.max_pixels,
 	)
-	model = load_lora_evaluation_model(
-		model_root,
-		adapter_root,
-		dtype=torch.float16,
-		attention_implementation=args.attention_implementation,
-	).to(device)
+	if adapter_root is None:
+		model = load_frozen_evaluation_model(
+			model_root,
+			dtype=torch.float16,
+			attention_implementation=args.attention_implementation,
+		).to(device)
+	else:
+		model = load_lora_evaluation_model(
+			model_root,
+			adapter_root,
+			dtype=torch.float16,
+			attention_implementation=args.attention_implementation,
+		).to(device)
+	trainable_parameter_count = sum(
+		parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+	)
+	if trainable_parameter_count:
+		raise RuntimeError(
+			f"Evaluation model unexpectedly has {trainable_parameter_count} trainable parameters",
+		)
 	torch.cuda.reset_peak_memory_stats(device)
 	start = time.perf_counter()
 	for name, items in groups.items():
@@ -507,7 +523,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 			raise RuntimeError("Immutable Qwen checkpoint changed during evaluation")
 		report = {
 			"status": "passed",
-			"scope": "single_dataset_lora_test",
+			"scope": f"single_dataset_{model_variant}_test",
 			"dataset": args.dataset,
 			"metric_scale": METRIC_SCALE,
 			"metrics": dataset_metrics,
@@ -524,11 +540,13 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 				"ndcg_cutoff": 10,
 			},
 			"model": {
+				"variant": model_variant,
 				"model_root": str(model_root),
-				"adapter_root": str(adapter_root),
+				"adapter_root": str(adapter_root) if adapter_root is not None else None,
 				"base_checkpoint_sha256_before": base_hash_before,
 				"base_checkpoint_sha256_after": base_hash_after,
 				"adapter_sha256": adapter_hash,
+				"trainable_parameter_count": trainable_parameter_count,
 				"runtime_precision": "fp16",
 				"attention_implementation": args.attention_implementation,
 			},
@@ -551,7 +569,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--dataset", choices=BASELINE_DATASETS, required=True)
 	parser.add_argument("--dataset-root", type=Path, required=True)
 	parser.add_argument("--model-root", type=Path, required=True)
-	parser.add_argument("--adapter-root", type=Path, required=True)
+	parser.add_argument(
+		"--adapter-root",
+		type=Path,
+		help="Optional LoRA adapter. Omit it to evaluate the fully frozen base checkpoint.",
+	)
 	parser.add_argument("--output-dir", type=Path, required=True)
 	parser.add_argument("--expected-world-size", type=int, default=8)
 	parser.add_argument("--batch-size", type=int, default=4)

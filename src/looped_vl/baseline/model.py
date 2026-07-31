@@ -218,6 +218,26 @@ def load_lora_evaluation_model(
 	return model
 
 
+def load_frozen_evaluation_model(
+	model_root: str | Path,
+	*,
+	dtype: torch.dtype,
+	attention_implementation: str,
+) -> nn.Module:
+	"""Load the untouched base checkpoint with every parameter frozen."""
+	module = load_local_embedding_module(Path(model_root))
+	model = module.Qwen3VLForEmbedding.from_pretrained(
+		str(model_root),
+		trust_remote_code=True,
+		dtype=dtype,
+		attn_implementation=attention_implementation,
+	)
+	model.config.use_cache = False
+	model.eval()
+	model.requires_grad_(False)
+	return model
+
+
 class BaselineLoRATrainingModel(nn.Module):
 	"""Keep both embedding towers and multi-positive loss inside the DDP forward."""
 

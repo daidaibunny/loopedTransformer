@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import torch
 from torch import nn
@@ -10,6 +12,7 @@ from looped_vl.baseline.model import (
 	BASELINE_LORA_TARGETS,
 	BaselineLoRATrainingModel,
 	build_lora_config,
+	load_frozen_evaluation_model,
 )
 
 
@@ -43,6 +46,49 @@ class _FakeEmbeddingModel(nn.Module):
 			(),
 			{"last_hidden_state": input_values.unsqueeze(1)},
 		)()
+
+
+class _FakeFrozenEmbeddingModel(nn.Module):
+	def __init__(self) -> None:
+		super().__init__()
+		self.weight = nn.Parameter(torch.ones(1))
+		self.config = type("Config", (), {"use_cache": True})()
+
+
+class _FakeEmbeddingModule:
+	class Qwen3VLForEmbedding:
+		loaded_arguments: dict[str, object] = {}
+
+		@classmethod
+		def from_pretrained(cls, model_root: str, **kwargs: object) -> nn.Module:
+			cls.loaded_arguments = {"model_root": model_root, **kwargs}
+			return _FakeFrozenEmbeddingModel()
+
+
+def test_frozen_evaluation_model_has_no_trainable_parameters(
+	monkeypatch: pytest.MonkeyPatch,
+	tmp_path: Path,
+) -> None:
+	monkeypatch.setattr(
+		"looped_vl.baseline.model.load_local_embedding_module",
+		lambda _model_root: _FakeEmbeddingModule,
+	)
+
+	model = load_frozen_evaluation_model(
+		str(tmp_path),
+		dtype=torch.float16,
+		attention_implementation="sdpa",
+	)
+
+	assert model.training is False
+	assert not any(parameter.requires_grad for parameter in model.parameters())
+	assert model.config.use_cache is False  # type: ignore[attr-defined]
+	assert _FakeEmbeddingModule.Qwen3VLForEmbedding.loaded_arguments == {
+		"model_root": str(tmp_path),
+		"trust_remote_code": True,
+		"dtype": torch.float16,
+		"attn_implementation": "sdpa",
+	}
 
 
 def test_baseline_grouped_forward_restores_query_and_candidate_order(
