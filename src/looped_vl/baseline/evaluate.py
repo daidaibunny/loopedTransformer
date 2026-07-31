@@ -393,19 +393,28 @@ def _write_json(path: Path, value: Any) -> None:
 	path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _initialize_evaluation_distributed(
+	expected_world_size: int,
+) -> tuple[int, int, torch.device]:
+	"""Use CPU collectives so waiting ranks never occupy GPUs during rank-zero scoring."""
+	local_rank = int(os.environ["LOCAL_RANK"])
+	torch.cuda.set_device(local_rank)
+	dist.init_process_group(backend="gloo")
+	rank = dist.get_rank()
+	world_size = dist.get_world_size()
+	if world_size != expected_world_size:
+		raise RuntimeError(f"Expected {expected_world_size} ranks, found {world_size}")
+	return rank, world_size, torch.device("cuda", local_rank)
+
+
 def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	if args.visual_length_buckets <= 0:
 		raise ValueError("visual_length_buckets must be positive")
 	if args.min_visual_bucket_size <= 0:
 		raise ValueError("min_visual_bucket_size must be positive")
-	local_rank = int(os.environ["LOCAL_RANK"])
-	torch.cuda.set_device(local_rank)
-	dist.init_process_group(backend="nccl")
-	rank = dist.get_rank()
-	world_size = dist.get_world_size()
-	if world_size != args.expected_world_size:
-		raise RuntimeError(f"Expected {args.expected_world_size} ranks, found {world_size}")
-	device = torch.device("cuda", local_rank)
+	rank, world_size, device = _initialize_evaluation_distributed(
+		args.expected_world_size,
+	)
 	logging.basicConfig(
 		level=logging.INFO,
 		format=f"%(asctime)s %(levelname)s [rank {rank}] %(message)s",

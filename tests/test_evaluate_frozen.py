@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+import looped_vl.baseline.evaluate as baseline_evaluate
 import looped_vl.evaluate_frozen as evaluate_frozen
 from looped_vl.evaluate_frozen import (
 	_initialize_distributed,
@@ -113,3 +114,30 @@ def test_distributed_initialization_binds_device_before_nccl(
 		1,
 		torch.device("cuda", 1),
 	)
+
+
+def test_baseline_evaluation_uses_cpu_collectives_for_rank_zero_scoring(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	events: list[tuple[str, object]] = []
+	monkeypatch.setenv("LOCAL_RANK", "3")
+	monkeypatch.setattr(
+		baseline_evaluate.torch.cuda,
+		"set_device",
+		lambda rank: events.append(("set_device", rank)),
+	)
+	monkeypatch.setattr(
+		baseline_evaluate.dist,
+		"init_process_group",
+		lambda **kwargs: events.append(("init_process_group", kwargs)),
+	)
+	monkeypatch.setattr(baseline_evaluate.dist, "get_rank", lambda: 2)
+	monkeypatch.setattr(baseline_evaluate.dist, "get_world_size", lambda: 8)
+
+	rank, world_size, device = baseline_evaluate._initialize_evaluation_distributed(8)
+
+	assert events == [
+		("set_device", 3),
+		("init_process_group", {"backend": "gloo"}),
+	]
+	assert (rank, world_size, device) == (2, 8, torch.device("cuda", 3))
