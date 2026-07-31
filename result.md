@@ -27,7 +27,7 @@ the current experiments.
 | Experiment | COCO | GQA Balanced | CLEVR | Comparable final metrics |
 | --- | --- | --- | --- | --- |
 | Frozen original Qwen3-VL-Embedding-2B | Pending | Pending | Pending | No |
-| Independent LoRA baseline | Passed | Running | Pending | COCO only |
+| Independent LoRA baseline | Passed | Passed | Running | COCO and GQA |
 | Recurrent latent-slot model | Pending | Pending | Pending | No |
 
 The frozen row cannot reuse the old 200-row smoke or an older mixed-data report. It must
@@ -89,6 +89,47 @@ be evaluated on the exact test splits above.
 | Equal-direction mean | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
 
 Coverage was 100%. Similarity was the dot product of L2-normalized embeddings.
+
+## EXP-002 — GQA Balanced independent LoRA baseline
+
+- Status/date: passed, 2026-07-31; exact start/end timestamps were not recorded (`N/A`).
+- Objective: establish the unmodified-architecture LoRA answer-retrieval baseline on
+  full GQA Balanced.
+- Route/node: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB.
+- Code: commit `9930a8dcad3f764a80d31870773846266c15d2b2`.
+- Data: 943,000 train rows; 12,578 held-out test rows; no validation use. Train
+  manifest SHA-256 `2022a835621ea4c072e1e09c5412b78d3322fdd1ac658485ac947859fb20abdb`;
+  test manifest SHA-256
+  `ba1442bb782bb4627efc081111009e833dbbe6a5451a9f0264075cf662318b2b`.
+- Base model: `Qwen3-VL-Embedding-2B/base_original`;
+  SHA-256 `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1`
+  before and after.
+- Trainable parameters: 31,195,136 LoRA parameters; rank 32, alpha 32, dropout 0;
+  all 28 decoder layers; `q_proj`, `k_proj`, `v_proj`, `up_proj`, `down_proj`,
+  and `gate_proj`.
+- Optimization: seed 42, 1 epoch, 3,684 optimizer steps, learning rate 5e-5,
+  weight decay 0.01, temperature 0.02, warmup ratio 0.02.
+- Runtime: FP16, scaled dot-product attention, gradient checkpointing enabled,
+  per-device batch 32, contrastive and optimizer global batch 256, 4 data workers.
+- Checkpoints: every 100 steps, at most 4 retained; final adapter SHA-256
+  `8434c82b66963c53db625643fce374d00d1e1fab549a2668c9feaff54ae0712d`.
+- Performance: train 35,357.95 seconds; whole-run average 26.67 samples/second;
+  peak allocated memory 19.17 GiB per rank; test 215.91 seconds.
+- Output:
+  `/home/mnt/liyiwei/outputs/six_full_train_test_9930a8d_20260730/baseline/gqa_balanced`.
+- Evidence: tmux `six_full_train_test_9930a8d_20260730`; exact commands are stored
+  in the queue `status.json` and train `run_manifest.json`; log
+  `/home/mnt/liyiwei/outputs/six_full_train_test_9930a8d_20260730.tmux.log`.
+
+### Test metrics (%)
+
+| mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 74.9712 | 62.9035 | 17.9043 | 9.3473 | 4.8056 | 62.9035 | 89.5214 | 93.4727 | 96.1123 | 74.9712 | 79.3467 |
+
+The answer gallery contained 1,833 normalized answers observed in training. Coverage
+was 99.9841%; answer accuracy equals P@1.
 
 ## Canonical performance-selection smokes
 
