@@ -97,7 +97,7 @@
   the pure-recurrent/no-LoRA identity and reject incompatible result inputs.
 - [x] Use CPU Gloo collectives for recurrent evaluation and record the final-pass primary
   metrics, per-pass metrics, exact peak GPU memory, and global encoding throughput.
-- [ ] Re-run all recurrent safety and throughput smokes under the damped recurrent
+- [x] Re-run recurrent safety and throughput smokes under the damped recurrent
   protocol; older recurrent smokes contained LoRA or the removed connector and cannot
   select the formal configuration.
 - [x] Lock the recurrent v2 forward path to K=8, R=4, slots-only extra passes, fixed EOS
@@ -110,5 +110,5 @@
   auxiliary InfoNCE 0.1, and absolute-cosine final-slot diversity 0.05.
 - [x] Reject old recurrent checkpoints through the v3 architecture and v4 training
   protocol identity.
-- [ ] Run a new eight-V100 architecture, gradient, memory, and throughput smoke for the
+- [x] Run a new eight-V100 architecture, gradient, memory, and throughput smoke for the
   damped connector-free model before launching any formal recurrent experiment.

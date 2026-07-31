@@ -338,6 +338,83 @@ per-device batch 8.
   environment and a commit-pinned worktree. Neither failed attempt produced a
   checkpoint or quality result.
 
+## EXP-SMOKE-005 — Current damped recurrence with EOS-weighted auxiliary slots
+
+- Status/date: passed, 2026-07-31; exact start/end timestamps were not separately
+  recorded (`N/A`).
+- Objective: validate the current no-LoRA, no-connector architecture, select safe
+  eight-V100 train/evaluation batch sizes, verify one-checkpoint retention, and exercise
+  the Pass 1–4 metric and recurrent-improvement report. This is a runtime smoke and
+  partial-prefix test, not a formal model-quality result.
+- Route/node/code: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB,
+  `main` commit `6b82132f83304ebfeeba24715f77bef3a77ab99b`.
+- Model: `damped_mid_decoder_latent_slot_recurrence_no_lora_v3`,
+  `pure_recurrent_single_stage_eos_weighted_aux_v4`, K=8, R=4, fixed
+  `alpha=1/4`, frozen backbone, no LoRA, no recurrent connector, and one shared
+  256-dimensional EOS-conditioned weighted-slot auxiliary head. Training has
+  2,641,921 parameters; inference retains 2,115,585. Backbone SHA-256 remained
+  `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1`.
+- Data: GQA Balanced train has 943,000 rows and 72,140 images; the smoke consumed
+  1,536 rows. The authoritative train manifest SHA-256 is
+  `2022a835621ea4c072e1e09c5412b78d3322fdd1ac658485ac947859fb20abdb`.
+  Validation was not used.
+- Training: FP16, scaled dot-product attention, gradient checkpointing, seed 42,
+  AdamW, learning rate 1e-5, cosine schedule, weight decay 0.01, per-device batch
+  32, contrastive global batch 256, gradient accumulation 2, optimizer global batch
+  512, 4 workers, and 3 optimizer steps. The formal schedule remains exactly one
+  full epoch; only this smoke stopped after three steps.
+- Training efficiency: 84.22 seconds total. After the first compilation/warm-up step,
+  steps 2 and 3 reached 36.28 and 35.29 samples/second, averaging 35.79
+  samples/second. Exact peak PyTorch allocated memory was 16.25 GiB. Every rank
+  completed, losses and gradients were finite, and collapse/unused-recurrence guards
+  stayed false.
+- Checkpoint: one rolling file,
+  `checkpoints/step000003.pt` (31,839,738 bytes), SHA-256
+  `f15711c7886433ef2082f7ccee40c521016ff9f62b39662e358e2460e1b6d4b3`.
+  No older checkpoint remains in this experiment.
+- Evaluation: partial GQA test prefix with 2,048 query rows, 381 unique query images,
+  and a 379-answer gallery. The authoritative full-test manifest SHA-256 is
+  `ba1442bb782bb4627efc081111009e833dbbe6a5451a9f0264075cf662318b2b`.
+  Eight Gloo ranks used FP16, scaled dot-product attention, per-device batch 128,
+  and 4 workers. Encoding 2,427 query/gallery items took 84.13 seconds
+  (28.85 items/second); total evaluation time was 118.37 seconds and exact peak
+  allocated GPU memory was 10.86 GiB.
+
+### Partial GQA metrics by recurrent pass (%)
+
+| Pass | Extra recurrent updates | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0 | 49.3414 | 31.6406 | 14.6484 | 9.0381 | 4.8340 | 31.6406 | 73.2422 | 90.3809 | 96.6797 | 49.3414 | 58.6854 |
+| 2 | 1 | 50.7671 | 33.3496 | 14.9707 | 9.1162 | 4.8340 | 33.3496 | 74.8535 | 91.1621 | 96.6797 | 50.7671 | 60.0042 |
+| 3 | 2 | 51.3037 | 33.9355 | 15.0195 | 9.1504 | 4.8364 | 33.9355 | 75.0977 | 91.5039 | 96.7285 | 51.3037 | 60.5163 |
+| 4 | 3 | 51.6104 | 34.1797 | 15.1367 | 9.1504 | 4.8413 | 34.1797 | 75.6836 | 91.5039 | 96.8262 | 51.6104 | 60.7645 |
+
+| Pass | Extra recurrent updates | mAP change from previous pass | mAP change from Pass 1 |
+| ---: | ---: | ---: | ---: |
+| 1 | 0 | +0.0000 | +0.0000 |
+| 2 | 1 | +1.4257 | +1.4257 |
+| 3 | 2 | +0.5367 | +1.9623 |
+| 4 | 3 | +0.3066 | +2.2689 |
+
+These partial metrics show that the reporting path and all recurrent pass outputs work;
+they do not establish model quality because the checkpoint saw only 1,536 training rows
+and the test used only 2,048 rows. They are excluded from the formal comparison table.
+Batch 32 training and batch 128 evaluation are the selected safe settings. Larger
+batches were not attempted because measured memory plus long visual-token tails left
+insufficient safety margin; they are safe selections, not proven mathematical maxima.
+
+- Evidence: training tmux/log
+  `rls_v4_eosaux_b32_6b82132_20260731` and
+  `/home/mnt/liyiwei/outputs/rls_v4_eosaux_b32_6b82132_20260731.tmux.log`;
+  training output
+  `/home/mnt/liyiwei/outputs/rls_v4_eosaux_b32_6b82132_20260731`;
+  evaluation tmux/log
+  `rls_v4_eval_gqa_b128_6b82132_20260731` and
+  `/home/mnt/liyiwei/outputs/rls_v4_eval_gqa_b128_6b82132_20260731.tmux.log`;
+  evaluation output
+  `/home/mnt/liyiwei/outputs/rls_v4_eval_gqa_b128_6b82132_20260731`.
+
 ## Required record for every new experiment
 
 1. Identity: unique ID, objective, terminal status, start/end time, route, node, exact code
@@ -359,11 +436,11 @@ header level groups results by dataset; the second level lists the compared metr
 COCO uses the equal-direction mean of text-to-image and image-to-text. GQA Balanced and
 CLEVR use answer retrieval. Compare metrics only within the same dataset.
 
-The pure recurrent parameter count is 8,430,081 during training. This consists of
-4,233,729 inference parameters plus a 4,196,352-parameter training-only auxiliary slot
-embedding head that is discarded for inference. The frozen backbone has no trainable
-parameters in this experiment. `N/A` means the corresponding full held-out test result
-does not exist.
+The current pure recurrent parameter count is 2,641,921 during training. This consists
+of 2,115,585 inference parameters plus a 526,336-parameter training-only
+EOS-conditioned weighted-slot auxiliary head that is discarded for inference. The
+frozen backbone has no trainable parameters in this experiment. `N/A` means the
+corresponding full held-out test result does not exist.
 
 <table>
 <thead>
@@ -424,9 +501,9 @@ does not exist.
 </tr>
 <tr>
 <td>Frozen backbone + damped recurrent latent slots (no LoRA)</td>
+<td>8</td>
 <td>4</td>
-<td>4</td>
-<td>8,430,081</td>
+<td>2,641,921</td>
 <td>Pending</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
