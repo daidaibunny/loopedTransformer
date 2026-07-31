@@ -1,12 +1,15 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 from torch import nn
 
 from looped_vl import evaluate_recurrent
+from looped_vl.evaluate_frozen import EncodingItem
 from looped_vl.evaluate_recurrent import (
+	_encode_group,
 	_initialize_evaluation_distributed,
 	_primary_final_pass_metrics,
 	_summarize_evaluation_runtime,
@@ -246,6 +249,73 @@ def test_recurrent_runtime_summary_reports_global_throughput_and_peak_memory() -
 		"encoding_items_per_second": 8.0,
 		"peak_gpu_memory_bytes": 15_000,
 	}
+
+
+def test_recurrent_encode_group_saves_every_loop_pass_on_normal_path(
+	monkeypatch: pytest.MonkeyPatch,
+	tmp_path: Path,
+) -> None:
+	class _Processor:
+		def prepare(
+			self,
+			model_inputs: list[dict[str, object]],
+			*,
+			device: torch.device,
+		) -> dict[str, int]:
+			assert device == torch.device("cuda")
+			return {"batch_size": len(model_inputs)}
+
+	class _Model:
+		config = SimpleNamespace(num_total_loop_passes=4)
+
+		def __call__(
+			self,
+			*,
+			batch_size: int,
+			return_all_loop_embeddings: bool,
+		) -> SimpleNamespace:
+			assert return_all_loop_embeddings
+			embeddings = torch.tensor([[1.0, 0.0]]).repeat(batch_size, 1)
+			loop_embeddings = tuple(embeddings.clone() for _ in range(4))
+			return SimpleNamespace(
+				embeddings=loop_embeddings[-1],
+				loop_embeddings=loop_embeddings,
+			)
+
+	monkeypatch.setattr(evaluate_recurrent.torch.cuda, "synchronize", lambda device: None)
+	output_dir = tmp_path / "evaluation"
+	(output_dir / "embedding_cache").mkdir(parents=True)
+	args = SimpleNamespace(
+		batch_size=1,
+		num_workers=0,
+		prefetch_factor=2,
+		log_every_batches=1,
+	)
+
+	runtime = _encode_group(
+		name="query",
+		items=[
+			EncodingItem(item_id="item-0", text="first"),
+			EncodingItem(item_id="item-1", text="second"),
+		],
+		model=_Model(),
+		processor=_Processor(),
+		args=args,
+		rank=0,
+		world_size=1,
+		device=torch.device("cuda"),
+		output_dir=output_dir,
+	)
+
+	assert runtime["items"] == 2
+	assert runtime["group"] == "query"
+	for pass_number in range(1, 5):
+		shard = torch.load(
+			output_dir / "embedding_cache" / f"query.pass{pass_number}.rank0.pt",
+			weights_only=True,
+		)
+		assert shard["indices"].tolist() == [0, 1]
+		assert shard["embeddings"].shape == (2, 2)
 
 
 def test_final_pass_primary_metrics_use_coco_equal_direction_mean() -> None:

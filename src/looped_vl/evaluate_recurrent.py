@@ -302,12 +302,18 @@ def _encode_group(
 	index_chunks: list[torch.Tensor] = []
 	embedding_chunks: dict[int, list[torch.Tensor]] = defaultdict(list)
 	start = time.perf_counter()
-	processed = 0
+	processed_items = 0
 	for batch_number, batch in enumerate(loader, start=1):
 		try:
-			processed = processor.prepare(batch["model_inputs"], device=torch.device("cuda"))
+			processed_inputs = processor.prepare(
+				batch["model_inputs"],
+				device=torch.device("cuda"),
+			)
 			with torch.inference_mode():
-				output = model(**processed, return_all_loop_embeddings=True)
+				output = model(
+					**processed_inputs,
+					return_all_loop_embeddings=True,
+				)
 			if output.loop_embeddings is None:
 				raise RuntimeError("Recurrent model did not return per-loop embeddings")
 			expected_passes = model.config.num_total_loop_passes
@@ -321,11 +327,11 @@ def _encode_group(
 				raise RuntimeError(
 					"Final retrieval embedding does not equal the last loop-pass embedding",
 				)
-				for pass_number, embeddings in enumerate(output.loop_embeddings, start=1):
-					validate_embeddings(embeddings, len(batch["global_indices"]))
-					embedding_chunks[pass_number].append(embeddings.float().cpu())
-				index_chunks.append(torch.tensor(batch["global_indices"], dtype=torch.long))
-				processed += len(batch["global_indices"])
+			for pass_number, embeddings in enumerate(output.loop_embeddings, start=1):
+				validate_embeddings(embeddings, len(batch["global_indices"]))
+				embedding_chunks[pass_number].append(embeddings.float().cpu())
+			index_chunks.append(torch.tensor(batch["global_indices"], dtype=torch.long))
+			processed_items += len(batch["global_indices"])
 		finally:
 			_close_batch_images(batch["model_inputs"])
 		if batch_number == 1 or batch_number % args.log_every_batches == 0:
@@ -333,7 +339,7 @@ def _encode_group(
 				"status": "encoding",
 				"rank": rank,
 				"group": name,
-					"processed": processed,
+				"processed": processed_items,
 				"rank_items": len(global_indices),
 				"elapsed_seconds": time.perf_counter() - start,
 			}
