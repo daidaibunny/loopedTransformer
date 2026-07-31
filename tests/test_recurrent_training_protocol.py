@@ -56,10 +56,13 @@ def test_recurrent_losses_match_independent_multi_positive_losses() -> None:
 		requires_grad=True,
 	)
 	slot_query = torch.tensor(
-		[[0.8, 0.2], [1.0, 0.0], [0.1, 0.9]],
+		[[0.8, 0.2, 0.0], [1.0, 0.0, 0.0], [0.1, 0.9, 0.0]],
 		requires_grad=True,
 	)
-	slot_candidate = candidate.detach().clone().requires_grad_(True)
+	slot_candidate = torch.tensor(
+		[[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+		requires_grad=True,
+	)
 	positive_ids = ("answer:yes", "answer:yes", "answer:no")
 
 	actual = distributed_multi_positive_info_nce_losses(

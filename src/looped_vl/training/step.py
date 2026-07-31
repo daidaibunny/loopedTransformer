@@ -56,7 +56,7 @@ def distributed_multi_positive_info_nce_losses(
 	positive_ids: Sequence[str],
 	temperature: float,
 ) -> dict[str, torch.Tensor]:
-	"""Calculate multiple multi-positive losses with one differentiable all-gather."""
+	"""Calculate multi-positive losses with one differentiable gather per width."""
 	if not embedding_pairs:
 		raise ValueError("At least one embedding pair is required")
 	if temperature <= 0:
@@ -67,31 +67,52 @@ def distributed_multi_positive_info_nce_losses(
 		for name in names
 		for embedding in embedding_pairs[name]
 	)
-	reference_shape = local_tensors[0].shape
-	if len(reference_shape) != 2 or reference_shape[0] == 0:
+	reference_batch_size = local_tensors[0].shape[0]
+	if local_tensors[0].ndim != 2 or reference_batch_size == 0:
 		raise ValueError("Embeddings must have a non-empty rank-two shape")
-	if any(tensor.shape != reference_shape for tensor in local_tensors):
-		raise ValueError("Every query and candidate embedding set must have equal shape")
-	if len(positive_ids) != reference_shape[0]:
+	for name in names:
+		query_embeddings, candidate_embeddings = embedding_pairs[name]
+		if (
+			query_embeddings.ndim != 2
+			or candidate_embeddings.ndim != 2
+			or query_embeddings.shape != candidate_embeddings.shape
+			or query_embeddings.shape[0] != reference_batch_size
+		):
+			raise ValueError(
+				"Every embedding pair must have equal query/candidate shapes and "
+				"the shared local batch size",
+			)
+	if len(positive_ids) != reference_batch_size:
 		raise ValueError("positive_ids must contain one identifier per local row")
 	local_ids = tuple(str(identifier) for identifier in positive_ids)
 	if any(not identifier for identifier in local_ids):
 		raise ValueError("positive_ids cannot contain empty identifiers")
 	global_ids = _gather_positive_ids(local_ids)
-	packed_local = torch.stack(local_tensors, dim=0)
-	if dist.is_available() and dist.is_initialized():
-		gathered = all_gather(packed_local)
-		if any(item.shape != packed_local.shape for item in gathered):
-			raise RuntimeError("Every rank must use equal local contrastive batch sizes")
-		packed_global = torch.cat(gathered, dim=1)
-	else:
-		packed_global = packed_local
+	tensor_groups: dict[
+		tuple[int, torch.dtype, torch.device],
+		list[tuple[int, torch.Tensor]],
+	] = {}
+	for tensor_index, tensor in enumerate(local_tensors):
+		key = (tensor.shape[1], tensor.dtype, tensor.device)
+		tensor_groups.setdefault(key, []).append((tensor_index, tensor))
+	global_tensors: dict[int, torch.Tensor] = {}
+	for group in tensor_groups.values():
+		packed_local = torch.stack([tensor for _, tensor in group], dim=0)
+		if dist.is_available() and dist.is_initialized():
+			gathered = all_gather(packed_local)
+			if any(item.shape != packed_local.shape for item in gathered):
+				raise RuntimeError("Every rank must use equal local contrastive batch sizes")
+			packed_global = torch.cat(gathered, dim=1)
+		else:
+			packed_global = packed_local
+		for group_index, (tensor_index, _) in enumerate(group):
+			global_tensors[tensor_index] = packed_global[group_index]
 	losses: dict[str, torch.Tensor] = {}
 	for index, name in enumerate(names):
 		local_query = local_tensors[2 * index]
 		local_candidate = local_tensors[2 * index + 1]
-		global_query = packed_global[2 * index]
-		global_candidate = packed_global[2 * index + 1]
+		global_query = global_tensors[2 * index]
+		global_candidate = global_tensors[2 * index + 1]
 		losses[name] = 0.5 * (
 			_multi_positive_directional_loss(
 				local_query,
