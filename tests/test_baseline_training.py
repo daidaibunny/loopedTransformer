@@ -89,6 +89,8 @@ def test_baseline_cli_defaults_to_the_true_256_pair_batch_and_four_checkpoints(
 	assert args.initial_gradient_scale == 4096.0
 	assert args.checkpoint_every == 100
 	assert args.max_checkpoints == 4
+	assert args.visual_length_buckets == 3
+	assert args.min_visual_bucket_size == 8
 
 
 def test_baseline_formal_training_is_exactly_one_epoch() -> None:

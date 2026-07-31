@@ -23,6 +23,11 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
+from looped_vl.baseline.bucketing import (
+	DEFAULT_MIN_VISUAL_BUCKET_SIZE,
+	DEFAULT_VISUAL_LENGTH_BUCKETS,
+	group_baseline_model_inputs,
+)
 from looped_vl.baseline.data import (
 	BASELINE_DATASETS,
 	BaselineManifestDataset,
@@ -49,7 +54,6 @@ from looped_vl.training.checkpointing import (
 	truncate_metric_log,
 	validate_checkpoint_metadata,
 )
-from looped_vl.training.data import group_model_inputs_by_modality
 from looped_vl.training.schedule import (
 	FORMAL_TRAINING_LOG_INTERVAL,
 	BatchOffsetSampler,
@@ -322,6 +326,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		raise ValueError("max_checkpoints must be between 1 and 4")
 	if args.initial_gradient_scale <= 0:
 		raise ValueError("initial_gradient_scale must be positive")
+	if args.visual_length_buckets <= 0:
+		raise ValueError("visual_length_buckets must be positive")
+	if args.min_visual_bucket_size <= 0:
+		raise ValueError("min_visual_bucket_size must be positive")
 	rank, world_size, local_rank, device = _initialize_distributed(
 		args.expected_world_size,
 	)
@@ -424,6 +432,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"max_length": args.max_length,
 		"min_pixels": args.min_pixels,
 		"max_pixels": args.max_pixels,
+		"visual_length_buckets": args.visual_length_buckets,
+		"min_visual_bucket_size": args.min_visual_bucket_size,
 	}
 	cursor = TrainingCursor(
 		stage=0,
@@ -503,6 +513,13 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"max_length": args.max_length,
 		"min_pixels": args.min_pixels,
 		"max_pixels": args.max_pixels,
+		"visual_length_bucketing": {
+			"enabled": args.visual_length_buckets > 1,
+			"maximum_buckets": args.visual_length_buckets,
+			"minimum_bucket_size": args.min_visual_bucket_size,
+			"length_measure": "post_smart_resize_visual_tokens",
+			"contrastive_batch_unchanged": True,
+		},
 		"seed": args.seed,
 		"checkpoint_every": args.checkpoint_every,
 		"formal_training_log_interval": FORMAL_TRAINING_LOG_INTERVAL,
@@ -567,9 +584,13 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 				or batch_index + 1 == full_loader_batches
 			)
 			try:
-				input_groups = group_model_inputs_by_modality(
-					batch["query_inputs"],
-					batch["candidate_inputs"],
+				combined_inputs = batch["query_inputs"] + batch["candidate_inputs"]
+				input_groups = group_baseline_model_inputs(
+					combined_inputs,
+					min_pixels=args.min_pixels,
+					max_pixels=args.max_pixels,
+					max_visual_buckets=args.visual_length_buckets,
+					min_visual_bucket_size=args.min_visual_bucket_size,
 				)
 				processed_batches = tuple(
 					processor.prepare(list(group.model_inputs), device=device)
@@ -819,6 +840,16 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)
 	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)
+	parser.add_argument(
+		"--visual-length-buckets",
+		type=int,
+		default=DEFAULT_VISUAL_LENGTH_BUCKETS,
+	)
+	parser.add_argument(
+		"--min-visual-bucket-size",
+		type=int,
+		default=DEFAULT_MIN_VISUAL_BUCKET_SIZE,
+	)
 	parser.add_argument(
 		"--attention-implementation",
 		choices=("sdpa", "eager"),

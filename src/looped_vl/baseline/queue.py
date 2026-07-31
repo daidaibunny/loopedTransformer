@@ -86,6 +86,10 @@ def build_training_command(
 		str(contrastive_global_batch_size),
 		"--num-workers",
 		str(run.num_workers),
+		"--visual-length-buckets",
+		"3",
+		"--min-visual-bucket-size",
+		"8",
 		"--checkpoint-every",
 		str(checkpoint_every),
 		"--max-checkpoints",
@@ -132,6 +136,10 @@ def build_evaluation_command(
 		str(run.per_device_batch_size),
 		"--num-workers",
 		str(run.num_workers),
+		"--visual-length-buckets",
+		"3",
+		"--min-visual-bucket-size",
+		"8",
 	]
 
 
@@ -177,6 +185,10 @@ def build_frozen_evaluation_command(
 		str(batch_size),
 		"--num-workers",
 		str(num_workers),
+		"--visual-length-buckets",
+		"3",
+		"--min-visual-bucket-size",
+		"8",
 	]
 
 

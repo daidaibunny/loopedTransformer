@@ -54,6 +54,8 @@ def test_training_command_keeps_dataset_specific_parallel_parameters(tmp_path: P
 	assert command[command.index("--expected-contrastive-global-batch-size") + 1] == "256"
 	assert command[command.index("--num-workers") + 1] == "6"
 	assert command[command.index("--expected-world-size") + 1] == "8"
+	assert command[command.index("--visual-length-buckets") + 1] == "3"
+	assert command[command.index("--min-visual-bucket-size") + 1] == "8"
 	assert "--no-gradient-checkpointing" in command
 
 
@@ -77,6 +79,8 @@ def test_frozen_evaluation_command_uses_all_eight_v100_ranks(tmp_path: Path) -> 
 	assert command[command.index("--expected-world-size") + 1] == "8"
 	assert command[command.index("--batch-size") + 1] == "32"
 	assert command[command.index("--num-workers") + 1] == "4"
+	assert command[command.index("--visual-length-buckets") + 1] == "3"
+	assert command[command.index("--min-visual-bucket-size") + 1] == "8"
 	assert "--adapter-root" not in command
 
 

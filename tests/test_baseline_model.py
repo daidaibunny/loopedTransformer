@@ -12,6 +12,7 @@ from looped_vl.baseline.model import (
 	BASELINE_LORA_TARGETS,
 	BaselineLoRATrainingModel,
 	build_lora_config,
+	encode_grouped_baseline_batches,
 	load_frozen_evaluation_model,
 )
 
@@ -46,6 +47,38 @@ class _FakeEmbeddingModel(nn.Module):
 			(),
 			{"last_hidden_state": input_values.unsqueeze(1)},
 		)()
+
+
+def test_baseline_grouped_encoder_restores_original_order() -> None:
+	model = _FakeEmbeddingModel()
+	text_group = {
+		"input_values": torch.tensor([[1.0, 0.0], [0.0, 4.0]]),
+		"attention_mask": torch.ones(2, 1, dtype=torch.long),
+	}
+	vision_group = {
+		"input_values": torch.tensor([[2.0, 2.0], [-3.0, 3.0]]),
+		"attention_mask": torch.ones(2, 1, dtype=torch.long),
+	}
+
+	embeddings = encode_grouped_baseline_batches(
+		model=model,
+		processed_batches=(text_group, vision_group),
+		original_indices=((0, 3), (1, 2)),
+		total_rows=4,
+	)
+
+	diagonal = 2**-0.5
+	assert torch.allclose(
+		embeddings,
+		torch.tensor(
+			[
+				[1.0, 0.0],
+				[diagonal, diagonal],
+				[-diagonal, diagonal],
+				[0.0, 1.0],
+			],
+		),
+	)
 
 
 class _FakeFrozenEmbeddingModel(nn.Module):

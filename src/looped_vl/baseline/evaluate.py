@@ -20,6 +20,11 @@ import torch.distributed as dist
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
+from looped_vl.baseline.bucketing import (
+	DEFAULT_MIN_VISUAL_BUCKET_SIZE,
+	DEFAULT_VISUAL_LENGTH_BUCKETS,
+	group_baseline_model_inputs,
+)
 from looped_vl.baseline.data import (
 	BASELINE_DATASETS,
 	COCO_IMAGE_TO_TEXT_INSTRUCTION,
@@ -28,9 +33,9 @@ from looped_vl.baseline.data import (
 )
 from looped_vl.baseline.model import (
 	BaselineInputProcessor,
+	encode_grouped_baseline_batches,
 	load_frozen_evaluation_model,
 	load_lora_evaluation_model,
-	pool_last_token,
 )
 from looped_vl.metrics import METRIC_SCALE, REQUIRED_RANKING_METRICS
 from looped_vl.smoke import checkpoint_sha256
@@ -229,17 +234,30 @@ def _encode_group(
 	processed_count = 0
 	for batch_number, batch in enumerate(loader, start=1):
 		try:
-			processed = processor.prepare(batch["model_inputs"], device=device)
+			input_groups = group_baseline_model_inputs(
+				batch["model_inputs"],
+				min_pixels=args.min_pixels,
+				max_pixels=args.max_pixels,
+				max_visual_buckets=args.visual_length_buckets,
+				min_visual_bucket_size=args.min_visual_bucket_size,
+			)
+			processed_batches = tuple(
+				processor.prepare(list(group.model_inputs), device=device)
+				for group in input_groups
+			)
 		finally:
 			_close_images(batch["model_inputs"])
 		with torch.inference_mode(), torch.autocast(
 			device_type="cuda",
 			dtype=torch.float16,
 		):
-			output = model(**processed)
-			embeddings = pool_last_token(
-				output.last_hidden_state,
-				processed["attention_mask"],
+			embeddings = encode_grouped_baseline_batches(
+				model=model,
+				processed_batches=processed_batches,
+				original_indices=tuple(
+					group.original_indices for group in input_groups
+				),
+				total_rows=len(batch["model_inputs"]),
 			)
 		if not torch.isfinite(embeddings).all():
 			raise RuntimeError(f"Non-finite embeddings in {name}")
@@ -376,6 +394,10 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
+	if args.visual_length_buckets <= 0:
+		raise ValueError("visual_length_buckets must be positive")
+	if args.min_visual_bucket_size <= 0:
+		raise ValueError("min_visual_bucket_size must be positive")
 	local_rank = int(os.environ["LOCAL_RANK"])
 	torch.cuda.set_device(local_rank)
 	dist.init_process_group(backend="nccl")
@@ -538,6 +560,13 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 				"score": "dot_product_of_unit_normalized_embeddings",
 				"retrieval_cutoffs": RETRIEVAL_CUTOFFS,
 				"ndcg_cutoff": 10,
+				"visual_length_bucketing": {
+					"enabled": args.visual_length_buckets > 1,
+					"maximum_buckets": args.visual_length_buckets,
+					"minimum_bucket_size": args.min_visual_bucket_size,
+					"length_measure": "post_smart_resize_visual_tokens",
+					"candidate_gallery_unchanged": True,
+				},
 			},
 			"model": {
 				"variant": model_variant,
@@ -585,6 +614,16 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--max-length", type=int, default=8192)
 	parser.add_argument("--min-pixels", type=int, default=4 * 32 * 32)
 	parser.add_argument("--max-pixels", type=int, default=1800 * 32 * 32)
+	parser.add_argument(
+		"--visual-length-buckets",
+		type=int,
+		default=DEFAULT_VISUAL_LENGTH_BUCKETS,
+	)
+	parser.add_argument(
+		"--min-visual-bucket-size",
+		type=int,
+		default=DEFAULT_MIN_VISUAL_BUCKET_SIZE,
+	)
 	parser.add_argument(
 		"--attention-implementation",
 		choices=("sdpa", "eager"),
