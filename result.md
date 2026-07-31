@@ -34,6 +34,32 @@ The first CLEVR LoRA attempt was interrupted by the 2026-07-31 experiment reorde
 Its latest resumable state is step 100 (25,600 processed train rows); it has no final
 adapter or test metrics and is not a completed result.
 
+## Unified primary comparison metrics (%)
+
+Each model contributes exactly one primary row per dataset. COCO is a bidirectional
+image-text retrieval task, so its primary row is the arithmetic mean of text-to-image
+and image-to-text metrics. The two direction-specific rows remain diagnostic details in
+the corresponding experiment section; they are not three separate COCO tests. GQA
+Balanced and CLEVR are question-to-answer retrieval tasks and therefore each have one
+direction.
+
+| Model | Dataset | Primary aggregation | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Frozen original Qwen3-VL-Embedding-2B | COCO | Equal-direction mean | 61.2443 | 64.0153 | 33.9117 | 20.6115 | 11.7428 | 34.2366 | 64.9735 | 75.4542 | 83.6250 | 73.0671 | 66.9576 |
+| Independent LoRA baseline | COCO | Equal-direction mean | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
+| Frozen original Qwen3-VL-Embedding-2B | GQA Balanced | Answer retrieval | 52.1141 | 36.2697 | 14.4077 | 8.5292 | 4.6554 | 36.2697 | 72.0385 | 85.2918 | 93.1070 | 52.1141 | 59.5010 |
+| Independent LoRA baseline | GQA Balanced | Answer retrieval | 74.9712 | 62.9035 | 17.9043 | 9.3473 | 4.8056 | 62.9035 | 89.5214 | 93.4727 | 96.1123 | 74.9712 | 79.3467 |
+| Frozen original Qwen3-VL-Embedding-2B | CLEVR | Answer retrieval | 84.9359 | 73.1707 | 19.8499 | 9.9993 | 5.0000 | 73.1707 | 99.2493 | 99.9933 | 100.0000 | 84.9359 | 88.7750 |
+
+Frozen-versus-LoRA rows are directly comparable within COCO and within GQA Balanced:
+they use the same full test manifest checksum, query/candidate gallery, embedding
+normalization, similarity function, and metric implementation. The current COCO full
+test is 25,010 caption sample rows over 5,000 images; it is not a 25,010-image test.
+CLEVR does not yet have a completed LoRA result. Values from different datasets measure
+different retrieval tasks and must not be compared as if they shared one candidate
+gallery. Runtime is also not a strict frozen-versus-LoRA comparison because frozen
+evaluation used visual-length bucketing while the earlier LoRA evaluation did not.
+
 ## EXP-000A/B/C — Frozen original Qwen3-VL-Embedding-2B
 
 - Status/date: all three passed, 2026-07-31. The serial full-test queue ran from

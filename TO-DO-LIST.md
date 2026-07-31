@@ -85,3 +85,5 @@
 - [ ] Complete the restartable six-run serial train/test queue on all full splits.
 - [x] Evaluate the frozen original Qwen3-VL-Embedding-2B serially on the full COCO, GQA
   Balanced, and CLEVR test splits before restarting unfinished training experiments.
+- [x] Standardize the cross-model result table to one primary row per dataset: COCO uses
+  the equal-direction mean; GQA Balanced and CLEVR use answer retrieval.

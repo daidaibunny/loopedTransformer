@@ -85,6 +85,12 @@
 - Every evaluation report must pass `looped_vl.metrics.validate_evaluation_report`.
 - For the first single-dataset experiments, report each dataset independently. COCO must
   report text-to-image and image-to-text separately.
+- In every unified cross-model table, use exactly one primary row per model and dataset:
+  the equal-direction mean for COCO, and the answer-retrieval row for GQA Balanced and
+  CLEVR. Keep COCO direction-specific rows only as diagnostic details.
+- Compare model-quality metrics only within the same dataset and exact test manifest and
+  candidate gallery. Do not treat values from different retrieval tasks as directly
+  comparable.
 - Report the weighted Mix result only for later mixed-dataset experiments.
 - Required metrics are mAP, P@1/5/10/20, R@1/5/10/20, MRR, and nDCG@10.
 - Use percentage values from 0 to 100. Aggregate COCO directions equally, then aggregate
