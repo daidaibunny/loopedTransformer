@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
+from types import SimpleNamespace
 
 from looped_vl.baseline.frozen_queue import (
 	FrozenEvaluationRun,
@@ -12,6 +14,7 @@ from looped_vl.baseline.queue import (
 	BaselineRun,
 	build_frozen_evaluation_command,
 	build_training_command,
+	run_queue,
 )
 from looped_vl.baseline.smoke_search import _project_pythonpath
 from looped_vl.training.wait_and_launch import parse_gpu_snapshot
@@ -76,6 +79,41 @@ def test_training_command_can_select_only_the_last_four_decoder_layers(
 	)
 
 	assert command[command.index("--lora-decoder-layer-indices") + 1] == "24,25,26,27"
+
+
+def test_zero_idle_seconds_submits_all_three_runs_without_an_idle_gate(
+	tmp_path: Path,
+	monkeypatch,
+) -> None:
+	def reject_idle_wait(**_kwargs: object) -> None:
+		raise AssertionError("zero-second direct submission must not call the idle gate")
+
+	monkeypatch.setattr("looped_vl.baseline.queue.wait_for_idle_window", reject_idle_wait)
+	monkeypatch.setattr(
+		"looped_vl.baseline.queue.subprocess.run",
+		lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+	)
+	args = argparse.Namespace(
+		output_root=tmp_path / "outputs",
+		world_size=8,
+		required_idle_seconds=0.0,
+		poll_seconds=5.0,
+		dataset_root=tmp_path / "datasets",
+		model_root=tmp_path / "model",
+		project_root=tmp_path,
+		checkpoint_every=100,
+		max_checkpoints=1,
+		lora_scope="last_4_decoder_layers",
+	)
+	runs = [
+		BaselineRun("coco", 32, 1, 4),
+		BaselineRun("gqa_balanced", 32, 1, 4),
+		BaselineRun("clevr", 32, 1, 4),
+	]
+
+	run_queue(args, runs)
+
+	assert not list((tmp_path / "outputs").glob("*_idle_gate.jsonl"))
 
 
 def test_frozen_evaluation_command_uses_all_eight_v100_ranks(tmp_path: Path) -> None:

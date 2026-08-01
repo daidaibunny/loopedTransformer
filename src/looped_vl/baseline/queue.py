@@ -209,6 +209,8 @@ def run_queue(args: argparse.Namespace, runs: list[BaselineRun]) -> None:
 	"""Own the selected GPUs serially and stop immediately if one stage fails."""
 	if {run.dataset for run in runs} != set(BASELINE_DATASETS):
 		raise ValueError("Queue must contain exactly one COCO, GQA Balanced, and CLEVR run")
+	if args.required_idle_seconds < 0:
+		raise ValueError("required_idle_seconds must be non-negative")
 	output_root = Path(args.output_root)
 	if output_root.exists():
 		raise FileExistsError(f"Queue output already exists: {output_root}")
@@ -232,20 +234,21 @@ def run_queue(args: argparse.Namespace, runs: list[BaselineRun]) -> None:
 	)
 	environment["PYTHONPATH"] = str(Path(args.project_root) / "src")
 	for run_index, run in enumerate(runs):
-		_write_json(
-			status_path,
-			{
-				"status": "waiting_for_idle",
-				"dataset": run.dataset,
-				"run_index": run_index,
-			},
-		)
-		wait_for_idle_window(
-			required_seconds=args.required_idle_seconds,
-			poll_seconds=args.poll_seconds,
-			log_path=output_root / f"{run.dataset}_idle_gate.jsonl",
-			expected_indexes=tuple(range(args.world_size)),
-		)
+		if args.required_idle_seconds > 0:
+			_write_json(
+				status_path,
+				{
+					"status": "waiting_for_idle",
+					"dataset": run.dataset,
+					"run_index": run_index,
+				},
+			)
+			wait_for_idle_window(
+				required_seconds=args.required_idle_seconds,
+				poll_seconds=args.poll_seconds,
+				log_path=output_root / f"{run.dataset}_idle_gate.jsonl",
+				expected_indexes=tuple(range(args.world_size)),
+			)
 		training_command = build_training_command(
 			run,
 			project_root=Path(args.project_root),
