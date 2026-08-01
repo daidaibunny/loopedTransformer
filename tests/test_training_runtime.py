@@ -278,14 +278,14 @@ def test_checkpoint_rejects_non_pure_recurrent_protocol_before_loading(
 		metadata={"training_protocol": old_protocol},
 	)
 
-	with pytest.raises(ValueError, match="damped recurrent"):
+	with pytest.raises(ValueError, match="pure recurrent"):
 		load_training_checkpoint(
 			path=checkpoint_path,
 			model=model,
 			optimizer=optimizer,
 			scheduler=scheduler,
 			rank=0,
-			expected_training_protocol="pure_recurrent_single_stage_eos_weighted_aux_v4",
+			expected_training_protocol="single_stage_progressive_slot_attention_no_lora_v5",
 		)
 
 
@@ -599,12 +599,13 @@ def test_single_stage_loss_weights_are_fixed_during_the_entire_epoch() -> None:
 	components = {
 		"final_infonce": torch.tensor(10.0),
 		"loop_infonce": torch.tensor(2.0),
+		"progressive_loss": torch.tensor(3.0),
 		"slot_diversity": torch.tensor(4.0),
 	}
 
 	total = compose_training_loss(**components)
 
-	assert total.item() == pytest.approx(10.0 + 0.1 * 2.0 + 0.05 * 4.0)
+	assert total.item() == pytest.approx(10.0 + 0.1 * 2.0 + 0.1 * 3.0)
 
 
 def test_every_recurrent_parameter_group_uses_the_same_lr_from_step_one() -> None:

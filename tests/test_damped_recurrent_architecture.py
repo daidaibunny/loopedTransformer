@@ -19,6 +19,7 @@ from looped_vl.models.warmup_heads import AuxiliarySlotRetrievalHead
 from looped_vl.training.losses import slot_diversity_loss
 from looped_vl.training.model import RecurrentTrainingModel
 from looped_vl.training.step import compose_training_loss
+from looped_vl.training.train import _set_training_modes
 from looped_vl.training.trainability import configure_trainable_parameters
 
 
@@ -39,21 +40,22 @@ def _build_encoder() -> RecurrentQwen3VLEmbedding:
 	)
 
 
-def test_locked_configuration_uses_eight_slots_and_parameter_free_damping() -> None:
+def test_locked_configuration_uses_eight_slots_and_full_recurrent_updates() -> None:
 	config = RecurrentModelConfig.from_yaml(Path("configs/base.yaml"))
 
 	assert config.num_latent_slots == 8
 	assert config.num_total_loop_passes == 4
-	assert config.recurrent_step_size == pytest.approx(0.25)
+	assert config.recurrent_step_size == pytest.approx(1.0)
+	assert config.use_recurrent_layer_scale is True
 	assert not any("connector" in name or name.startswith("lora_") for name in vars(config))
 
 
 def test_result_identity_is_single_stage_and_explicitly_excludes_lora() -> None:
 	assert DAMPED_RECURRENT_ARCHITECTURE == (
-		"damped_mid_decoder_latent_slot_recurrence_no_lora_v3"
+		"direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5"
 	)
 	assert DAMPED_RECURRENT_TRAINING_PROTOCOL == (
-		"pure_recurrent_single_stage_eos_weighted_aux_v4"
+		"single_stage_progressive_slot_attention_no_lora_v5"
 	)
 	assert pure_recurrent_result_identity() == {
 		"architecture": DAMPED_RECURRENT_ARCHITECTURE,
@@ -69,7 +71,19 @@ def test_encoder_keeps_only_active_slots_and_has_no_recurrent_connector() -> Non
 
 	assert encoder.latent_slots.shape == (1, 8, 2048)
 	assert not hasattr(encoder, "recurrent_connector")
-	assert isinstance(encoder.auxiliary_embedding_head, AuxiliarySlotRetrievalHead)
+	assert encoder.recurrent_layer_scales.shape == (8, 2048)
+	assert not hasattr(encoder, "auxiliary_embedding_head")
+	assert not hasattr(encoder, "late_fusion")
+
+
+def test_v5_training_mode_does_not_require_removed_auxiliary_or_fusion_modules() -> None:
+	encoder = _build_encoder()
+	training_model = RecurrentTrainingModel(encoder)
+
+	_set_training_modes(training_model)
+
+	assert training_model.training is True
+	assert encoder.base_embedding_model.training is False
 
 
 def test_auxiliary_head_matches_shared_256_dimensional_specification() -> None:
@@ -109,10 +123,11 @@ def test_single_stage_loss_has_fixed_weights_from_the_first_step() -> None:
 	total = compose_training_loss(
 		final_infonce=torch.tensor(10.0),
 		loop_infonce=torch.tensor(2.0),
+		progressive_loss=torch.tensor(3.0),
 		slot_diversity=torch.tensor(4.0),
 	)
 
-	assert total.item() == pytest.approx(10.0 + 0.1 * 2.0 + 0.05 * 4.0)
+	assert total.item() == pytest.approx(10.0 + 0.1 * 2.0 + 0.1 * 3.0)
 
 
 def test_trainable_parameter_count_matches_no_lora_connector_free_design() -> None:
@@ -126,13 +141,8 @@ def test_trainable_parameter_count_matches_no_lora_connector_free_design() -> No
 	)
 
 	assert not any("lora_" in name or "connector" in name for name in groups.all)
-	inference_count = sum(
-		parameter.numel()
-		for name, parameter in encoder.named_parameters()
-		if name in {"latent_slots", "eos_delta"} or name.startswith("late_fusion.")
-	)
-	assert inference_count == 2_115_585
-	assert trainable_count == 2_641_921
+	assert set(groups.all) == {"latent_slots", "recurrent_layer_scales"}
+	assert trainable_count == 32_768
 
 
 def test_active_latent_slot_parameter_has_standard_contiguous_strides() -> None:
@@ -142,7 +152,7 @@ def test_active_latent_slot_parameter_has_standard_contiguous_strides() -> None:
 	assert encoder.latent_slots.stride() == (8 * 2048, 2048, 1)
 
 
-def test_training_averages_one_shared_auxiliary_loss_across_all_rounds() -> None:
+def test_training_uses_final_slot_loss_and_progressive_non_degradation() -> None:
 	class _FakeEncoder(nn.Module):
 		def __init__(self) -> None:
 			super().__init__()
@@ -164,9 +174,8 @@ def test_training_averages_one_shared_auxiliary_loss_across_all_rounds() -> None
 				loop_slot_hidden_states=loop_slots,
 				conditioning_eos_hidden_state=values,
 				slot_hidden_states=loop_slots[-1],
-				diagnostics={
-					"fusion_gate": zero,
-					"late_fusion_attention_entropy": zero,
+			diagnostics={
+					"eos_conditioned_slot_attention_entropy": zero,
 					"slot_pairwise_cosine": zero,
 					"recurrent_pass_cosine": (zero, zero, zero, zero),
 					"recurrent_pass_relative_update": (zero, zero, zero, zero),
@@ -195,5 +204,6 @@ def test_training_averages_one_shared_auxiliary_loss_across_all_rounds() -> None
 	assert len(output["loop_infonce_by_pass"]) == 4
 	assert torch.equal(
 		output["loop_infonce"],
-		torch.stack(output["loop_infonce_by_pass"]).mean(),
+		output["loop_infonce_by_pass"][-1],
 	)
+	assert output["progressive_loss"].ndim == 0

@@ -16,7 +16,6 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import (
 )
 
 from looped_vl.models.config import RecurrentModelConfig
-from looped_vl.models.late_slot_fusion import EOSConditionedSlotFusion
 from looped_vl.models.latent_slot_inserter import (
 	AugmentedSequence,
 	augment_before_last_valid_token,
@@ -25,7 +24,7 @@ from looped_vl.models.recurrent_decoder_block import (
 	build_dynamic_attention_mask,
 	detach_prefix_key_values,
 )
-from looped_vl.models.warmup_heads import AuxiliarySlotRetrievalHead
+from looped_vl.models.warmup_heads import eos_conditioned_slot_attention_embedding
 
 
 @dataclass(frozen=True)
@@ -70,19 +69,34 @@ def _dynamic_scaled_dot_product_attention(
 	)
 
 
+def recurrent_update(
+	previous_states: torch.Tensor,
+	proposed_states: torch.Tensor,
+	*,
+	step_size: float,
+) -> torch.Tensor:
+	"""Advance slots with a pass-count-independent step size."""
+	if previous_states.shape != proposed_states.shape:
+		raise ValueError("Previous and proposed recurrent slot states must have equal shapes")
+	if not 0.0 < step_size <= 1.0:
+		raise ValueError("step_size must be in (0, 1]")
+	return previous_states + step_size * (proposed_states - previous_states)
+
+
 def damped_recurrent_update(
 	previous_states: torch.Tensor,
 	proposed_states: torch.Tensor,
 	*,
 	total_passes: int,
 ) -> torch.Tensor:
-	"""Advance recurrent slots with the fixed step size alpha = 1 / R."""
-	if previous_states.shape != proposed_states.shape:
-		raise ValueError("Previous and proposed recurrent slot states must have equal shapes")
+	"""Compatibility wrapper for historical inverse-pass damping tests."""
 	if total_passes <= 0:
 		raise ValueError("total_passes must be positive")
-	step_size = 1.0 / total_passes
-	return previous_states + step_size * (proposed_states - previous_states)
+	return recurrent_update(
+		previous_states,
+		proposed_states,
+		step_size=1.0 / total_passes,
+	)
 
 
 def _gather_sequence_positions(
@@ -177,15 +191,12 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			: config.num_latent_slots,
 		].clone()
 		self.latent_slots = nn.Parameter(active_slot_initialization.unsqueeze(0))
-		self.eos_delta = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
-		self.late_fusion = EOSConditionedSlotFusion(
-			hidden_size=config.hidden_size,
-			attention_dim=config.fusion_attention_dim,
-		)
-		self.auxiliary_embedding_head = AuxiliarySlotRetrievalHead(
-			hidden_size=config.hidden_size,
-			output_size=config.auxiliary_output_dim,
-		)
+		if config.use_recurrent_layer_scale:
+			self.recurrent_layer_scales = nn.Parameter(
+				torch.ones(config.loop_end_layer - config.loop_start_layer, config.hidden_size),
+			)
+		else:
+			self.register_parameter("recurrent_layer_scales", None)
 		self.activation_checkpointing_enabled = False
 
 	@property
@@ -212,7 +223,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		video_grid_thw: torch.Tensor | None = None,
 		return_all_loop_embeddings: bool = False,
 	) -> RecurrentEmbeddingOutput:
-		"""Encode one tower with either the exact base or damped recurrent path."""
+		"""Encode one tower with either the exact base or pure recurrent path."""
 		if self.config.num_latent_slots == 0 and self.config.num_total_loop_passes == 1:
 			output = self._official_base_forward(
 				input_ids=input_ids,
@@ -357,13 +368,6 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 				augmented.slot_positions,
 				slots,
 			)
-		eos_values = _gather_sequence_positions(inputs_embeds, augmented.eos_positions)
-		eos_values = eos_values + self.eos_delta[0, 0].to(inputs_embeds.dtype)
-		inputs_embeds = _scatter_sequence_positions(
-			inputs_embeds,
-			augmented.eos_positions,
-			eos_values,
-		)
 		return inputs_embeds, position_ids, visual_position_mask, deepstack_embeddings
 
 	@staticmethod
@@ -488,11 +492,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 			augmented.eos_positions,
 		)
 		pass_one_proposed_slots = _gather_sequence_positions(hidden_states, slot_positions)
-		slot_states = damped_recurrent_update(
-			initial_slot_states,
-			pass_one_proposed_slots,
-			total_passes=self.config.num_total_loop_passes,
-		)
+		slot_states = pass_one_proposed_slots
 		loop_slot_hidden_states = [slot_states]
 
 		slot_cos, slot_sin = self._gather_dynamic_position_embeddings(
@@ -533,11 +533,16 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 					prefix_key_value=prefix_caches[offset],
 					position_embeddings=(slot_cos, slot_sin),
 					attention_mask=slot_attention_mask,
+					layer_scale=(
+						getattr(self, "recurrent_layer_scales", None)[offset]
+						if getattr(self, "recurrent_layer_scales", None) is not None
+						else None
+					),
 				)
-			slot_states = damped_recurrent_update(
+			slot_states = recurrent_update(
 				previous_slot_states,
 				proposed_slot_states,
-				total_passes=self.config.num_total_loop_passes,
+				step_size=self.config.recurrent_step_size,
 			)
 			loop_slot_hidden_states.append(slot_states)
 			pass_cosines.append(
@@ -609,10 +614,11 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 					for cache in prefix_caches
 				),
 				"recurrent_pass_cosine": tuple(pass_cosines),
-				"recurrent_pass_relative_update": tuple(pass_relative_updates),
-				"recurrent_step_size": self.config.recurrent_step_size,
-				"fusion_gate": final_output["fusion_gate"],
-				"late_fusion_attention_entropy": final_output["attention_entropy"].mean(),
+			"recurrent_pass_relative_update": tuple(pass_relative_updates),
+			"recurrent_step_size": self.config.recurrent_step_size,
+			"eos_conditioned_slot_attention_entropy": final_output[
+				"attention_entropy"
+			].mean(),
 				"slot_pairwise_cosine": _pairwise_slot_cosine(
 					slot_states,
 				),
@@ -631,7 +637,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		cache_position: torch.Tensor,
 		position_embeddings: tuple[torch.Tensor, torch.Tensor],
 	) -> dict[str, torch.Tensor | None]:
-		"""Finalize one recurrent pass through Layers 21–28, norm, and late fusion."""
+		"""Finalize one recurrent pass through Layers 21–28 and read direct EOS."""
 		language_model = self.language_model
 		hidden_states = _scatter_sequence_positions(
 			pass_one_full_hidden_states,
@@ -658,22 +664,21 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		)
 		attention_weights = None
 		attention_entropy = eos_hidden_state.new_zeros(eos_hidden_state.shape[0])
-		fusion_gate = eos_hidden_state.new_zeros(())
 		if self.config.num_latent_slots:
-			fusion_output = self.late_fusion(eos_hidden_state, slot_hidden_states)
-			pre_normalized_embedding = fusion_output.fused_embedding
-			attention_weights = fusion_output.attention_weights
-			attention_entropy = fusion_output.attention_entropy
-			fusion_gate = fusion_output.gate
-		else:
-			pre_normalized_embedding = eos_hidden_state
+			_, attention_weights = eos_conditioned_slot_attention_embedding(
+				slot_hidden_states,
+				eos_hidden_state,
+			)
+			weights_fp32 = attention_weights.float()
+			attention_entropy = -(
+				weights_fp32 * weights_fp32.clamp_min(1e-12).log()
+			).sum(dim=-1)
 		return {
-			"embeddings": F.normalize(pre_normalized_embedding, p=2, dim=-1),
+			"embeddings": F.normalize(eos_hidden_state.float(), p=2, dim=-1),
 			"slot_hidden_states": slot_hidden_states,
 			"eos_hidden_state": eos_hidden_state,
 			"attention_weights": attention_weights,
 			"attention_entropy": attention_entropy,
-			"fusion_gate": fusion_gate,
 		}
 
 	@staticmethod
@@ -757,6 +762,7 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		prefix_key_value: PrefixKeyValue,
 		position_embeddings: tuple[torch.Tensor, torch.Tensor],
 		attention_mask: torch.Tensor,
+		layer_scale: torch.Tensor | None = None,
 	) -> torch.Tensor:
 		"""Run one loop layer on dynamic tokens only, with detached prefix evidence."""
 		residual = dynamic_hidden_states
@@ -787,7 +793,14 @@ class RecurrentQwen3VLEmbedding(nn.Module):
 		hidden_states = residual + attention.o_proj(attention_output)
 		residual = hidden_states
 		hidden_states = layer.post_attention_layernorm(hidden_states)
-		return residual + layer.mlp(hidden_states)
+		proposed_states = residual + layer.mlp(hidden_states)
+		if layer_scale is None:
+			return proposed_states
+		if layer_scale.shape != (dynamic_hidden_states.shape[-1],):
+			raise ValueError("layer_scale must match the recurrent hidden size")
+		return dynamic_hidden_states + layer_scale.to(proposed_states.dtype) * (
+			proposed_states - dynamic_hidden_states
+		)
 
 	def _variant_name(self) -> str:
 		if self.config.num_latent_slots == 0:

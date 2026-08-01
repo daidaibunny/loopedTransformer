@@ -1,4 +1,4 @@
-shared_master_initialization: artifacts/master_slot_init_seed42.pt
+shared_master_initialization: artifacts/master_slot_init_seed42_kmax64.pt
 seed: 42
 slot_counts: [1, 2, 4, 8, 12, 16, 32, 64]
 loop_pass_counts: [1, 2, 3, 4]
@@ -6,12 +6,12 @@ baselines:
   base:
     num_latent_slots: 0
     num_total_loop_passes: 1
-    fusion: false
+    final_readout: direct_eos_after_suffix
   slots_without_recurrence:
     num_latent_slots: 8
     num_total_loop_passes: 1
-    fusion: true
+    final_readout: direct_eos_after_suffix
   full_proposed_model:
     num_latent_slots: 8
     num_total_loop_passes: 4
-    fusion: true
+    final_readout: direct_eos_after_suffix

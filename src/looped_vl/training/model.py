@@ -1,4 +1,4 @@
-"""One DDP forward containing the encoder, auxiliary heads, and all losses."""
+"""One distributed forward containing the recurrent encoder and all losses."""
 
 from __future__ import annotations
 
@@ -9,10 +9,12 @@ import torch
 from torch import nn
 
 from looped_vl.models.recurrent_qwen3vl_embedding import RecurrentQwen3VLEmbedding
+from looped_vl.models.warmup_heads import eos_conditioned_slot_attention_embedding
 from looped_vl.training.losses import slot_diversity_loss
 from looped_vl.training.step import (
 	compose_training_loss,
 	distributed_multi_positive_info_nce_losses,
+	progressive_non_degradation_loss,
 )
 
 
@@ -93,8 +95,7 @@ def _encode_grouped_batches(
 		for pass_index in range(loop_pass_count)
 	)
 	scalar_keys = (
-		"fusion_gate",
-		"late_fusion_attention_entropy",
+		"eos_conditioned_slot_attention_entropy",
 		"slot_pairwise_cosine",
 	)
 	diagnostics: dict[str, Any] = {
@@ -162,8 +163,8 @@ class RecurrentTrainingModel(nn.Module):
 		):
 			query_slots, candidate_slots = pass_slot_states.split(local_batch_size)
 			embedding_pairs[f"loop_pass_{pass_index}"] = (
-				self.encoder.auxiliary_embedding_head(query_slots, query_eos),
-				self.encoder.auxiliary_embedding_head(candidate_slots, candidate_eos),
+				eos_conditioned_slot_attention_embedding(query_slots, query_eos)[0],
+				eos_conditioned_slot_attention_embedding(candidate_slots, candidate_eos)[0],
 			)
 		contrastive_losses = distributed_multi_positive_info_nce_losses(
 			embedding_pairs=embedding_pairs,
@@ -175,7 +176,8 @@ class RecurrentTrainingModel(nn.Module):
 			contrastive_losses[f"loop_pass_{pass_index}"]
 			for pass_index in range(1, len(output.loop_slot_hidden_states) + 1)
 		)
-		loop_infonce = torch.stack(loop_infonce_by_pass).mean()
+		loop_infonce = loop_infonce_by_pass[-1]
+		progressive_loss = progressive_non_degradation_loss(loop_infonce_by_pass)
 		final_recurrent_slots = output.loop_slot_hidden_states[-1]
 		query_slots, candidate_slots = final_recurrent_slots.split(local_batch_size)
 		diversity = 0.5 * (
@@ -184,17 +186,18 @@ class RecurrentTrainingModel(nn.Module):
 		total_loss = compose_training_loss(
 			final_infonce=final_infonce,
 			loop_infonce=loop_infonce,
+			progressive_loss=progressive_loss,
 			slot_diversity=diversity,
 		)
 		return {
 			"total_loss": total_loss,
 			"final_infonce": final_infonce,
 			"loop_infonce": loop_infonce,
+			"progressive_loss": progressive_loss,
 			"loop_infonce_by_pass": loop_infonce_by_pass,
 			"slot_diversity": diversity,
-			"fusion_gate": output.diagnostics["fusion_gate"],
-			"late_fusion_attention_entropy": output.diagnostics[
-				"late_fusion_attention_entropy"
+			"eos_conditioned_slot_attention_entropy": output.diagnostics[
+				"eos_conditioned_slot_attention_entropy"
 			],
 			"slot_pairwise_cosine": output.diagnostics["slot_pairwise_cosine"],
 			"recurrent_pass_cosine": output.diagnostics["recurrent_pass_cosine"],

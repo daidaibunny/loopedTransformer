@@ -1,7 +1,9 @@
+import pytest
 import torch
 from torch import nn
 
 from looped_vl.training.trainability import (
+	MAX_RECURRENT_TRAINABLE_PARAMETERS,
 	align_trainable_parameter_dtype,
 	audit_gradient_scope,
 	configure_trainable_parameters,
@@ -13,6 +15,7 @@ class TinyRecurrentModel(nn.Module):
 		super().__init__()
 		self.base_embedding_model = nn.Linear(4, 4)
 		self.latent_slots = nn.Parameter(torch.randn(1, 16, 4))
+		self.recurrent_layer_scales = nn.Parameter(torch.ones(2, 4))
 		self.eos_delta = nn.Parameter(torch.zeros(1, 1, 4))
 		self.late_fusion = nn.Linear(4, 4)
 		self.auxiliary_embedding_head = nn.Linear(4, 4)
@@ -22,17 +25,8 @@ def test_pure_recurrent_trainability_freezes_the_entire_backbone() -> None:
 	model = TinyRecurrentModel()
 
 	groups = configure_trainable_parameters(model)
-	assert all(
-		name.startswith(
-			(
-				"latent_slots",
-				"auxiliary_embedding_head",
-			)
-		)
-		for name in groups.recurrent_core
-	)
-	assert any(name.startswith("eos_delta") for name in groups.final_fusion)
-	assert any(name.startswith("late_fusion") for name in groups.final_fusion)
+	assert set(groups.recurrent_core) == {"latent_slots", "recurrent_layer_scales"}
+	assert groups.final_fusion == ()
 	assert not any(name.startswith("base_embedding_model") for name in groups.all)
 	assert not any("lora_" in name.lower() for name in groups.all)
 	assert not any(
@@ -42,6 +36,19 @@ def test_pure_recurrent_trainability_freezes_the_entire_backbone() -> None:
 	assert set(groups.all) == {
 		name for name, parameter in model.named_parameters() if parameter.requires_grad
 	}
+
+
+def test_pure_recurrent_trainability_rejects_more_than_five_million_parameters() -> None:
+	model = nn.Module()
+	model.register_parameter(
+		"latent_slots",
+		nn.Parameter(
+			torch.empty(MAX_RECURRENT_TRAINABLE_PARAMETERS + 1, device="meta"),
+		),
+	)
+
+	with pytest.raises(RuntimeError, match="5,000,000"):
+		configure_trainable_parameters(model)
 
 
 def test_fp16_storage_promotes_only_trainable_parameters_to_fp32() -> None:

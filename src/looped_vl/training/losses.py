@@ -1,4 +1,4 @@
-"""Losses for the locked damped recurrent embedding architecture."""
+"""Losses for the locked pure recurrent embedding architecture."""
 
 from __future__ import annotations
 

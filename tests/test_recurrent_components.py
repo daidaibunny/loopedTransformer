@@ -139,18 +139,20 @@ def test_base_configuration_matches_v1_specification() -> None:
 	assert config.loop_end_layer == 20
 	assert config.num_total_loop_passes == 4
 	assert config.detach_prefix_kv_cache is True
-	assert config.fusion_attention_dim == 256
-	assert config.auxiliary_output_dim == 256
+	assert config.recurrent_step_size == 1.0
+	assert config.use_recurrent_layer_scale is True
+	assert config.fusion_attention_dim == 0
+	assert config.auxiliary_output_dim == 2048
 	assert not any("connector" in name for name in vars(config))
 	assert not any(name.startswith("lora_") for name in vars(config))
 
 
 def test_pure_recurrent_result_identity_explicitly_excludes_lora() -> None:
 	assert PURE_RECURRENT_ARCHITECTURE == (
-		"damped_mid_decoder_latent_slot_recurrence_no_lora_v3"
+		"direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5"
 	)
 	assert PURE_RECURRENT_TRAINING_PROTOCOL == (
-		"pure_recurrent_single_stage_eos_weighted_aux_v4"
+		"single_stage_progressive_slot_attention_no_lora_v5"
 	)
 	assert pure_recurrent_result_identity() == {
 		"architecture": PURE_RECURRENT_ARCHITECTURE,
@@ -523,7 +525,7 @@ def test_each_reported_pass_runs_its_loop_count_then_the_shared_suffix(
 			torch.tensor([[[2.0, 0.0], [2.0, 0.0]]]),
 		)
 	assert [value[0, 2, 0].item() for value in suffix_inputs] == pytest.approx(
-		[4 / 3, 5 / 3, 2.0],
+		[2.0, 7 / 3, 8 / 3],
 	)
 	assert [value[0, 3, 0].item() for value in suffix_inputs] == [2.0, 2.0, 2.0]
 	assert len(output.loop_slot_hidden_states) == 3

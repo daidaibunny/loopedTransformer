@@ -9,12 +9,10 @@ from torch import nn
 
 RECURRENT_CORE_PREFIXES = (
 	"latent_slots",
-	"auxiliary_embedding_head.",
+	"recurrent_layer_scales",
 )
-FINAL_FUSION_PREFIXES = (
-	"eos_delta",
-	"late_fusion.",
-)
+FINAL_FUSION_PREFIXES: tuple[str, ...] = ()
+MAX_RECURRENT_TRAINABLE_PARAMETERS = 5_000_000
 
 
 @dataclass(frozen=True)
@@ -56,8 +54,18 @@ def configure_trainable_parameters(model: nn.Module) -> TrainableParameterGroups
 		if name.startswith(FINAL_FUSION_PREFIXES):
 			parameter.requires_grad_(True)
 			final_fusion.append(name)
-	if not recurrent_core or not final_fusion:
-		raise RuntimeError("Recurrent-core and final-fusion groups must both be non-empty")
+	if not recurrent_core:
+		raise RuntimeError("Recurrent-core group must be non-empty")
+	trainable_parameter_count = sum(
+		parameter.numel()
+		for parameter in model.parameters()
+		if parameter.requires_grad
+	)
+	if trainable_parameter_count > MAX_RECURRENT_TRAINABLE_PARAMETERS:
+		raise RuntimeError(
+			"Pure recurrent training exceeds the 5,000,000 trainable-parameter limit: "
+			f"{trainable_parameter_count:,}",
+		)
 	return TrainableParameterGroups(
 		recurrent_core=tuple(recurrent_core),
 		final_fusion=tuple(final_fusion),

@@ -13,6 +13,7 @@ from torch.nn import functional as F
 
 from looped_vl.models.config import RecurrentModelConfig
 from looped_vl.models.loading import load_recurrent_components
+from looped_vl.models.warmup_heads import eos_conditioned_slot_attention_embedding
 from looped_vl.recurrent_data import RecurrentAlignedDataset
 from looped_vl.runtime import (
 	ATTENTION_IMPLEMENTATIONS,
@@ -173,12 +174,8 @@ def run_model_acceptance(args: argparse.Namespace) -> dict[str, Any]:
 					f"Pass {pass_number} norm error is too large: {pass_norm_error}",
 				)
 			pass_slots = output.loop_slot_hidden_states[pass_number - 1]
-			auxiliary_embedding = components.model.auxiliary_embedding_head(
-				pass_slots,
-				output.conditioning_eos_hidden_state,
-			)
-			_, pass_attention_weights = (
-				components.model.auxiliary_embedding_head.pool_slots(
+			auxiliary_embedding, pass_attention_weights = (
+				eos_conditioned_slot_attention_embedding(
 					pass_slots,
 					output.conditioning_eos_hidden_state,
 				)

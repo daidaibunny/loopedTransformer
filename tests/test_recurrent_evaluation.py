@@ -25,11 +25,9 @@ class _TinyInferenceModel(nn.Module):
 	def __init__(self) -> None:
 		super().__init__()
 		self.latent_slots = nn.Parameter(torch.zeros(1, 2))
-		self.eos_delta = nn.Parameter(torch.zeros(1, 2))
-		self.late_fusion = nn.Linear(2, 2)
+		self.recurrent_layer_scales = nn.Parameter(torch.ones(2, 2))
 		self.base_embedding_model = nn.Module()
 		self.base_embedding_model.backbone_weight = nn.Parameter(torch.zeros(2, 2))
-		self.auxiliary_embedding_head = nn.Linear(2, 2)
 
 
 def _checkpoint_state(model: nn.Module) -> dict[str, torch.Tensor]:
@@ -71,7 +69,7 @@ def test_inference_checkpoint_loads_only_damped_recurrent_parameters(
 
 	assert metadata["model_checkpoint_sha256"] == "base-hash"
 	for name, parameter in model.named_parameters():
-		if not name.startswith(("auxiliary_", "base_embedding_model")):
+		if not name.startswith("base_embedding_model"):
 			assert torch.equal(parameter, torch.full_like(parameter, 3))
 	assert torch.equal(
 		model.base_embedding_model.backbone_weight,
@@ -132,7 +130,7 @@ def test_inference_checkpoint_rejects_wrong_base_hash_and_missing_parameter(
 ) -> None:
 	model = _TinyInferenceModel()
 	state = _checkpoint_state(model)
-	state.pop("encoder.eos_delta")
+	state.pop("encoder.recurrent_layer_scales")
 	path = tmp_path / "checkpoint.pt"
 	torch.save(
 		{
@@ -183,7 +181,7 @@ def test_inference_checkpoint_rejects_missing_damped_result_identity(
 		path,
 	)
 
-	with pytest.raises(ValueError, match="damped recurrent identity"):
+	with pytest.raises(ValueError, match="pure recurrent identity"):
 		load_recurrent_inference_checkpoint(
 			model,
 			path,

@@ -167,7 +167,21 @@ def compose_training_loss(
 	*,
 	final_infonce: torch.Tensor,
 	loop_infonce: torch.Tensor,
+	progressive_loss: torch.Tensor,
 	slot_diversity: torch.Tensor,
 ) -> torch.Tensor:
-	"""Apply the locked single-stage loss weights at every optimizer step."""
-	return final_infonce + 0.1 * loop_infonce + 0.05 * slot_diversity
+	"""Train final retrieval, final slots, and non-degrading later recurrent passes."""
+	return final_infonce + 0.1 * loop_infonce + 0.1 * progressive_loss + 0.0 * slot_diversity
+
+
+def progressive_non_degradation_loss(
+	loop_losses: Sequence[torch.Tensor],
+) -> torch.Tensor:
+	"""Penalize a later recurrent pass only when its retrieval loss becomes worse."""
+	if len(loop_losses) < 2:
+		return loop_losses[0].new_zeros(()) if loop_losses else torch.tensor(0.0)
+	penalties = tuple(
+		F.relu(current - previous.detach())
+		for previous, current in zip(loop_losses[:-1], loop_losses[1:], strict=True)
+	)
+	return torch.stack(penalties).mean()

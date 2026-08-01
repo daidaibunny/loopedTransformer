@@ -9,13 +9,16 @@ loop_start_layer: 12
 loop_end_layer: 20
 num_total_loop_passes: 4
 num_extra_loop_passes: 3
+recurrent_step_size: 1.0
+use_recurrent_layer_scale: true
 update_prefix_in_extra_loops: false
 detach_prefix_kv_cache: true
+final_readout: direct_eos_after_suffix
 
 fusion:
-  type: eos_conditioned_slot_attention
-  attention_dim: 256
-  num_heads: 1
+  type: none
+  attention_dim: 0
+  num_heads: 0
   dropout: 0.0
   residual_gate_init: 0.0
   fuse_after_final_decoder_norm: true
@@ -23,8 +26,8 @@ fusion:
 auxiliary_head:
   pooling: eos_conditioned_weighted_slots
   input_dim: 2048
-  output_dim: 256
-  normalization: rmsnorm
+  output_dim: 2048
+  normalization: parameter_free_rmsnorm
   bias: false
   shared_across_rounds: true
   shared_across_query_candidate: true
@@ -32,6 +35,7 @@ auxiliary_head:
 loss:
   final_infonce_weight: 1.0
   loop_infonce_weight: 0.1
-  slot_diversity_weight: 0.05
+  progressive_loss_weight: 0.1
+  slot_diversity_weight: 0.0
   temperature: 0.02
   symmetric: true

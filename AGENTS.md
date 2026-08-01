@@ -8,8 +8,8 @@
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
 - The locked recurrent architecture is
-  `damped_mid_decoder_latent_slot_recurrence_no_lora_v3`. The attachment's LoRA and
-  two-stage sections are explicitly excluded by the user.
+  `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5`. The recurrent path contains
+  no LoRA, recurrent connector, trainable auxiliary projection, EOS delta, or late fusion.
 - Use one training stage and one full-data epoch. All trainable recurrent parameters are
   active from the first optimizer step.
 - Default to 8 active slots from the shared seed-42 16-slot initialization bank and 4
@@ -18,19 +18,23 @@
   K=8 default. Every K=8/12/16/32/64 comparison must use prefixes of the same seed-42
   64-slot bank, `artifacts/master_slot_init_seed42_kmax64.pt`; never overwrite the
   existing 16-slot bank.
-- The recurrent update is parameter-free damping with step size `1 / R`. The model must
-  contain no recurrent connector.
+- Pass 1 runs decoder Layers 13–20 on the full sequence and captures detached prefix
+  Key/Value evidence. Passes 2–4 update only the latent slots. Their recurrent step size
+  is independent of the number of passes and defaults to 1.0.
+- The extra passes share one trainable 2048-channel scale vector per repeated decoder
+  layer. Together with the latent slots, these are the only trainable recurrent
+  parameters. Enforce a hard limit of 5,000,000 trainable parameters before optimization.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
   only under experiment-specific output directories.
 - Always call the single-query attention from the final valid token over latent slots
   `EOS-conditioned slot attention pooling` (`EOS 条件化槽位注意力池化`). Do not shorten
-  it to ordinary pooling. Call the subsequent gated residual addition
-  `zero-gated residual fusion`.
-- The training-only auxiliary head must use the fixed layer-20 EOS from Pass 1 as a
-  query over the current pass slots. RMS-normalize EOS and slots, scale their dot
-  products by the square root of 2048, softmax across slots, sum the raw slots with
-  those weights, then apply the shared RMSNorm, bias-free 256-dimensional projection,
-  and L2 normalization. It must never use mean pooling in a formal run.
+  it to ordinary pooling. The v5 final retrieval readout is the direct Layer-28 EOS after
+  the original final RMSNorm and L2 normalization; it has no residual fusion.
+- The parameter-free training auxiliary readout uses the fixed layer-20 EOS from Pass 1
+  as a query over each pass's slots. RMS-normalize EOS and slots without learned weights,
+  scale their dot products by the square root of 2048, softmax across slots, sum the raw
+  slots with those weights, apply parameter-free RMS normalization, and L2-normalize the
+  resulting 2048-dimensional vector. It must never use mean pooling in a formal run.
 
 ## Remote execution
 
@@ -98,14 +102,14 @@
   parameters, or any superseded training protocol.
 - Every recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata, and
   `report.json` must declare architecture
-  `damped_mid_decoder_latent_slot_recurrence_no_lora_v3`, protocol
-  `pure_recurrent_single_stage_eos_weighted_aux_v4`, `backbone_frozen: true`,
+  `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5`, protocol
+  `single_stage_progressive_slot_attention_no_lora_v5`, `backbone_frozen: true`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
 - Recurrent training runs for exactly one epoch with final InfoNCE weight 1.0 at every
-  optimizer step. The mean of the four per-round auxiliary InfoNCE losses has weight 0.1,
-  and final-slot diversity has weight 0.05, at every optimizer step. All trainable groups
-  use the same learning-rate schedule from step one.
+  optimizer step. The final-pass parameter-free slot-attention InfoNCE has weight 0.1,
+  and the progressive non-degradation loss has weight 0.1. Slot diversity is logged but
+  has weight 0.0. All trainable groups use the same learning-rate schedule from step one.
 
 ## Verification
 

@@ -9,6 +9,38 @@ from torch import nn
 from torch.nn import functional as F
 
 
+def _parameter_free_rms_norm(hidden_states: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+	"""RMS-normalize activations without introducing a learned scale."""
+	float_states = hidden_states.float()
+	variance = float_states.square().mean(dim=-1, keepdim=True)
+	return float_states * torch.rsqrt(variance + eps)
+
+
+def eos_conditioned_slot_attention_embedding(
+	slot_hidden_states: torch.Tensor,
+	conditioning_eos_hidden_state: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+	"""Return a parameter-free hidden-size slot embedding and EOS attention weights."""
+	if slot_hidden_states.ndim != 3 or slot_hidden_states.shape[1] == 0:
+		raise ValueError("At least one contextual slot is required")
+	if conditioning_eos_hidden_state.shape != (
+		slot_hidden_states.shape[0],
+		slot_hidden_states.shape[2],
+	):
+		raise ValueError("Conditioning EOS shape must match the slot batch and hidden size")
+	normalized_eos = _parameter_free_rms_norm(conditioning_eos_hidden_state)
+	normalized_slots = _parameter_free_rms_norm(slot_hidden_states)
+	scores = torch.einsum("bd,bkd->bk", normalized_eos, normalized_slots)
+	scores = scores / math.sqrt(slot_hidden_states.shape[-1])
+	attention_weights = F.softmax(scores, dim=-1)
+	pooled_slots = torch.einsum(
+		"bk,bkd->bd",
+		attention_weights.to(slot_hidden_states.dtype),
+		slot_hidden_states,
+	)
+	return F.normalize(_parameter_free_rms_norm(pooled_slots), p=2, dim=-1), attention_weights
+
+
 class RMSNorm(nn.Module):
 	"""Parameter-efficient RMS normalization for auxiliary slot states."""
 

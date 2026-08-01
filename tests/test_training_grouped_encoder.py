@@ -17,8 +17,7 @@ class _FakeEncoder(nn.Module):
 			conditioning_eos_hidden_state=embeddings + 20,
 			slot_hidden_states=slots,
 			diagnostics={
-				"fusion_gate": mean,
-				"late_fusion_attention_entropy": mean + 1,
+				"eos_conditioned_slot_attention_entropy": mean + 1,
 				"slot_pairwise_cosine": mean + 2,
 				"recurrent_pass_cosine": (mean + 4, mean + 5),
 				"recurrent_pass_relative_update": (mean + 6, mean + 7),
@@ -55,5 +54,5 @@ def test_grouped_encoder_restores_original_order_and_weights_diagnostics() -> No
 		23.0,
 		24.0,
 	]
-	assert output.diagnostics["fusion_gate"].item() == 2.5
+	assert output.diagnostics["eos_conditioned_slot_attention_entropy"].item() == 3.5
 	assert output.diagnostics["recurrent_pass_cosine"][0].item() == 6.5

@@ -49,8 +49,7 @@ from looped_vl.throughput import validate_embeddings
 
 INFERENCE_PARAMETER_PREFIXES = (
 	"latent_slots",
-	"eos_delta",
-	"late_fusion.",
+	"recurrent_layer_scales",
 )
 
 
@@ -137,9 +136,7 @@ def build_recurrent_improvement_summary(
 
 
 def _is_inference_parameter(name: str) -> bool:
-	return name in INFERENCE_PARAMETER_PREFIXES[:2] or name.startswith(
-		INFERENCE_PARAMETER_PREFIXES[2:],
-	)
+	return name in INFERENCE_PARAMETER_PREFIXES
 
 
 def load_recurrent_inference_checkpoint(
@@ -164,12 +161,12 @@ def load_recurrent_inference_checkpoint(
 	if not isinstance(state, dict):
 		raise ValueError("Recurrent checkpoint parameter state is missing")
 	if any("lora_" in str(name).lower() for name in state):
-		raise ValueError("Damped recurrent checkpoints must not contain LoRA parameters")
+		raise ValueError("Pure recurrent checkpoints must not contain LoRA parameters")
 	if any("recurrent_connector" in str(name) for name in state):
-		raise ValueError("Damped recurrent checkpoints must not contain a recurrent connector")
+		raise ValueError("Pure recurrent checkpoints must not contain a recurrent connector")
 	expected_identity = pure_recurrent_result_identity()
 	if any(metadata.get(key) != value for key, value in expected_identity.items()):
-		raise ValueError("Checkpoint does not declare the required damped recurrent identity")
+		raise ValueError("Checkpoint does not declare the required pure recurrent identity")
 	model_parameters = dict(model.named_parameters())
 	expected_names = {
 		name for name in model_parameters if _is_inference_parameter(name)
@@ -542,9 +539,15 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	resolved_attention = resolve_attention_implementation(args.attention_implementation)
 	runtime_dtype = resolve_torch_dtype(args.runtime_precision)
 	model_config = RecurrentModelConfig.from_yaml(args.model_config)
-	if args.num_latent_slots is not None:
+	if (
+		args.num_latent_slots is not None
+		or args.recurrent_step_size is not None
+		or args.use_recurrent_layer_scale is not None
+	):
 		model_config = model_config.with_variant(
 			num_latent_slots=args.num_latent_slots,
+			recurrent_step_size=args.recurrent_step_size,
+			use_recurrent_layer_scale=args.use_recurrent_layer_scale,
 		)
 	dataset_root = Path(args.dataset_root)
 	dataset = RecurrentAlignedDataset(dataset_root, args.split)
@@ -704,6 +707,16 @@ def parse_args() -> argparse.Namespace:
 		"--num-latent-slots",
 		type=int,
 		choices=ALLOWED_SLOT_COUNTS,
+	)
+	parser.add_argument(
+		"--recurrent-step-size",
+		type=float,
+		choices=(0.5, 1.0),
+	)
+	parser.add_argument(
+		"--use-recurrent-layer-scale",
+		action=argparse.BooleanOptionalAction,
+		default=None,
 	)
 	parser.add_argument("--checkpoint", type=Path, required=True)
 	parser.add_argument("--output-dir", type=Path, required=True)

@@ -67,6 +67,7 @@ from looped_vl.training.schedule import (
 	should_log_training_metrics,
 )
 from looped_vl.training.trainability import (
+	MAX_RECURRENT_TRAINABLE_PARAMETERS,
 	align_trainable_parameter_dtype,
 	audit_gradient_scope,
 	configure_trainable_parameters,
@@ -174,8 +175,6 @@ def _build_loader(
 def _set_training_modes(model: RecurrentTrainingModel) -> None:
 	model.train()
 	model.encoder.base_embedding_model.eval()
-	model.encoder.auxiliary_embedding_head.train()
-	model.encoder.late_fusion.train()
 
 
 def _gather_rank_rng_states(world_size: int) -> list[dict[str, Any]]:
@@ -498,9 +497,9 @@ def _train_one_epoch(
 		"total_loss",
 		"final_infonce",
 		"loop_infonce",
+		"progressive_loss",
 		"slot_diversity",
-		"fusion_gate",
-		"late_fusion_attention_entropy",
+		"eos_conditioned_slot_attention_entropy",
 		"slot_pairwise_cosine",
 	)
 	accumulator: dict[str, torch.Tensor] = {}
@@ -706,9 +705,15 @@ def _train_one_epoch(
 				**finalized_diagnostics,
 				"gradient_norm": float(gradient_norm.detach().float().item()),
 				"recurrent_core_learning_rate": used_learning_rates[0],
-				"final_fusion_learning_rate": used_learning_rates[1],
+				"final_fusion_learning_rate": (
+					used_learning_rates[1] if len(used_learning_rates) > 1 else None
+				),
 				"next_recurrent_core_learning_rate": float(scheduler.get_last_lr()[0]),
-				"next_final_fusion_learning_rate": float(scheduler.get_last_lr()[1]),
+				"next_final_fusion_learning_rate": (
+					float(scheduler.get_last_lr()[1])
+					if len(scheduler.get_last_lr()) > 1
+					else None
+				),
 				"gradient_scale": float(gradient_scaler.get_scale()),
 				"gpu_memory_allocated_bytes": torch.cuda.memory_allocated(device),
 				"gpu_peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
@@ -726,7 +731,7 @@ def _train_one_epoch(
 				"slot_collapse": averages["slot_pairwise_cosine"] > 0.98,
 				"pooling_collapse": (
 					training_model.encoder.config.num_latent_slots > 1
-					and averages["late_fusion_attention_entropy"] < 0.1
+					and averages["eos_conditioned_slot_attention_entropy"] < 0.1
 				),
 				"recurrence_unused": (
 					global_step > 100
@@ -852,9 +857,15 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	project_root = Path(args.project_root)
 	git_commit = _resolve_git_commit(project_root, args.code_commit)
 	model_config = RecurrentModelConfig.from_yaml(args.model_config)
-	if args.num_latent_slots is not None:
+	if (
+		args.num_latent_slots is not None
+		or args.recurrent_step_size is not None
+		or args.use_recurrent_layer_scale is not None
+	):
 		model_config = model_config.with_variant(
 			num_latent_slots=args.num_latent_slots,
+			recurrent_step_size=args.recurrent_step_size,
+			use_recurrent_layer_scale=args.use_recurrent_layer_scale,
 		)
 	training_config = TrainingConfig.from_yaml(args.training_config)
 	model_checkpoint_path = Path(args.model_root) / "model.safetensors"
@@ -882,6 +893,12 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	)
 	training_model = RecurrentTrainingModel(components.model)
 	training_model.encoder.set_activation_checkpointing(args.gradient_checkpointing)
+	parameter_groups = configure_trainable_parameters(training_model.encoder)
+	trainable_parameter_count = sum(
+		parameter.numel()
+		for parameter in training_model.parameters()
+		if parameter.requires_grad
+	)
 	loader, sampler = _build_loader(args, rank, world_size, generator)
 	gradient_accumulation_steps = training_config.gradient_accumulation_steps(
 		args.per_device_batch_size,
@@ -940,6 +957,9 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"fused_adamw": True,
 		"seed": 42,
 		"model_config": asdict(model_config),
+		"trainable_parameter_names": parameter_groups.all,
+		"trainable_parameter_count": trainable_parameter_count,
+		"trainable_parameter_limit": MAX_RECURRENT_TRAINABLE_PARAMETERS,
 		"training_config": asdict(training_config),
 		"schedule": {
 			"epochs": 1,
@@ -959,9 +979,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		),
 		"multi_positive_contrastive_loss": True,
 		"combined_contrastive_all_gather": True,
-		"final_infonce_weight_all_steps": 1.0,
-		"loop_infonce_weight_all_steps": 0.1,
-		"slot_diversity_weight_all_steps": 0.05,
+		"final_infonce_weight_all_steps": model_config.final_infonce_weight,
+		"loop_infonce_weight_all_steps": model_config.loop_infonce_weight,
+		"progressive_loss_weight_all_steps": model_config.progressive_loss_weight,
+		"slot_diversity_weight_all_steps": model_config.slot_diversity_weight,
 		"all_parameter_groups_active_from_step_one": True,
 		"resume_per_device_batch_size": args.resume_per_device_batch_size,
 		"max_additional_optimizer_steps": args.max_additional_optimizer_steps,
@@ -1042,7 +1063,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		raise RuntimeError("Original Qwen checkpoint changed during training")
 	result = None
 	if rank == 0:
-		trainable_parameter_count = sum(
+		final_trainable_parameter_count = sum(
 			parameter.numel()
 			for parameter in training_model.parameters()
 			if parameter.requires_grad
@@ -1050,7 +1071,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		result = {
 			"status": "passed",
 			**pure_recurrent_result_identity(),
-			"trainable_parameter_count": trainable_parameter_count,
+			"trainable_parameter_count": final_trainable_parameter_count,
+			"trainable_parameter_limit": MAX_RECURRENT_TRAINABLE_PARAMETERS,
 			"final_cursor": asdict(final_cursor),
 			"runtime_seconds": time.perf_counter() - training_start,
 			"model_checkpoint_sha256_before": checkpoint_hash_before,
@@ -1077,6 +1099,16 @@ def parse_args() -> argparse.Namespace:
 		"--num-latent-slots",
 		type=int,
 		choices=ALLOWED_SLOT_COUNTS,
+	)
+	parser.add_argument(
+		"--recurrent-step-size",
+		type=float,
+		choices=(0.5, 1.0),
+	)
+	parser.add_argument(
+		"--use-recurrent-layer-scale",
+		action=argparse.BooleanOptionalAction,
+		default=None,
 	)
 	parser.add_argument("--training-config", type=Path, default=Path("configs/train.yaml"))
 	parser.add_argument(

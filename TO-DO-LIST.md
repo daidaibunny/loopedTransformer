@@ -100,8 +100,8 @@
 - [x] Re-run recurrent safety and throughput smokes under the damped recurrent
   protocol; older recurrent smokes contained LoRA or the removed connector and cannot
   select the formal configuration.
-- [x] Lock the recurrent v2 forward path to K=8, R=4, slots-only extra passes, fixed EOS
-  after Pass 1, and parameter-free damping with step size `1 / R`.
+- [x] (Superseded) Lock the recurrent v2 forward path to K=8, R=4, slots-only extra
+  passes, fixed EOS after Pass 1, and parameter-free damping with step size `1 / R`.
 - [x] Remove the learned recurrent connector from the model, trainable parameters,
   checkpoints, evaluation loader, and diagnostics.
 - [x] Replace final-slot-only warm-up supervision with one shared 256-dimensional
@@ -118,7 +118,8 @@
   K=8/12/16/32 using one shared seed-42 64-slot master bank.
 - [ ] Train and evaluate rank-32 LoRA limited to decoder layers 24–27 on full COCO,
   GQA Balanced, and CLEVR, preserving the original all-layer LoRA baseline.
-- [ ] Replace the ineffective recurrent v3 path with a no-LoRA, sub-5-million-parameter
-  recurrent operator whose extra passes can improve the final retrieval embedding.
+- [x] Replace the ineffective recurrent v3 path with the direct-EOS recurrent v5 path:
+  no LoRA, shared per-layer recurrent channel scales, pass-count-independent step size,
+  parameter-free slot attention supervision, and a 5,000,000-parameter hard limit.
 - [ ] Queue the three last-four-layer LoRA runs and the selected recurrent experiments
   serially on all eight V100 GPUs, with one rolling checkpoint per active experiment.
