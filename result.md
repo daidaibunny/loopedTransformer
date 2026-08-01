@@ -32,6 +32,7 @@ the current experiments.
 | --- | --- | --- | --- | --- |
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
+| Backbone + LoRA, decoder layers 24–27 only | Passed | Running | Pending | COCO only |
 | Frozen backbone + damped recurrent latent slots (no LoRA) | Passed | Pending | Pending | COCO only |
 
 The recurrent definition was locked again on 2026-07-31. It contains no LoRA, no
@@ -695,6 +696,22 @@ test result does not exist.
 <td>99.2076</td><td>98.4640</td><td>19.9997</td><td>10.0000</td><td>5.0000</td>
 <td>98.4640</td><td>99.9987</td><td>100.0000</td><td>100.0000</td><td>99.2076</td>
 <td>99.4138</td>
+</tr>
+<tr>
+<td>Backbone + LoRA, decoder layers 24–27 only</td>
+<td>0</td>
+<td>1</td>
+<td>4,456,448</td>
+<td>Passed</td>
+<td>64.8443</td><td>66.7622</td><td>35.3295</td><td>21.4518</td><td>12.1616</td>
+<td>37.0155</td><td>68.1486</td><td>78.5195</td><td>86.1819</td><td>75.8752</td>
+<td>70.3234</td>
+<td>Running</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 </tr>
 <tr>
 <td>Frozen backbone + damped recurrent latent slots (no LoRA), Pass 4</td>
