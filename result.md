@@ -32,7 +32,7 @@ the current experiments.
 | --- | --- | --- | --- | --- |
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
-| Frozen backbone + damped recurrent latent slots (no LoRA) | Pending | Pending | Pending | No |
+| Frozen backbone + damped recurrent latent slots (no LoRA) | Passed | Pending | Pending | COCO only |
 
 The recurrent definition was locked again on 2026-07-31. It contains no LoRA, no
 recurrent connector, 8 active latent slots, 4 total passes, slots-only extra passes,
@@ -40,8 +40,11 @@ and parameter-free damping with step size 1/4. Its training-only auxiliary head 
 the fixed layer-20 EOS from Pass 1 to softly weight the current pass slots; mean pooling
 is only an invalidated ablation. Earlier recurrent trials used unintended LoRA, the
 removed learned connector, or mean auxiliary pooling and are invalid for selecting the
-current formal configuration. No full recurrent training or test result exists under
-the current definition.
+current formal configuration.
+
+The first formal recurrent results under this definition are EXP-004A/B/C/D on full
+COCO, which swept 8, 12, 16, and 32 latent slots. GQA Balanced and CLEVR remain
+untrained under the current definition.
 
 Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
 and `report.json` must identify the architecture as
@@ -84,11 +87,18 @@ addition is approximately 0.106%, and the complete training-time addition is
 approximately 0.132%. These percentages use the nominal 2B name rather than claiming an
 unrecorded exact backbone parameter count.
 
+The table above is stated for K=8. Only the latent slot tensor scales with K, so the
+training-time totals are 2,641,921 at K=8, 2,650,113 at K=12, 2,658,305 at K=16, and
+2,691,073 at K=32. Quadrupling K from 8 to 32 adds 49,152 parameters, which is 1.86% of
+the K=8 total.
+
 The independent full-backbone LoRA baseline trains 31,195,136 parameters. It therefore
-has 11.81 times as many trainable parameters as the current recurrent model and 14.75
+has 11.81 times as many trainable parameters as the K=8 recurrent model and 14.75
 times as many added parameters as the recurrent inference path retains. The absolute
 trainable-parameter gap is 28,553,215. Parameter-count comparisons do not by themselves
-establish model quality; the formal recurrent results remain pending.
+establish model quality. The measured COCO outcome in EXP-004A/B/C/D is that this
+parameter budget produced at most +0.1336 mAP points over the frozen backbone, while
+LoRA produced +6.7885 points on the same test split.
 
 ## EXP-000A/B/C — Frozen backbone
 
@@ -293,9 +303,18 @@ diagnostics, not additional independent tests.
 | Backbone + LoRA | Passed | Text→image | 72.0247 | 62.0832 | 16.8581 | 9.0672 | 4.7439 | 62.0832 | 84.2903 | 90.6717 | 94.8780 | 72.0247 | 76.2017 |
 | Backbone + LoRA | Passed | Image→text | 64.0410 | 78.4600 | 57.8000 | 35.8980 | 20.5160 | 15.6867 | 57.7787 | 71.7680 | 82.0300 | 85.0017 | 70.5028 |
 | Backbone + LoRA | Passed | Equal-direction mean | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
-| Frozen backbone + damped recurrent latent slots (no LoRA) | Pending | Text→image | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| Frozen backbone + damped recurrent latent slots (no LoRA) | Pending | Image→text | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| Frozen backbone + damped recurrent latent slots (no LoRA) | Pending | Equal-direction mean | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Recurrent latent slots, K=8, Pass 4 (EXP-004A) | Passed | Text→image | 66.5165 | 55.8257 | 15.8561 | 8.6653 | 4.6180 | 55.8257 | 79.2803 | 86.6533 | 92.3591 | 66.5165 | 70.9131 |
+| Recurrent latent slots, K=8, Pass 4 (EXP-004A) | Passed | Image→text | 55.5491 | 70.2600 | 50.2560 | 31.7980 | 18.5670 | 14.0467 | 50.2387 | 63.5727 | 74.2387 | 78.4199 | 62.3308 |
+| Recurrent latent slots, K=8, Pass 4 (EXP-004A) | Passed | Equal-direction mean | 61.0328 | 63.0428 | 33.0560 | 20.2317 | 11.5925 | 34.9362 | 64.7595 | 75.1130 | 83.2989 | 72.4682 | 66.6219 |
+| Recurrent latent slots, K=12, Pass 4 (EXP-004B) | Passed | Text→image | 65.8472 | 55.2339 | 15.7385 | 8.5958 | 4.5934 | 55.2339 | 78.6925 | 85.9576 | 91.8673 | 65.8472 | 70.2152 |
+| Recurrent latent slots, K=12, Pass 4 (EXP-004B) | Passed | Image→text | 55.9960 | 70.8400 | 50.5640 | 31.9500 | 18.6420 | 14.1620 | 50.5453 | 63.8740 | 74.5387 | 78.9134 | 62.7404 |
+| Recurrent latent slots, K=12, Pass 4 (EXP-004B) | Passed | Equal-direction mean | 60.9216 | 63.0370 | 33.1513 | 20.2729 | 11.6177 | 34.6980 | 64.6189 | 74.9158 | 83.2030 | 72.3803 | 66.4778 |
+| Recurrent latent slots, K=16, Pass 4 (EXP-004C) | Passed | Text→image | 66.1807 | 55.6257 | 15.8329 | 8.6202 | 4.6034 | 55.6257 | 79.1643 | 86.2015 | 92.0672 | 66.1807 | 70.5342 |
+| Recurrent latent slots, K=16, Pass 4 (EXP-004C) | Passed | Image→text | 56.5751 | 71.2000 | 51.0680 | 32.2440 | 18.8330 | 14.2340 | 51.0507 | 64.4627 | 75.3013 | 79.3803 | 63.2988 |
+| Recurrent latent slots, K=16, Pass 4 (EXP-004C) | Passed | Equal-direction mean | 61.3779 | 63.4129 | 33.4504 | 20.4321 | 11.7182 | 34.9299 | 65.1075 | 75.3321 | 83.6843 | 72.7805 | 66.9165 |
+| Recurrent latent slots, K=32, Pass 4 (EXP-004D) | Passed | Text→image | 66.6458 | 56.0176 | 15.8880 | 8.6829 | 4.6140 | 56.0176 | 79.4402 | 86.8293 | 92.2791 | 66.6458 | 71.0604 |
+| Recurrent latent slots, K=32, Pass 4 (EXP-004D) | Passed | Image→text | 56.0733 | 70.6000 | 50.7040 | 31.9080 | 18.7420 | 14.1140 | 50.6847 | 63.7900 | 74.9387 | 78.7059 | 62.6542 |
+| Recurrent latent slots, K=32, Pass 4 (EXP-004D) | Passed | Equal-direction mean | 61.3595 | 63.3088 | 33.2960 | 20.2955 | 11.6780 | 35.0658 | 65.0624 | 75.3096 | 83.6089 | 72.6758 | 66.8573 |
 
 GQA Balanced and CLEVR remain one-way image-question-to-answer retrieval tasks under the
 current manifests. Reverse answer-to-question/image retrieval would require a new
@@ -442,6 +461,153 @@ insufficient safety margin; they are safe selections, not proven mathematical ma
   evaluation output
   `/home/mnt/liyiwei/outputs/rls_v4_eval_gqa_b128_6b82132_20260731`.
 
+## EXP-004A/B/C/D — COCO frozen backbone + damped recurrent latent slots, slot sweep
+
+- Status/date: all four passed, 2026-07-31. The serial queue script was written at
+  10:19:54Z. Each entry lists the time its `training_result.json` and `report.json`
+  were written: K=8 train 13:09:59Z / test 13:16:34Z; K=12 train 16:08:21Z / test
+  16:15:03Z; K=16 train 19:09:16Z / test 19:16:01Z; K=32 train 22:20:49Z / test
+  22:27:52Z. Exact per-run start timestamps were not recorded (`N/A`).
+- Objective: produce the first formal full-COCO result for the locked recurrent
+  definition, and measure whether the number of latent slots changes final retrieval
+  quality or the sign of the recurrent gain.
+- Route/node: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB.
+- Code: commit `5b6207f266dd5b3cf63b2269716cdd379a00eb0b`, identical for all four runs.
+  Visual-length bucketing did not exist at this commit, so all four runs used plain
+  modality-grouped padding. The LoRA baselines in EXP-001/002/003 also ran without
+  bucketing, so the comparison is not distorted by that setting.
+- Data: `looped_vl_single_baselines_v1/coco`; 566,747 train rows and 25,010 held-out
+  test rows; no validation use. Train manifest SHA-256
+  `555211fd08280e4e9ab72f040d64b002c1e2aa4b72f6cb6b42427adabb381ff8`; test manifest
+  SHA-256 `a36d9000f665bbaf6bc7d7e472f38e069bb201c0cf6770c0784b498e7193ec89`. Unique
+  train image count `N/A`; test image count 5,000.
+- Model: `damped_mid_decoder_latent_slot_recurrence_no_lora_v3`, training protocol
+  `pure_recurrent_single_stage_eos_weighted_aux_v4`, `backbone_frozen` true,
+  `lora_enabled` false, `formal_training_stages` 1. Loop layers 12–20, 4 total passes,
+  slots-only extra passes, `update_prefix_in_extra_loops` false,
+  `detach_prefix_kv_cache` true, `auxiliary_pooling`
+  `eos_conditioned_weighted_slots`, `fusion_type` `eos_conditioned_slot_attention`,
+  `fusion_residual_gate_init` 0.0. Backbone SHA-256
+  `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1` before and after
+  in all four runs.
+- Trainable scope, identical in structure for all four runs: `latent_slots`,
+  `auxiliary_embedding_head.normalization.weight`,
+  `auxiliary_embedding_head.projection.weight`, `eos_delta`, `late_fusion.gamma`,
+  and the four `late_fusion` projection weights. Only the slot tensor changes size
+  with K.
+- Optimization: seed 42, 1 epoch, 2,214 loader batches per rank, 1,107 optimizer steps,
+  AdamW with betas 0.9/0.95, learning rate 1e-5, cosine schedule, warmup ratio 0.03,
+  weight decay 0.01, gradient clip 1.0, temperature 0.02, final InfoNCE weight 1.0 at
+  every step, mean per-pass auxiliary InfoNCE weight 0.1, slot diversity weight 0.05.
+- Runtime: FP16 autocast with float32 trainable parameters, resolved attention
+  implementation `sdpa` from requested `auto`, gradient checkpointing enabled,
+  per-device batch 32, contrastive global batch 256, gradient accumulation 2,
+  optimizer global batch 512, 4 data workers, prefetch factor 2, world size 8,
+  `modality_grouped_padding` true, `visual_length_buckets` unset.
+- Checkpoints: written every 100 steps with at most 1 retained; every run resolved to
+  `step001107.pt` at cursor `processed_samples` 566,752, confirming exactly one epoch.
+- Evaluation: COCO two-direction retrieval. Text-to-image uses 25,010 caption queries
+  over a 5,000-image gallery; image-to-text uses 5,000 image queries over a 25,010
+  caption gallery. Test split only, cutoffs 1/5/10/20, nDCG cutoff 10, metrics on the
+  0–100 percentage scale, 60,020 encoded items per run.
+- Evidence: tmux `rls_coco_full_b32_k8_k12_k16_k32_5b6207f_20260731`; queue root
+  `/home/mnt/liyiwei/outputs/rls_coco_full_b32_k8_k12_k16_k32_5b6207f_20260731`
+  containing `queue.sh`, `queue_progress.log` ending in `queue_finished`, and the four
+  `k8`, `k12`, `k16`, `k32` subdirectories. The queue tmux log file exists but is
+  empty, so per-run console output must be read from each subdirectory instead.
+
+### Per-run identity and efficiency
+
+| ID | K | Trainable | Inference | Train seconds | Median train samples/second | Peak train memory | Test seconds | Encoding items/second | Peak test memory | Final total loss | Final checkpoint SHA-256 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| EXP-004A | 8 | 2,641,921 | 2,115,585 | 10,157.71 | 56.03 | 11.70 GiB | 373.61 | 190.999 | 10.82 GiB | 0.4541 | `16f40fa21d06301400b540a5a20f19313cfb8943dfe82a6dece56c1cba29b1c0` |
+| EXP-004B | 12 | 2,650,113 | 2,123,777 | 10,253.48 | 55.51 | 12.31 GiB | 381.53 | 186.390 | 10.82 GiB | 0.4214 | `b8195a8ef29a2b07d36de89564aaa5eb1e55f0e94de752adffcec988a7cdb80f` |
+| EXP-004C | 16 | 2,658,305 | 2,131,969 | 10,402.19 | 54.67 | 12.84 GiB | 383.93 | 184.597 | 10.82 GiB | 0.4173 | `cdefdfc53a071d92dffa25e85e23aa97fce6adeefeeebf97600fbd40357b45d6` |
+| EXP-004D | 32 | 2,691,073 | 2,164,737 | 11,034.04 | 51.57 | 15.11 GiB | 403.02 | 174.493 | 10.85 GiB | 0.3877 | `87ca154c17fa30f11db6febed2b40b56912bbcb8be46941e1ab5dbe9ce90232d` |
+
+Training memory is the maximum `gpu_peak_memory_allocated_bytes` across logged steps.
+Test memory is `peak_gpu_memory_bytes` from each `report.json`. Median throughput
+excludes the first three logged points so that warmup is not counted.
+
+### Pass 4 test metrics by K (%)
+
+| ID | K | Direction | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| EXP-004A | 8 | Text→image | 66.5165 | 55.8257 | 15.8561 | 8.6653 | 4.6180 | 55.8257 | 79.2803 | 86.6533 | 92.3591 | 66.5165 | 70.9131 |
+| EXP-004A | 8 | Image→text | 55.5491 | 70.2600 | 50.2560 | 31.7980 | 18.5670 | 14.0467 | 50.2387 | 63.5727 | 74.2387 | 78.4199 | 62.3308 |
+| EXP-004A | 8 | Equal-direction mean | 61.0328 | 63.0428 | 33.0560 | 20.2317 | 11.5925 | 34.9362 | 64.7595 | 75.1130 | 83.2989 | 72.4682 | 66.6219 |
+| EXP-004B | 12 | Text→image | 65.8472 | 55.2339 | 15.7385 | 8.5958 | 4.5934 | 55.2339 | 78.6925 | 85.9576 | 91.8673 | 65.8472 | 70.2152 |
+| EXP-004B | 12 | Image→text | 55.9960 | 70.8400 | 50.5640 | 31.9500 | 18.6420 | 14.1620 | 50.5453 | 63.8740 | 74.5387 | 78.9134 | 62.7404 |
+| EXP-004B | 12 | Equal-direction mean | 60.9216 | 63.0370 | 33.1513 | 20.2729 | 11.6177 | 34.6980 | 64.6189 | 74.9158 | 83.2030 | 72.3803 | 66.4778 |
+| EXP-004C | 16 | Text→image | 66.1807 | 55.6257 | 15.8329 | 8.6202 | 4.6034 | 55.6257 | 79.1643 | 86.2015 | 92.0672 | 66.1807 | 70.5342 |
+| EXP-004C | 16 | Image→text | 56.5751 | 71.2000 | 51.0680 | 32.2440 | 18.8330 | 14.2340 | 51.0507 | 64.4627 | 75.3013 | 79.3803 | 63.2988 |
+| EXP-004C | 16 | Equal-direction mean | 61.3779 | 63.4129 | 33.4504 | 20.4321 | 11.7182 | 34.9299 | 65.1075 | 75.3321 | 83.6843 | 72.7805 | 66.9165 |
+| EXP-004D | 32 | Text→image | 66.6458 | 56.0176 | 15.8880 | 8.6829 | 4.6140 | 56.0176 | 79.4402 | 86.8293 | 92.2791 | 66.6458 | 71.0604 |
+| EXP-004D | 32 | Image→text | 56.0733 | 70.6000 | 50.7040 | 31.9080 | 18.7420 | 14.1140 | 50.6847 | 63.7900 | 74.9387 | 78.7059 | 62.6542 |
+| EXP-004D | 32 | Equal-direction mean | 61.3595 | 63.3088 | 33.2960 | 20.2955 | 11.6780 | 35.0658 | 65.0624 | 75.3096 | 83.6089 | 72.6758 | 66.8573 |
+
+### Equal-direction mean by recurrent pass (%)
+
+| ID | K | Pass | Extra recurrent updates | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| EXP-004A | 8 | 1 | 0 | 61.4771 | 63.4608 | 33.3960 | 20.3653 | 11.6480 | 35.1784 | 65.2111 | 75.4646 | 83.5762 | 72.8736 | 67.0484 |
+| EXP-004A | 8 | 2 | 1 | 61.2203 | 63.1348 | 33.2448 | 20.2737 | 11.6055 | 35.0521 | 65.0158 | 75.2683 | 83.3902 | 72.5717 | 66.7922 |
+| EXP-004A | 8 | 3 | 2 | 61.0843 | 62.9468 | 33.1128 | 20.2533 | 11.5876 | 34.9522 | 64.8675 | 75.1923 | 83.2962 | 72.4343 | 66.6759 |
+| EXP-004A | 8 | 4 | 3 | 61.0328 | 63.0428 | 33.0560 | 20.2317 | 11.5925 | 34.9362 | 64.7595 | 75.1130 | 83.2989 | 72.4682 | 66.6219 |
+| EXP-004B | 12 | 1 | 0 | 61.0989 | 63.1629 | 33.1980 | 20.2861 | 11.6264 | 34.8159 | 64.7172 | 74.9998 | 83.2646 | 72.5060 | 66.6245 |
+| EXP-004B | 12 | 2 | 1 | 60.9476 | 63.0609 | 33.1577 | 20.2295 | 11.6166 | 34.7219 | 64.6353 | 74.8665 | 83.1963 | 72.4192 | 66.4748 |
+| EXP-004B | 12 | 3 | 2 | 60.9028 | 62.9630 | 33.0941 | 20.2511 | 11.6111 | 34.6720 | 64.5733 | 74.8745 | 83.1750 | 72.3425 | 66.4472 |
+| EXP-004B | 12 | 4 | 3 | 60.9216 | 63.0370 | 33.1513 | 20.2729 | 11.6177 | 34.6980 | 64.6189 | 74.9158 | 83.2030 | 72.3803 | 66.4778 |
+| EXP-004C | 16 | 1 | 0 | 61.3324 | 63.2068 | 33.3684 | 20.3751 | 11.6963 | 34.9398 | 65.0248 | 75.2744 | 83.6306 | 72.6086 | 66.8394 |
+| EXP-004C | 16 | 2 | 1 | 61.3051 | 63.2529 | 33.3924 | 20.3819 | 11.6995 | 34.9219 | 65.0252 | 75.2707 | 83.6226 | 72.6420 | 66.8264 |
+| EXP-004C | 16 | 3 | 2 | 61.3330 | 63.3409 | 33.3852 | 20.4211 | 11.7127 | 34.8979 | 65.0372 | 75.3184 | 83.6786 | 72.7196 | 66.8770 |
+| EXP-004C | 16 | 4 | 3 | 61.3779 | 63.4129 | 33.4504 | 20.4321 | 11.7182 | 34.9299 | 65.1075 | 75.3321 | 83.6843 | 72.7805 | 66.9165 |
+| EXP-004D | 32 | 1 | 0 | 61.1474 | 62.9568 | 33.1496 | 20.2531 | 11.6449 | 34.9222 | 64.8741 | 75.1733 | 83.5145 | 72.4286 | 66.6809 |
+| EXP-004D | 32 | 2 | 1 | 61.1418 | 63.0388 | 33.1616 | 20.2231 | 11.6364 | 34.9558 | 64.9108 | 75.1297 | 83.4485 | 72.4735 | 66.6539 |
+| EXP-004D | 32 | 3 | 2 | 61.2348 | 63.1248 | 33.3016 | 20.2561 | 11.6565 | 34.9618 | 65.0581 | 75.1957 | 83.5229 | 72.5457 | 66.7336 |
+| EXP-004D | 32 | 4 | 3 | 61.3595 | 63.3088 | 33.2960 | 20.2955 | 11.6780 | 35.0658 | 65.0624 | 75.3096 | 83.6089 | 72.6758 | 66.8573 |
+
+### Recurrent gain and comparison against the two existing COCO baselines
+
+| ID | K | Pass 1 mAP | Pass 4 mAP | Pass 4 − Pass 1 | Pass 4 − frozen backbone | Pass 4 − LoRA |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| EXP-004A | 8 | 61.4771 | 61.0328 | −0.4443 | −0.2115 | −7.0000 |
+| EXP-004B | 12 | 61.0989 | 60.9216 | −0.1773 | −0.3227 | −7.1112 |
+| EXP-004C | 16 | 61.3324 | 61.3779 | +0.0455 | +0.1336 | −6.6549 |
+| EXP-004D | 32 | 61.1474 | 61.3595 | +0.2121 | +0.1152 | −6.6733 |
+
+All differences are percentage points of the equal-direction mean mAP. The frozen
+backbone reference is 61.2443 and the LoRA reference is 68.0328, both from the same
+25,010-row COCO test split.
+
+Three facts hold across all four runs. First, extra recurrent passes change the result
+by less than half a percentage point in either direction, and the sign depends on K.
+Second, the best of the four, K=16 at 61.3779, exceeds the frozen backbone by only
+0.1336 points while the LoRA baseline exceeds it by 6.7885 points. Third, the four K
+values span only 0.4563 points, which is too narrow to name a best K from one seed per
+setting.
+
+### Recorded training-time diagnostics
+
+| ID | K | Final late-fusion gate | Final fusion attention entropy (nats) | Step where `pooling_collapse` first became true | Final slot pairwise cosine | Final Pass 1→4 relative slot update |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| EXP-004A | 8 | +0.00537 | 0.0758 | 650 | 0.6315 | 0.9955 → 0.2555 |
+| EXP-004B | 12 | −0.00533 | 0.0111 | 250 | 0.6224 | 0.9861 → 0.2538 |
+| EXP-004C | 16 | −0.00529 | 0.0128 | 200 | 0.6249 | 0.9846 → 0.2534 |
+| EXP-004D | 32 | +0.00535 | 0.0053 | 200 | 0.6132 | 0.9530 → 0.2530 |
+
+These are recorded values from `train_metrics.jsonl`, not inferred quantities. The gate
+is `tanh(gamma)` in `fused = eos_hidden_state + gate * delta`, so a final magnitude near
+0.0053 means the slot pathway contributed roughly half of one percent of the EOS vector
+at the end of training. The gate magnitude grew monotonically and then flattened at the
+same value in all four runs, and the fusion attention entropy fell toward zero, meaning
+pooling selected essentially one slot. The final embedding therefore stayed very close to
+the frozen backbone EOS embedding, which is consistent with the small measured
+differences against the frozen baseline. Interpreting why the gate saturated at this
+magnitude requires the ablations that are not yet run; the numbers above are the
+evidence, not the explanation.
+
 ## Required record for every new experiment
 
 1. Identity: unique ID, objective, terminal status, start/end time, route, node, exact code
@@ -463,11 +629,15 @@ header level groups results by dataset; the second level lists the compared metr
 COCO uses the equal-direction mean of text-to-image and image-to-text. GQA Balanced and
 CLEVR use answer retrieval. Compare metrics only within the same dataset.
 
-The current pure recurrent parameter count is 2,641,921 during training. This consists
-of 2,115,585 inference parameters plus a 526,336-parameter training-only
-EOS-conditioned weighted-slot auxiliary head that is discarded for inference. The
-frozen backbone has no trainable parameters in this experiment. `N/A` means the
-corresponding full held-out test result does not exist.
+Recurrent trainable parameter counts depend on K because only the latent slot tensor
+changes size: 2,641,921 at K=8, 2,650,113 at K=12, 2,658,305 at K=16, and 2,691,073 at
+K=32. Each count is the sum of an inference-retained part (2,115,585 / 2,123,777 /
+2,131,969 / 2,164,737) and the same 526,336-parameter training-only EOS-conditioned
+weighted-slot auxiliary head, which is discarded for inference. The `Added trainable
+parameters` column below reports the training-time total. The frozen backbone has no
+trainable parameters. Recurrent rows report Pass 4, the full four-pass configuration;
+per-pass values are in the EXP-004 section. `N/A` means the corresponding full held-out
+test result does not exist.
 
 <table>
 <thead>
@@ -527,13 +697,58 @@ corresponding full held-out test result does not exist.
 <td>99.4138</td>
 </tr>
 <tr>
-<td>Frozen backbone + damped recurrent latent slots (no LoRA)</td>
+<td>Frozen backbone + damped recurrent latent slots (no LoRA), Pass 4</td>
 <td>8</td>
 <td>4</td>
 <td>2,641,921</td>
+<td>Passed</td>
+<td>61.0328</td><td>63.0428</td><td>33.0560</td><td>20.2317</td><td>11.5925</td>
+<td>34.9362</td><td>64.7595</td><td>75.1130</td><td>83.2989</td><td>72.4682</td><td>66.6219</td>
 <td>Pending</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+</tr>
+<tr>
+<td>Frozen backbone + damped recurrent latent slots (no LoRA), Pass 4</td>
+<td>12</td>
+<td>4</td>
+<td>2,650,113</td>
+<td>Passed</td>
+<td>60.9216</td><td>63.0370</td><td>33.1513</td><td>20.2729</td><td>11.6177</td>
+<td>34.6980</td><td>64.6189</td><td>74.9158</td><td>83.2030</td><td>72.3803</td><td>66.4778</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+</tr>
+<tr>
+<td>Frozen backbone + damped recurrent latent slots (no LoRA), Pass 4</td>
+<td>16</td>
+<td>4</td>
+<td>2,658,305</td>
+<td>Passed</td>
+<td>61.3779</td><td>63.4129</td><td>33.4504</td><td>20.4321</td><td>11.7182</td>
+<td>34.9299</td><td>65.1075</td><td>75.3321</td><td>83.6843</td><td>72.7805</td><td>66.9165</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+</tr>
+<tr>
+<td>Frozen backbone + damped recurrent latent slots (no LoRA), Pass 4</td>
+<td>32</td>
+<td>4</td>
+<td>2,691,073</td>
+<td>Passed</td>
+<td>61.3595</td><td>63.3088</td><td>33.2960</td><td>20.2955</td><td>11.6780</td>
+<td>35.0658</td><td>65.0624</td><td>75.3096</td><td>83.6089</td><td>72.6758</td><td>66.8573</td>
 <td>Pending</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
