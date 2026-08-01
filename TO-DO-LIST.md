@@ -146,5 +146,7 @@
 - [x] Train and fully test the COCO K=8/R=4 fixed and dynamic controls. Record every
   pass and both exit outputs; the first dynamic controller selected Pass 4 for every
   test query and therefore did not provide dynamic compute savings.
+- [x] Train and fully test the COCO K=1 and K=4 dynamic slot-count ablations. Both
+  selected Pass 4 for every test query; neither improved meaningfully over K=8.
 - [ ] Train and test all eight query-only recurrent runs after all candidate banks pass
   checksum validation; record Pass 0 through Pass 4 and dynamic-exit metrics in result.md.
