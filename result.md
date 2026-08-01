@@ -34,7 +34,7 @@ the current experiments.
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA, decoder layers 24–27 only | Passed | Running | Pending | COCO only |
 | Superseded damped mid-decoder recurrent slots (no LoRA) | Passed | N/A | N/A | Historical COCO only |
-| Query-only history recurrent Block (no LoRA) | Running | Pending | Pending | COCO R=1 fixed control |
+| Query-only history recurrent Block (no LoRA) | Running | Pending | Pending | Three COCO K=8 controls passed |
 
 The active definition is `query_only_history_recurrent_no_lora_v1`, with protocol
 `single_stage_frozen_candidate_dynamic_exit_v1`. Candidate embeddings come only from
@@ -47,10 +47,11 @@ no LoRA.
 
 Every active run uses one stage, one full-data epoch, no validation, one rolling
 checkpoint, per-device batch 32 on eight V100 GPUs, and a true contrastive global batch
-of 256. The first completed control is EXP-005: COCO K=8, R=1, fixed exit. The remaining
-R=4 fixed/dynamic, K=1/4, Layer-28-only-history, GQA Balanced, and CLEVR experiments are
-still running or queued. EXP-004A/B/C/D use the superseded damped mid-decoder design and
-remain below only as historical evidence; they are not the active architecture.
+of 256. EXP-005 through EXP-007 have completed the COCO K=8 controls for R=1 fixed,
+R=4 fixed, and R=4 dynamic exit. The remaining K=1/4, Layer-28-only-history, GQA
+Balanced, and CLEVR experiments are running or queued. EXP-004A/B/C/D use the
+superseded damped mid-decoder design and remain below only as historical evidence;
+they are not the active architecture.
 
 For every active recurrent test, retain frozen-Qwen Pass 0, recurrent Pass 1 through
 Pass 4, dynamic hard exit, and dynamic soft exit, with every required metric and the
@@ -652,6 +653,105 @@ Coverage was 100%. The final logged loss was 0.9861, the final gradient norm was
 and all recorded losses and gradients were finite. Final slot pairwise absolute cosine
 was 0.9772, so slot collapse remains a diagnostic concern for the R=4 comparisons.
 
+## EXP-006 — COCO query-only history recurrent Block, K=8, R=4, fixed exit
+
+- Status/date: passed. Training ran from 2026-08-01T18:21:50Z to
+  2026-08-01T19:17:37Z; full-test evaluation finished at 2026-08-01T19:21:49Z.
+- Objective: isolate the value of four shared Block updates without a learned exit
+  decision. The frozen candidate banks and all other settings match EXP-005.
+- Route/node/code: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB,
+  commit `9792f7021807d1d441618b95345fde61c565822c`.
+- Model: K=8, R=4, fixed Pass 4 output, 4,878,321 trainable parameters, no LoRA,
+  and no candidate Qwen execution. Query Qwen remained frozen and ran once per batch.
+- Data/optimization: the same 566,747 COCO train rows, 25,010 test caption rows,
+  immutable candidate manifests, AdamW settings, one epoch, no validation, 2,214
+  optimizer steps, per-device batch 32, and global contrastive batch 256 as EXP-005.
+- Runtime: training took 3,346.47 seconds; steady median throughput was 171.53
+  samples/second; peak allocated training memory was 5.40 GiB per rank. Test took
+  192.61 seconds with 5.27 GiB rank-zero peak allocated memory.
+- Checkpoints: one rolling checkpoint, `step002214.pt`; final recurrent model SHA-256
+  `215869e55bf198d6d5c7a51fb113cc1dfda0a19db1cb34a22f05b8c5573802fe`.
+- Evidence: tmux `query_recurrent_v1_9792f70_20260802`; output
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_recurrent_v1_9792f70_20260802/coco_k8_r4_fixed`.
+
+Pass 3 was the best mAP result, at 61.7489, or +0.5001 points over the same-run frozen
+Pass 0. Pass 4 was slightly lower at 61.7421 (+0.4933). Therefore the fourth shared
+update did not improve mAP over the third update in this run.
+
+### Equal-direction mean by recurrent pass (%)
+
+| Pass/output | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 | mAP change vs Pass 0 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 61.2489 | 64.0273 | 33.9309 | 20.6229 | 11.7410 | 34.2406 | 64.9975 | 75.4722 | 83.6290 | 73.0708 | 66.9697 | +0.0000 |
+| 1 | 61.5442 | 64.1852 | 34.1525 | 20.7299 | 11.7841 | 34.3426 | 65.3291 | 75.7498 | 83.8823 | 73.2512 | 67.2423 | +0.2954 |
+| 2 | 61.6792 | 64.3012 | 34.1889 | 20.7369 | 11.8081 | 34.4585 | 65.4387 | 75.8278 | 83.9859 | 73.3578 | 67.3467 | +0.4303 |
+| 3 | 61.7489 | 64.3471 | 34.1769 | 20.7559 | 11.7976 | 34.5685 | 65.4587 | 75.9138 | 83.9360 | 73.4038 | 67.4234 | +0.5001 |
+| 4 (primary) | 61.7421 | 64.3951 | 34.1497 | 20.7329 | 11.7867 | 34.6085 | 65.4267 | 75.8521 | 83.8940 | 73.4158 | 67.3995 | +0.4933 |
+
+### Primary Pass 4 metrics by direction (%)
+
+| Direction | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Text→image | 65.2183 | 54.3303 | 15.6433 | 8.5998 | 4.5954 | 54.3303 | 78.2167 | 85.9976 | 91.9072 | 65.2183 | 69.7396 |
+| Image→text | 58.2659 | 74.4600 | 52.6560 | 32.8660 | 18.9780 | 14.8867 | 52.6367 | 65.7067 | 75.8807 | 81.6132 | 65.0593 |
+| Equal-direction mean | 61.7421 | 64.3951 | 34.1497 | 20.7329 | 11.7867 | 34.6085 | 65.4267 | 75.8521 | 83.8940 | 73.4158 | 67.3995 |
+
+The final loss was 0.9806, gradient norm was 0.3694, and all logged losses and
+gradients were finite. Final slot pairwise absolute cosine was 0.9988, stronger slot
+collapse than EXP-005.
+
+## EXP-007 — COCO query-only history recurrent Block, K=8, R=4, dynamic exit
+
+- Status/date: passed. Training ran from 2026-08-01T19:23:37Z to
+  2026-08-01T20:19:39Z; full-test evaluation finished at 2026-08-01T20:23:48Z.
+- Objective: test the learned sample-dependent exit controller under the same K=8,
+  R=4 architecture and data protocol as EXP-006.
+- Route/node/code: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB,
+  commit `9792f7021807d1d441618b95345fde61c565822c`.
+- Model/data/optimization: 4,878,321 trainable parameters, no LoRA, candidate Qwen
+  forward calls zero, one frozen query-Qwen pass per batch, one full COCO epoch,
+  no validation, 2,214 optimizer steps, per-device batch 32, and global batch 256.
+- Runtime: training took 3,361.99 seconds; steady median throughput was 170.77
+  samples/second; peak allocated training memory was 5.40 GiB per rank. Test took
+  193.40 seconds with 5.27 GiB rank-zero peak allocated memory.
+- Checkpoints: one rolling checkpoint, `step002214.pt`; final recurrent model SHA-256
+  `e1526183e4d2ae3a64e2ffcf9bd6f3d8f4b3c57ae95a2a428e65f082c305b0ec`.
+- Evidence: tmux `query_recurrent_v1_9792f70_20260802`; output
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_recurrent_v1_9792f70_20260802/coco_k8_r4_dynamic`.
+
+The controller selected Pass 4 for all 30,010 evaluated queries. Mean exit
+probabilities were 7.32e-7, 5.40e-9, 7.94e-11, and 3.97e-12 for Passes 1–4, so the
+0.5 threshold was never reached and mean executed steps were exactly 4. Dynamic hard
+and soft outputs therefore matched Pass 4. This run validates the code path but does
+not yet demonstrate dynamic compute savings.
+
+### Equal-direction mean by recurrent pass and exit output (%)
+
+| Pass/output | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 | mAP change vs Pass 0 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 61.2489 | 64.0273 | 33.9309 | 20.6229 | 11.7410 | 34.2406 | 64.9975 | 75.4722 | 83.6290 | 73.0708 | 66.9697 | +0.0000 |
+| 1 | 61.5671 | 64.1332 | 34.1681 | 20.7433 | 11.7853 | 34.3386 | 65.3511 | 75.7798 | 83.8823 | 73.2467 | 67.2653 | +0.3182 |
+| 2 | 61.6815 | 64.2592 | 34.1913 | 20.7475 | 11.8019 | 34.4645 | 65.4507 | 75.8618 | 83.9500 | 73.3412 | 67.3583 | +0.4327 |
+| 3 | 61.7470 | 64.3571 | 34.1669 | 20.7465 | 11.7948 | 34.5705 | 65.4487 | 75.8918 | 83.9280 | 73.4101 | 67.4138 | +0.4981 |
+| 4 | 61.7410 | 64.3811 | 34.1557 | 20.7351 | 11.7851 | 34.5945 | 65.4407 | 75.8581 | 83.8939 | 73.4197 | 67.4011 | +0.4921 |
+| Dynamic hard (primary) | 61.7410 | 64.3811 | 34.1557 | 20.7351 | 11.7851 | 34.5945 | 65.4407 | 75.8581 | 83.8939 | 73.4197 | 67.4011 | +0.4921 |
+| Dynamic soft | 61.7410 | 64.3811 | 34.1557 | 20.7351 | 11.7851 | 34.5945 | 65.4407 | 75.8581 | 83.8939 | 73.4197 | 67.4011 | +0.4921 |
+
+### Primary dynamic-hard metrics by direction (%)
+
+| Direction | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Text→image | 65.2073 | 54.3023 | 15.6473 | 8.6002 | 4.5962 | 54.3023 | 78.2367 | 86.0016 | 91.9232 | 65.2073 | 69.7330 |
+| Image→text | 58.2746 | 74.4600 | 52.6640 | 32.8700 | 18.9740 | 14.8867 | 52.6447 | 65.7147 | 75.8647 | 81.6321 | 65.0692 |
+| Equal-direction mean | 61.7410 | 64.3811 | 34.1557 | 20.7351 | 11.7851 | 34.5945 | 65.4407 | 75.8581 | 83.8939 | 73.4197 | 67.4011 |
+
+The final loss was 0.9825, gradient norm was 0.3703, and all logged losses and
+gradients were finite. Final slot pairwise absolute cosine was 0.9990. Quality was
+effectively identical to fixed R=4, while the learned controller collapsed to the
+maximum step count.
+
 ## Required record for every new experiment
 
 1. Identity: unique ID, objective, terminal status, start/end time, route, node, exact code
@@ -761,6 +861,38 @@ corresponding full held-out test result does not exist.
 <td>61.7775</td><td>64.3811</td><td>34.1789</td><td>20.7467</td><td>11.7966</td>
 <td>34.5945</td><td>65.4607</td><td>75.8858</td><td>83.9399</td><td>73.4350</td>
 <td>67.4297</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+</tr>
+<tr>
+<td>Query-only history recurrent Block (no LoRA), fixed Pass 4</td>
+<td>8</td>
+<td>4</td>
+<td>4,878,321</td>
+<td>Passed</td>
+<td>61.7421</td><td>64.3951</td><td>34.1497</td><td>20.7329</td><td>11.7867</td>
+<td>34.6085</td><td>65.4267</td><td>75.8521</td><td>83.8940</td><td>73.4158</td>
+<td>67.3995</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+</tr>
+<tr>
+<td>Query-only history recurrent Block (no LoRA), dynamic hard exit</td>
+<td>8</td>
+<td>4</td>
+<td>4,878,321</td>
+<td>Passed</td>
+<td>61.7410</td><td>64.3811</td><td>34.1557</td><td>20.7351</td><td>11.7851</td>
+<td>34.5945</td><td>65.4407</td><td>75.8581</td><td>83.8939</td><td>73.4197</td>
+<td>67.4011</td>
 <td>Pending</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
