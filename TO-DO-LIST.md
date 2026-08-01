@@ -129,7 +129,7 @@
   manifests, checksums, contiguous float16 embedding shards, and atomic `READY` publication.
 - [x] Add local tests for candidate identity, ordering, image deduplication, shared answer
   galleries, indexed text/image reading, embedding validation, and published-bank loading.
-- [ ] Encode and validate all eight candidate banks on the explicitly selected compute
+- [x] Encode and validate all eight candidate banks on the explicitly selected compute
   route without overwriting any existing published bank.
 - [x] Make the new query-only recurrent trainer and evaluator require the validated
   immutable candidate banks and prove that the candidate Qwen tower is never executed.
@@ -139,7 +139,9 @@
   encoding by modality and visual length, avoiding cross-bucket history padding.
 - [x] Add one resumable eight-run queue for COCO loop/exit/slot/history ablations plus
   canonical GQA Balanced and CLEVR runs, all one epoch with no validation.
-- [ ] Complete one eight-V100 batch-32 smoke for the latest query-only code and verify all
+- [x] Complete one eight-V100 batch-32 smoke for the latest query-only code and verify all
   ranks, finite gradients, peak memory, throughput, and zero candidate-Qwen calls.
+- [x] Train and fully test the COCO K=8/R=1 fixed-exit control; record its Pass 0 and
+  Pass 1 metrics, runtime, memory, candidate-bank identity, and one-checkpoint proof.
 - [ ] Train and test all eight query-only recurrent runs after all candidate banks pass
   checksum validation; record Pass 0 through Pass 4 and dynamic-exit metrics in result.md.

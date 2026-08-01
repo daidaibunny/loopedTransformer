@@ -33,73 +33,50 @@ the current experiments.
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA, decoder layers 24–27 only | Passed | Running | Pending | COCO only |
-| Frozen backbone + damped recurrent latent slots (no LoRA) | Passed | Pending | Pending | COCO only |
+| Superseded damped mid-decoder recurrent slots (no LoRA) | Passed | N/A | N/A | Historical COCO only |
+| Query-only history recurrent Block (no LoRA) | Running | Pending | Pending | COCO R=1 fixed control |
 
-The recurrent definition was locked again on 2026-07-31. It contains no LoRA, no
-recurrent connector, 8 active latent slots, 4 total passes, slots-only extra passes,
-and parameter-free damping with step size 1/4. Its training-only auxiliary head uses
-the fixed layer-20 EOS from Pass 1 to softly weight the current pass slots; mean pooling
-is only an invalidated ablation. Earlier recurrent trials used unintended LoRA, the
-removed learned connector, or mean auxiliary pooling and are invalid for selecting the
-current formal configuration.
+The active definition is `query_only_history_recurrent_no_lora_v1`, with protocol
+`single_stage_frozen_candidate_dynamic_exit_v1`. Candidate embeddings come only from
+the eight immutable frozen-Qwen banks. Candidate Qwen therefore has zero training and
+test forward calls. Query Qwen is also frozen and runs once, exposing decoder histories
+from Layers 7, 14, 21, and 28 to a trainable 288-dimensional shared recurrent Block.
+The default uses K=8 slots, at most R=4 shared updates, EOS-conditioned slot attention
+pooling, zero-gated residual fusion, and a sample-dependent exit controller. It contains
+no LoRA.
 
-The first formal recurrent results under this definition are EXP-004A/B/C/D on full
-COCO, which swept 8, 12, 16, and 32 latent slots. GQA Balanced and CLEVR remain
-untrained under the current definition.
+Every active run uses one stage, one full-data epoch, no validation, one rolling
+checkpoint, per-device batch 32 on eight V100 GPUs, and a true contrastive global batch
+of 256. The first completed control is EXP-005: COCO K=8, R=1, fixed exit. The remaining
+R=4 fixed/dynamic, K=1/4, Layer-28-only-history, GQA Balanced, and CLEVR experiments are
+still running or queued. EXP-004A/B/C/D use the superseded damped mid-decoder design and
+remain below only as historical evidence; they are not the active architecture.
 
-Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
-and `report.json` must identify the architecture as
-`damped_mid_decoder_latent_slot_recurrence_no_lora_v3`, the training protocol as
-`pure_recurrent_single_stage_eos_weighted_aux_v4`, `backbone_frozen` as true,
-`lora_enabled` as false, and `formal_training_stages` as 1. A recurrent checkpoint
-missing this identity, or containing LoRA or connector parameters, is not eligible.
-
-The v4 recurrent optimizer has one stage and visits the full train split exactly once.
-At every optimizer step, final InfoNCE has weight 1.0, the mean of the four shared-head
-per-round auxiliary InfoNCE losses has weight 0.1, and final-slot diversity has weight
-0.05. All 2,641,921 trainable parameters follow the same learning-rate schedule from the
-first step. Inference retains 2,115,585 learned parameters; the 526,336-parameter
-auxiliary head is training-only.
-
-For every formal recurrent test, record all required metrics for Pass 1 through Pass 4.
-The concise comparison row must label these as 0, 1, 2, and 3 completed recurrent
-updates and report mAP change from the previous pass and from Pass 1. COCO uses its
-equal-direction mean in this concise row while retaining both direction-specific metric
-tables.
+For every active recurrent test, retain frozen-Qwen Pass 0, recurrent Pass 1 through
+Pass 4, dynamic hard exit, and dynamic soft exit, with every required metric and the
+change from the in-run Pass 0. COCO uses its equal-direction mean for the concise
+comparison while retaining text-to-image and image-to-text details.
 
 ## Current recurrent parameter accounting
 
-The original Qwen3-VL-Embedding-2B backbone remains frozen and unchanged. The current
-recurrent model adds the following parameters:
+The original Qwen3-VL-Embedding-2B backbone and every candidate bank remain frozen and
+unchanged. The active K=8 query recurrent head adds:
 
-| Component | Formula | Parameters | Retained for inference |
-| --- | ---: | ---: | --- |
-| Eight latent slots | 8 × 2,048 | 16,384 | Yes |
-| EOS input delta | 2,048 | 2,048 | Yes |
-| Final EOS-conditioned slot attention | 4 × 2,048 × 256 + 1 gate | 2,097,153 | Yes |
-| Shared auxiliary RMSNorm | 2,048 | 2,048 | No |
-| Shared auxiliary projection | 2,048 × 256 | 524,288 | No |
-| **Inference-time addition** | — | **2,115,585** | — |
-| **Training-only addition** | — | **526,336** | No |
-| **Total trainable addition** | — | **2,641,921** | — |
+| Component | Parameters | Retained for inference |
+| --- | ---: | --- |
+| Frozen-history projection and layer identities | 597,888 | Yes |
+| Slot queries and slot initializer | 1,001,376 | Yes |
+| Two-layer shared recurrent Block | 2,665,152 | Yes |
+| EOS-conditioned readout and zero-gated residual fusion | 592,448 | Yes |
+| Dynamic exit controller | 21,457 | Yes |
+| **Total trainable addition** | **4,878,321** | **Yes** |
 
-Relative to the model's nominal 2-billion-parameter size, the retained inference
-addition is approximately 0.106%, and the complete training-time addition is
-approximately 0.132%. These percentages use the nominal 2B name rather than claiming an
-unrecorded exact backbone parameter count.
-
-The table above is stated for K=8. Only the latent slot tensor scales with K, so the
-training-time totals are 2,641,921 at K=8, 2,650,113 at K=12, 2,658,305 at K=16, and
-2,691,073 at K=32. Quadrupling K from 8 to 32 adds 49,152 parameters, which is 1.86% of
-the K=8 total.
-
-The independent full-backbone LoRA baseline trains 31,195,136 parameters. It therefore
-has 11.81 times as many trainable parameters as the K=8 recurrent model and 14.75
-times as many added parameters as the recurrent inference path retains. The absolute
-trainable-parameter gap is 28,553,215. Parameter-count comparisons do not by themselves
-establish model quality. The measured COCO outcome in EXP-004A/B/C/D is that this
-parameter budget produced at most +0.1336 mAP points over the frozen backbone, while
-LoRA produced +6.7885 points on the same test split.
+All active recurrent parameters are retained for inference; there is no training-only
+head. The exact totals are 4,876,305 for K=1, 4,877,169 for K=4, and 4,878,321 for K=8.
+The independent last-four-decoder-layer LoRA baseline trains 4,456,448 parameters, so
+K=8 recurrent adds 421,873 more parameters, or 1.0947 times that LoRA parameter count.
+The full 28-layer LoRA baseline trains 31,195,136 parameters. Parameter counts alone do
+not establish quality; use the held-out metrics below.
 
 ## EXP-000A/B/C — Frozen backbone
 
@@ -462,16 +439,16 @@ insufficient safety margin; they are safe selections, not proven mathematical ma
   evaluation output
   `/home/mnt/liyiwei/outputs/rls_v4_eval_gqa_b128_6b82132_20260731`.
 
-## EXP-004A/B/C/D — COCO frozen backbone + damped recurrent latent slots, slot sweep
+## EXP-004A/B/C/D — Superseded COCO damped recurrent latent-slot sweep
 
 - Status/date: all four passed, 2026-07-31. The serial queue script was written at
   10:19:54Z. Each entry lists the time its `training_result.json` and `report.json`
   were written: K=8 train 13:09:59Z / test 13:16:34Z; K=12 train 16:08:21Z / test
   16:15:03Z; K=16 train 19:09:16Z / test 19:16:01Z; K=32 train 22:20:49Z / test
   22:27:52Z. Exact per-run start timestamps were not recorded (`N/A`).
-- Objective: produce the first formal full-COCO result for the locked recurrent
-  definition, and measure whether the number of latent slots changes final retrieval
-  quality or the sign of the recurrent gain.
+- Objective: historical full-COCO evaluation of the former damped mid-decoder design.
+  This architecture was later superseded by the query-only history recurrent Block;
+  these values remain evidence but do not select the active configuration.
 - Route/node: `8XV100`,
   `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB.
 - Code: commit `5b6207f266dd5b3cf63b2269716cdd379a00eb0b`, identical for all four runs.
@@ -609,6 +586,72 @@ baseline, but they do not alone prove the residual's actual magnitude or why the
 followed this trajectory. Those quantities require the diagnostic ablations that have
 not yet run.
 
+## EXP-005 — COCO query-only history recurrent Block, K=8, R=1, fixed exit
+
+- Status/date: passed. Training ran from 2026-08-01T17:25:17Z to
+  2026-08-01T18:16:08Z; full-test evaluation finished at 2026-08-01T18:20:02Z.
+- Objective: parameter-matched non-recurrent control for the active query-only design.
+  It applies the trainable Block once and tests whether the new history readout helps
+  before attributing any gain to repeated shared computation.
+- Route/node: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB.
+- Code: commit `9792f7021807d1d441618b95345fde61c565822c`.
+- Data: 566,747 COCO train rows and 25,010 held-out test caption rows; no validation.
+  Train manifest SHA-256
+  `555211fd08280e4e9ab72f040d64b002c1e2aa4b72f6cb6b42427adabb381ff8`;
+  test manifest SHA-256
+  `a36d9000f665bbaf6bc7d7e472f38e069bb201c0cf6770c0784b498e7193ec89`.
+- Candidates: immutable FP16 unit-normalized Qwen banks. Training uses COCO train image
+  and caption manifest hashes
+  `9c8fb538574c0687dd415e4dad9212454bcb8d4ff6d0d9e8cda1e6496aed692c` and
+  `9d2f1b0b77ccce7cb9ead1a6f188cb0bfd8f5fb5cdd8ab3d51b794236a02b0c1`;
+  test uses COCO test image and caption hashes
+  `b23e6fd29ddd472b3c1c95dd2d1d6278a40e45c94862053aa0015c878549110d` and
+  `642299c06d1a7003ebd861a3f5d341501fd5c6f4333e3f37fa7497e908027635`.
+  Candidate Qwen forward calls were exactly zero.
+- Model: `query_only_history_recurrent_no_lora_v1`, K=8, R=1, fixed exit,
+  288-dimensional state, two-layer shared Block, frozen Layer 7/14/21/28 histories,
+  EOS-conditioned slot attention pooling, and zero-gated residual fusion. It has
+  4,878,321 trainable and inference-retained parameters, with no LoRA.
+- Optimization: AdamW, betas 0.9/0.95, seed 42, 1 epoch, 2,214 optimizer steps,
+  learning rate 1e-4, linear decay, warmup ratio 0.02, weight decay 0.01, gradient clip
+  1.0, temperature 0.02, main InfoNCE weight 1.0, auxiliary InfoNCE weight 0.1.
+- Runtime: frozen Qwen FP16 plus recurrent FP16 autocast, scaled dot-product attention,
+  per-device batch 32, global contrastive/optimizer batch 256, 4 data workers, and visual
+  length bucketing. Training took 3,050.82 seconds; steady median throughput was 188.41
+  samples/second; peak allocated memory was 5.40 GiB per rank. Test took 175.24 seconds
+  with 5.27 GiB rank-zero peak allocated memory.
+- Checkpoints: one rolling checkpoint only, `step002214.pt`; final recurrent model
+  SHA-256 `fd27ef1bb8ad97d69bac937d235920ddebd8acdc9386ca8b89002f96e6886ffc`.
+  The backbone checksum stayed
+  `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1`.
+- Evidence: tmux `query_recurrent_v1_9792f70_20260802`; log
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_recurrent_v1_9792f70_20260802.log`;
+  output root
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_recurrent_v1_9792f70_20260802/coco_k8_r1_fixed`.
+
+The in-run Pass 0 is the correct reference for the measured gain because it uses the
+same immutable FP16 candidate banks. It differs by 0.0046 mAP points from EXP-000A,
+whose candidates were cached through the older evaluation path. Pass 1 improved
+equal-direction mean mAP by 0.5286 points over this in-run Pass 0. Because R=1, Pass 1,
+fixed output, dynamic-hard alias, and dynamic-soft alias are numerically identical; this
+run does not demonstrate a benefit from recurrence.
+
+### Pass 0 and Pass 1 test metrics (%)
+
+| Pass | Direction | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | Text→image | 64.5988 | 53.5946 | 15.5378 | 8.5598 | 4.5850 | 53.5946 | 77.6889 | 85.5978 | 91.6993 | 64.5988 | 69.1608 |
+| 0 | Image→text | 57.8989 | 74.4600 | 52.3240 | 32.6860 | 18.8970 | 14.8867 | 52.3060 | 65.3467 | 75.5587 | 81.5428 | 64.7786 |
+| 0 | Equal-direction mean | 61.2489 | 64.0273 | 33.9309 | 20.6229 | 11.7410 | 34.2406 | 64.9975 | 75.4722 | 83.6290 | 73.0708 | 66.9697 |
+| 1 | Text→image | 65.2048 | 54.3023 | 15.6457 | 8.6014 | 4.5962 | 54.3023 | 78.2287 | 86.0136 | 91.9232 | 65.2048 | 69.7338 |
+| 1 | Image→text | 58.3502 | 74.4600 | 52.7120 | 32.8920 | 18.9970 | 14.8867 | 52.6927 | 65.7580 | 75.9567 | 81.6651 | 65.1256 |
+| 1 | Equal-direction mean | 61.7775 | 64.3811 | 34.1789 | 20.7467 | 11.7966 | 34.5945 | 65.4607 | 75.8858 | 83.9399 | 73.4350 | 67.4297 |
+
+Coverage was 100%. The final logged loss was 0.9861, the final gradient norm was 0.3951,
+and all recorded losses and gradients were finite. Final slot pairwise absolute cosine
+was 0.9772, so slot collapse remains a diagnostic concern for the R=4 comparisons.
+
 ## Required record for every new experiment
 
 1. Identity: unique ID, objective, terminal status, start/end time, route, node, exact code
@@ -630,15 +673,11 @@ header level groups results by dataset; the second level lists the compared metr
 COCO uses the equal-direction mean of text-to-image and image-to-text. GQA Balanced and
 CLEVR use answer retrieval. Compare metrics only within the same dataset.
 
-Recurrent trainable parameter counts depend on K because only the latent slot tensor
-changes size: 2,641,921 at K=8, 2,650,113 at K=12, 2,658,305 at K=16, and 2,691,073 at
-K=32. Each count is the sum of an inference-retained part (2,115,585 / 2,123,777 /
-2,131,969 / 2,164,737) and the same 526,336-parameter training-only EOS-conditioned
-weighted-slot auxiliary head, which is discarded for inference. The `Added trainable
-parameters` column below reports the training-time total. The frozen backbone has no
-trainable parameters. Recurrent rows report Pass 4, the full four-pass configuration;
-per-pass values are in the EXP-004 section. `N/A` means the corresponding full held-out
-test result does not exist.
+The active query-only recurrent counts are 4,876,305 at K=1, 4,877,169 at K=4, and
+4,878,321 at K=8; every parameter is retained for inference. EXP-005 reports Pass 1
+because it is the fixed R=1 control. The four damped recurrent rows are superseded
+historical EXP-004 Pass-4 results with their older parameter accounting. `N/A` means the
+corresponding full held-out test result does not exist.
 
 <table>
 <thead>
@@ -714,7 +753,23 @@ test result does not exist.
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 </tr>
 <tr>
-<td>Frozen backbone + damped recurrent latent slots (no LoRA), Pass 4</td>
+<td>Query-only history recurrent Block (no LoRA), fixed Pass 1</td>
+<td>8</td>
+<td>1</td>
+<td>4,878,321</td>
+<td>Passed</td>
+<td>61.7775</td><td>64.3811</td><td>34.1789</td><td>20.7467</td><td>11.7966</td>
+<td>34.5945</td><td>65.4607</td><td>75.8858</td><td>83.9399</td><td>73.4350</td>
+<td>67.4297</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Pending</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+</tr>
+<tr>
+<td>Superseded damped recurrent latent slots (no LoRA), Pass 4</td>
 <td>8</td>
 <td>4</td>
 <td>2,641,921</td>
@@ -729,7 +784,7 @@ test result does not exist.
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 </tr>
 <tr>
-<td>Frozen backbone + damped recurrent latent slots (no LoRA), Pass 4</td>
+<td>Superseded damped recurrent latent slots (no LoRA), Pass 4</td>
 <td>12</td>
 <td>4</td>
 <td>2,650,113</td>
@@ -744,7 +799,7 @@ test result does not exist.
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 </tr>
 <tr>
-<td>Frozen backbone + damped recurrent latent slots (no LoRA), Pass 4</td>
+<td>Superseded damped recurrent latent slots (no LoRA), Pass 4</td>
 <td>16</td>
 <td>4</td>
 <td>2,658,305</td>
@@ -759,7 +814,7 @@ test result does not exist.
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 </tr>
 <tr>
-<td>Frozen backbone + damped recurrent latent slots (no LoRA), Pass 4</td>
+<td>Superseded damped recurrent latent slots (no LoRA), Pass 4</td>
 <td>32</td>
 <td>4</td>
 <td>2,691,073</td>
