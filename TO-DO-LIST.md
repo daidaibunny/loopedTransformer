@@ -86,7 +86,8 @@
   experiments, with no idle-time gate and no validation command.
 - [x] Re-run final eight-V100 safety smokes for both trainers and every dataset-specific
   recurrent memory policy.
-- [ ] Complete the restartable six-run serial train/test queue on all full splits.
+- [x] (Superseded) Cancel the old recurrent half of the restartable six-run queue; retain
+  completed baseline results and replace recurrent v5 with the query-only queue below.
 - [x] Evaluate the frozen original Qwen3-VL-Embedding-2B serially on the full COCO, GQA
   Balanced, and CLEVR test splits before restarting unfinished training experiments.
 - [x] Standardize the cross-model result table to one primary row per dataset: COCO uses
@@ -112,17 +113,15 @@
   protocol identity.
 - [x] Run a new eight-V100 architecture, gradient, memory, and throughput smoke for the
   damped connector-free model before launching any formal recurrent experiment.
-- [ ] Compare K=8/16/32/64 on identical GQA Balanced smoke training rows and the same
-  held-out test prefix using one shared seed-42 64-slot master bank.
-- [ ] Train and fully evaluate the causal-attention recurrent model on COCO for
-  K=8/12/16/32 using one shared seed-42 64-slot master bank.
+- [x] (Superseded) Retire the old K=8/16/32/64 GQA recurrent-v5 smoke plan.
+- [x] (Superseded) Retire the old causal-attention recurrent-v5 COCO K=8/12/16/32 plan.
 - [ ] Train and evaluate rank-32 LoRA limited to decoder layers 24–27 on full COCO,
   GQA Balanced, and CLEVR, preserving the original all-layer LoRA baseline.
 - [x] Replace the ineffective recurrent v3 path with the direct-EOS recurrent v5 path:
   no LoRA, shared per-layer recurrent channel scales, pass-count-independent step size,
   parameter-free slot attention supervision, and a 5,000,000-parameter hard limit.
-- [ ] Queue the three last-four-layer LoRA runs and the selected recurrent experiments
-  serially on all eight V100 GPUs, with one rolling checkpoint per active experiment.
+- [x] Queue the three last-four-layer LoRA runs separately and cancel their obsolete
+  recurrent-v5 continuation; the active query-only experiments use a new isolated queue.
 - [x] Define the canonical eight-bank candidate layout: six split-specific COCO image and
   caption galleries plus one shared training-answer gallery for each of GQA Balanced and
   CLEVR.
@@ -132,5 +131,15 @@
   galleries, indexed text/image reading, embedding validation, and published-bank loading.
 - [ ] Encode and validate all eight candidate banks on the explicitly selected compute
   route without overwriting any existing published bank.
-- [ ] Make the new query-only recurrent trainer and evaluator require the validated
+- [x] Make the new query-only recurrent trainer and evaluator require the validated
   immutable candidate banks and prove that the candidate Qwen tower is never executed.
+- [x] Implement the under-5M query-only history recurrent Block, zero-gated fusion,
+  EOS-conditioned slot attention pooling, dynamic exit, and pass-wise loss.
+- [x] Preserve logical contrastive batches while splitting only Qwen and recurrent-head
+  encoding by modality and visual length, avoiding cross-bucket history padding.
+- [x] Add one resumable eight-run queue for COCO loop/exit/slot/history ablations plus
+  canonical GQA Balanced and CLEVR runs, all one epoch with no validation.
+- [ ] Complete one eight-V100 batch-32 smoke for the latest query-only code and verify all
+  ranks, finite gradients, peak memory, throughput, and zero candidate-Qwen calls.
+- [ ] Train and test all eight query-only recurrent runs after all candidate banks pass
+  checksum validation; record Pass 0 through Pass 4 and dynamic-exit metrics in result.md.

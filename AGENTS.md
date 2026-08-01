@@ -7,34 +7,37 @@
 - The formal recurrent model is pure recurrent and must contain no LoRA modules or
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
-- The locked recurrent architecture is
-  `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5`. The recurrent path contains
-  no LoRA, recurrent connector, trainable auxiliary projection, EOS delta, or late fusion.
+- The active recurrent architecture is
+  `query_only_history_recurrent_no_lora_v1`. The former
+  `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue is canceled and remains
+  historical only; never launch it as a current experiment.
 - Use one training stage and one full-data epoch. All trainable recurrent parameters are
-  active from the first optimizer step.
-- Default to 8 active slots from the shared seed-42 16-slot initialization bank and 4
-  total recurrent passes. Extra passes update slots only; EOS is fixed after Pass 1.
-- Slot-count ablations may use K=12, K=16, K=32, or K=64 without changing the formal
-  K=8 default. Every K=8/12/16/32/64 comparison must use prefixes of the same seed-42
-  64-slot bank, `artifacts/master_slot_init_seed42_kmax64.pt`; never overwrite the
-  existing 16-slot bank.
-- Pass 1 runs decoder Layers 13–20 on the full sequence and captures detached prefix
-  Key/Value evidence. Passes 2–4 update only the latent slots. Their recurrent step size
-  is independent of the number of passes and defaults to 1.0.
-- The extra passes share one trainable 2048-channel scale vector per repeated decoder
-  layer. Together with the latent slots, these are the only trainable recurrent
-  parameters. Enforce a hard limit of 5,000,000 trainable parameters before optimization.
+  active from the first optimizer step; do not use validation or checkpoint selection.
+- The completely frozen Qwen query tower runs exactly once. It exposes the token states
+  after decoder Layers 7, 14, 21, and 28 plus the official final-valid-token 2,048-
+  dimensional embedding. The Layer-28-only history is an explicit ablation.
+- Project the frozen histories into a 288-dimensional state. Initialize K latent slots by
+  cross-attention, then apply one shared two-layer recurrent Block R times. Each Block
+  layer contains slot self-attention, cross-attention to the unchanged Qwen histories,
+  and a feed-forward network. The default is K=8 and R=4; formal ablations use K=1/4/8
+  and R=1/4.
+- Use `EOS-conditioned slot attention pooling` after every recurrent pass: the frozen
+  final-valid-token embedding selects useful slots with soft attention. Project the
+  selected state to 2,048 dimensions, apply `zero-gated residual fusion` with the frozen
+  Qwen embedding, then L2-normalize. The zero gate must make every pass exactly equal to
+  frozen Qwen at initialization.
+- Dynamic exit uses a shared sample-dependent controller and differentiable stick-breaking
+  weights during training. At test time, select the first pass whose exit probability is
+  at least 0.5, forcing the last pass as a fallback. Fixed-exit variants remain required
+  controls.
+- Train only the slot initializer, shared recurrent Block, history projection, readout,
+  zero gate, and exit controller. Enforce the 5,000,000-parameter limit. Exact current
+  counts are 4,876,305 for K=1, 4,877,169 for K=4, and 4,878,321 for K=8.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
   only under experiment-specific output directories.
 - Always call the single-query attention from the final valid token over latent slots
   `EOS-conditioned slot attention pooling` (`EOS 条件化槽位注意力池化`). Do not shorten
-  it to ordinary pooling. The v5 final retrieval readout is the direct Layer-28 EOS after
-  the original final RMSNorm and L2 normalization; it has no residual fusion.
-- The parameter-free training auxiliary readout uses the fixed layer-20 EOS from Pass 1
-  as a query over each pass's slots. RMS-normalize EOS and slots without learned weights,
-  scale their dot products by the square root of 2048, softmax across slots, sum the raw
-  slots with those weights, apply parameter-free RMS normalization, and L2-normalize the
-  resulting 2048-dimensional vector. It must never use mean pooling in a formal run.
+  it to ordinary pooling. Never use mean pooling in a formal run.
 
 ## Remote execution
 
@@ -126,18 +129,19 @@
 - Keep the final adapter or final recurrent learned weights separately from the rolling
   resumable checkpoint. Evaluation reads those final learned weights, not an intermediate
   optimizer checkpoint.
-- Reject recurrent checkpoints containing LoRA parameters, recurrent-connector
-  parameters, or any superseded training protocol.
+- Reject recurrent checkpoints containing LoRA parameters or any superseded architecture
+  or training protocol.
 - Every recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata, and
   `report.json` must declare architecture
-  `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5`, protocol
-  `single_stage_progressive_slot_attention_no_lora_v5`, `backbone_frozen: true`,
+  `query_only_history_recurrent_no_lora_v1`, protocol
+  `single_stage_frozen_candidate_dynamic_exit_v1`, `backbone_frozen: true`,
+  `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
-- Recurrent training runs for exactly one epoch with final InfoNCE weight 1.0 at every
-  optimizer step. The final-pass parameter-free slot-attention InfoNCE has weight 0.1,
-  and the progressive non-degradation loss has weight 0.1. Slot diversity is logged but
-  has weight 0.0. All trainable groups use the same learning-rate schedule from step one.
+- Recurrent training runs for exactly one epoch with final retrieval InfoNCE weight 1.0,
+  mean pass-wise state-only auxiliary InfoNCE weight 0.1, progressive non-degradation
+  weight 0.1, and dynamic compute penalty weight 0.001. Slot absolute cosine is logged
+  but has weight 0.0. All trainable groups use one learning-rate schedule from step one.
 
 ## Verification
 
@@ -158,10 +162,10 @@
 - Compare model-quality metrics only within the same dataset and exact test manifest and
   candidate gallery. Do not treat values from different retrieval tasks as directly
   comparable.
-- Every recurrent report must retain the complete required metric set for Pass 1 through
-  Pass 4. It must also map Pass 1/2/3/4 to 0/1/2/3 completed recurrent updates and
-  summarize the primary mAP change from the previous pass and from Pass 1. For COCO, this
-  summary uses the equal-direction mean; direction-specific pass metrics remain required.
+- Every recurrent report must retain the complete required metric set for frozen Qwen
+  Pass 0, recurrent Pass 1 through Pass 4, dynamic hard exit, and dynamic soft exit. It
+  must report each variant's metric change from frozen Qwen. For COCO, summaries use the
+  equal-direction mean while direction-specific pass metrics remain required.
 - Report the weighted Mix result only for later mixed-dataset experiments.
 - Required metrics are mAP, P@1/5/10/20, R@1/5/10/20, MRR, and nDCG@10.
 - Use percentage values from 0 to 100. Aggregate COCO directions equally, then aggregate
