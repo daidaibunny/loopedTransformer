@@ -123,3 +123,14 @@
   parameter-free slot attention supervision, and a 5,000,000-parameter hard limit.
 - [ ] Queue the three last-four-layer LoRA runs and the selected recurrent experiments
   serially on all eight V100 GPUs, with one rolling checkpoint per active experiment.
+- [x] Define the canonical eight-bank candidate layout: six split-specific COCO image and
+  caption galleries plus one shared training-answer gallery for each of GQA Balanced and
+  CLEVR.
+- [x] Implement deterministic, resumable frozen-Qwen candidate encoding with immutable
+  manifests, checksums, contiguous float16 embedding shards, and atomic `READY` publication.
+- [x] Add local tests for candidate identity, ordering, image deduplication, shared answer
+  galleries, indexed text/image reading, embedding validation, and published-bank loading.
+- [ ] Encode and validate all eight candidate banks on the explicitly selected compute
+  route without overwriting any existing published bank.
+- [ ] Make the new query-only recurrent trainer and evaluator require the validated
+  immutable candidate banks and prove that the candidate Qwen tower is never executed.

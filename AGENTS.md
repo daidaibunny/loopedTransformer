@@ -88,6 +88,34 @@
 - Preserve the exact source ratio in train, validation, and test.
 - Never use test samples for tuning or checkpoint selection.
 
+## Immutable candidate banks
+
+- Every future recurrent experiment must use version
+  `frozen_qwen3vl_candidate_bank_v1`; it must not encode candidates during training or
+  evaluation.
+- Maintain exactly eight candidate banks:
+  - COCO train, validation, and test each have one deduplicated image gallery and one
+    complete caption gallery.
+  - GQA Balanced has one training-answer gallery shared by train, validation, and test.
+  - CLEVR has one training-answer gallery shared by train, validation, and test.
+- Candidate ordering comes only from the frozen baseline Parquet files and training-answer
+  galleries. Preserve `item_index`, `item_id`, and `positive_id`; never reorder or silently
+  drop candidates.
+- Encode candidates with the completely frozen original Qwen3-VL-Embedding-2B checkpoint.
+  Use its official final valid-token readout, 2,048 dimensions, L2 normalization, and
+  float16 storage. Candidate inputs omit a task-specific instruction; the unchanged Qwen
+  processor supplies its fixed generic system message.
+- A candidate bank is usable only when its `READY` checksum matches `bank_manifest.json`,
+  the base-model checksum matches, the item-manifest checksum matches, every embedding
+  shard checksum and contiguous range matches, and every stored vector is finite and unit
+  normalized.
+- Candidate banks are immutable after `READY` publication. A changed source manifest,
+  answer gallery, model checkpoint, preprocessing setting, candidate order, or code commit
+  requires a new output root and a new bank version; never overwrite a published bank.
+- Future query-only recurrent training keeps candidate tensors detached and loads them by
+  stable candidate index or identifier. The candidate Qwen tower must have zero forward
+  calls and zero trainable parameters.
+
 ## Checkpoint policy
 
 - Baseline and recurrent full training save an exact resumable checkpoint every 100
