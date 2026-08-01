@@ -40,6 +40,7 @@ from looped_vl.baseline.model import (
 	BASELINE_LORA_TARGETS,
 	BaselineInputProcessor,
 	BaselineLoRATrainingModel,
+	describe_lora_decoder_scope,
 	load_lora_training_model,
 )
 from looped_vl.smoke import checkpoint_sha256
@@ -60,6 +61,23 @@ from looped_vl.training.schedule import (
 )
 
 LOGGER = logging.getLogger("baseline_train")
+
+
+def _parse_decoder_layer_indices(value: str) -> tuple[int, ...]:
+	"""Parse a sorted comma-separated decoder-layer selection."""
+	try:
+		indices = tuple(int(part) for part in value.split(","))
+	except ValueError as error:
+		raise argparse.ArgumentTypeError(
+			"decoder layer indices must be comma-separated integers",
+		) from error
+	if not indices or any(index < 0 for index in indices):
+		raise argparse.ArgumentTypeError("decoder layer indices must be non-negative")
+	if tuple(sorted(set(indices))) != indices:
+		raise argparse.ArgumentTypeError(
+			"decoder layer indices must be sorted and unique",
+		)
+	return indices
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -379,12 +397,14 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		dtype=torch.float16,
 		attention_implementation=args.attention_implementation,
 		gradient_checkpointing=args.gradient_checkpointing,
+		decoder_layer_indices=args.lora_decoder_layer_indices,
 	).to(device)
 	training_model = BaselineLoRATrainingModel(
 		peft_model,
 		temperature=args.temperature,
 	)
 	training_model.train()
+	lora_scope = describe_lora_decoder_scope(peft_model.peft_config["default"])
 	trainable_names = [
 		name for name, parameter in training_model.named_parameters() if parameter.requires_grad
 	]
@@ -434,6 +454,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"max_pixels": args.max_pixels,
 		"visual_length_buckets": args.visual_length_buckets,
 		"min_visual_bucket_size": args.min_visual_bucket_size,
+		"lora_decoder_scope": lora_scope,
 	}
 	cursor = TrainingCursor(
 		stage=0,
@@ -530,6 +551,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			"alpha": BASELINE_LORA_ALPHA,
 			"dropout": 0.0,
 			"target_modules": BASELINE_LORA_TARGETS,
+			**lora_scope,
 			"trainable_parameter_count": sum(
 				parameter.numel()
 				for parameter in training_model.parameters()
@@ -825,6 +847,13 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--checkpoint-every", type=int, default=100)
 	parser.add_argument("--max-checkpoints", type=int, choices=(1,), default=1)
 	parser.add_argument("--resume-checkpoint", type=Path)
+	parser.add_argument(
+		"--lora-decoder-layer-indices",
+		type=_parse_decoder_layer_indices,
+		help=(
+			"Optional sorted decoder-layer indices. Omit for the original all-layer LoRA."
+		),
+	)
 	parser.add_argument("--learning-rate", type=float, default=5e-5)
 	parser.add_argument("--weight-decay", type=float, default=0.01)
 	parser.add_argument("--warmup-ratio", type=float, default=0.02)

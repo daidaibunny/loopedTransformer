@@ -8,10 +8,12 @@ from torch import nn
 
 from looped_vl.baseline.model import (
 	BASELINE_LORA_ALPHA,
+	BASELINE_LORA_LAST_FOUR_DECODER_LAYERS,
 	BASELINE_LORA_RANK,
 	BASELINE_LORA_TARGETS,
 	BaselineLoRATrainingModel,
 	build_lora_config,
+	describe_lora_decoder_scope,
 	encode_grouped_baseline_batches,
 	load_frozen_evaluation_model,
 )
@@ -33,7 +35,27 @@ def test_baseline_lora_matches_official_qwen_embedding_configuration() -> None:
 	assert config.r == 32
 	assert config.lora_alpha == 32
 	assert config.target_modules == set(BASELINE_LORA_TARGETS)
+	assert describe_lora_decoder_scope(config) == {
+		"scope": "all_decoder_layers",
+		"decoder_layer_indices": None,
+	}
 	assert config.lora_dropout == 0.0
+	assert config.layers_to_transform is None
+
+
+def test_baseline_lora_can_target_only_the_last_four_decoder_layers() -> None:
+	config = build_lora_config(
+		decoder_layer_indices=BASELINE_LORA_LAST_FOUR_DECODER_LAYERS,
+	)
+
+	assert BASELINE_LORA_LAST_FOUR_DECODER_LAYERS == (24, 25, 26, 27)
+	assert config.layers_to_transform == [24, 25, 26, 27]
+	assert config.layers_pattern == "layers"
+	assert config.target_modules == set(BASELINE_LORA_TARGETS)
+	assert describe_lora_decoder_scope(config) == {
+		"scope": "last_4_decoder_layers",
+		"decoder_layer_indices": [24, 25, 26, 27],
+	}
 
 
 class _FakeEmbeddingModel(nn.Module):

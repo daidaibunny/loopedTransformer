@@ -91,6 +91,7 @@ def test_baseline_cli_defaults_to_true_256_pair_batch_and_one_checkpoint(
 	assert args.max_checkpoints == 1
 	assert args.visual_length_buckets == 3
 	assert args.min_visual_bucket_size == 8
+	assert args.lora_decoder_layer_indices is None
 
 
 def test_baseline_formal_training_is_exactly_one_epoch() -> None:

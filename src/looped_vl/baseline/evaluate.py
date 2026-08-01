@@ -33,6 +33,7 @@ from looped_vl.baseline.data import (
 )
 from looped_vl.baseline.model import (
 	BaselineInputProcessor,
+	describe_lora_decoder_scope,
 	encode_grouped_baseline_batches,
 	load_frozen_evaluation_model,
 	load_lora_evaluation_model,
@@ -431,6 +432,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	model_root = Path(args.model_root)
 	adapter_root = Path(args.adapter_root) if args.adapter_root is not None else None
 	model_variant = "lora" if adapter_root is not None else "frozen_base"
+	lora_decoder_scope: dict[str, Any] | None = None
 	base_hash_before = checkpoint_sha256(model_root / "model.safetensors") if rank == 0 else None
 	adapter_hash = (
 		checkpoint_sha256(adapter_root / "adapter_model.safetensors")
@@ -456,6 +458,10 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 			dtype=torch.float16,
 			attention_implementation=args.attention_implementation,
 		).to(device)
+		lora_decoder_scope = describe_lora_decoder_scope(
+			model.peft_config["default"],
+		)
+		model_variant = f"lora_{lora_decoder_scope['scope']}"
 	trainable_parameter_count = sum(
 		parameter.numel() for parameter in model.parameters() if parameter.requires_grad
 	)
@@ -577,13 +583,14 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 					"candidate_gallery_unchanged": True,
 				},
 			},
-			"model": {
+				"model": {
 				"variant": model_variant,
 				"model_root": str(model_root),
 				"adapter_root": str(adapter_root) if adapter_root is not None else None,
 				"base_checkpoint_sha256_before": base_hash_before,
 				"base_checkpoint_sha256_after": base_hash_after,
-				"adapter_sha256": adapter_hash,
+					"adapter_sha256": adapter_hash,
+					"lora_decoder_scope": lora_decoder_scope,
 				"trainable_parameter_count": trainable_parameter_count,
 				"runtime_precision": "fp16",
 				"attention_implementation": args.attention_implementation,

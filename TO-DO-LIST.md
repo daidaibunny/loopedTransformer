@@ -116,3 +116,9 @@
   held-out test prefix using one shared seed-42 64-slot master bank.
 - [ ] Train and fully evaluate the causal-attention recurrent model on COCO for
   K=8/12/16/32 using one shared seed-42 64-slot master bank.
+- [ ] Train and evaluate rank-32 LoRA limited to decoder layers 24–27 on full COCO,
+  GQA Balanced, and CLEVR, preserving the original all-layer LoRA baseline.
+- [ ] Replace the ineffective recurrent v3 path with a no-LoRA, sub-5-million-parameter
+  recurrent operator whose extra passes can improve the final retrieval embedding.
+- [ ] Queue the three last-four-layer LoRA runs and the selected recurrent experiments
+  serially on all eight V100 GPUs, with one rolling checkpoint per active experiment.

@@ -19,6 +19,7 @@ from looped_vl.smoke import load_local_embedding_module
 
 BASELINE_LORA_RANK = 32
 BASELINE_LORA_ALPHA = 32
+BASELINE_LORA_LAST_FOUR_DECODER_LAYERS = (24, 25, 26, 27)
 BASELINE_LORA_TARGETS = (
 	"q_proj",
 	"v_proj",
@@ -29,8 +30,18 @@ BASELINE_LORA_TARGETS = (
 )
 
 
-def build_lora_config() -> LoraConfig:
+def build_lora_config(
+	*,
+	decoder_layer_indices: tuple[int, ...] | None = None,
+) -> LoraConfig:
 	"""Return the model-specific LoRA configuration published by Qwen."""
+	if decoder_layer_indices is not None:
+		if not decoder_layer_indices:
+			raise ValueError("decoder_layer_indices must not be empty")
+		if any(index < 0 for index in decoder_layer_indices):
+			raise ValueError("decoder_layer_indices must be non-negative")
+		if tuple(sorted(set(decoder_layer_indices))) != decoder_layer_indices:
+			raise ValueError("decoder_layer_indices must be sorted and unique")
 	return LoraConfig(
 		r=BASELINE_LORA_RANK,
 		lora_alpha=BASELINE_LORA_ALPHA,
@@ -38,7 +49,25 @@ def build_lora_config() -> LoraConfig:
 		lora_dropout=0.0,
 		bias="none",
 		task_type=TaskType.FEATURE_EXTRACTION,
+		layers_to_transform=(
+			list(decoder_layer_indices) if decoder_layer_indices is not None else None
+		),
+		layers_pattern="layers" if decoder_layer_indices is not None else None,
 	)
+
+
+def describe_lora_decoder_scope(config: LoraConfig) -> dict[str, Any]:
+	"""Return a stable result identity for an all-layer or selected-layer adapter."""
+	indices = config.layers_to_transform
+	if indices is None:
+		return {"scope": "all_decoder_layers", "decoder_layer_indices": None}
+	resolved_indices = [indices] if isinstance(indices, int) else list(indices)
+	scope = (
+		"last_4_decoder_layers"
+		if tuple(resolved_indices) == BASELINE_LORA_LAST_FOUR_DECODER_LAYERS
+		else "selected_decoder_layers"
+	)
+	return {"scope": scope, "decoder_layer_indices": resolved_indices}
 
 
 class BaselineInputProcessor:
@@ -206,6 +235,7 @@ def load_lora_training_model(
 	dtype: torch.dtype,
 	attention_implementation: str,
 	gradient_checkpointing: bool,
+	decoder_layer_indices: tuple[int, ...] | None = None,
 ) -> PeftModel:
 	"""Load the immutable base checkpoint and expose only LoRA parameters as trainable."""
 	module = load_local_embedding_module(Path(model_root))
@@ -222,7 +252,10 @@ def load_lora_training_model(
 			gradient_checkpointing_kwargs={"use_reentrant": False},
 		)
 		base_model.enable_input_require_grads()
-	model = get_peft_model(base_model, build_lora_config())
+	model = get_peft_model(
+		base_model,
+		build_lora_config(decoder_layer_indices=decoder_layer_indices),
+	)
 	return model
 
 

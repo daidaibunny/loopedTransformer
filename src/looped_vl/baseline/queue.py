@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from looped_vl.baseline.data import BASELINE_DATASETS
+from looped_vl.baseline.model import BASELINE_LORA_LAST_FOUR_DECODER_LAYERS
 from looped_vl.training.wait_and_launch import wait_for_idle_window
 
 
@@ -48,6 +49,7 @@ def build_training_command(
 	world_size: int,
 	checkpoint_every: int = 100,
 	max_checkpoints: int = 1,
+	lora_decoder_layer_indices: tuple[int, ...] | None = None,
 ) -> list[str]:
 	"""Build one result-isolated eight-rank full training command."""
 	run.validate()
@@ -100,6 +102,13 @@ def build_training_command(
 		if run.gradient_checkpointing
 		else "--no-gradient-checkpointing",
 	)
+	if lora_decoder_layer_indices is not None:
+		command.extend(
+			[
+				"--lora-decoder-layer-indices",
+				",".join(str(index) for index in lora_decoder_layer_indices),
+			],
+		)
 	return command
 
 
@@ -212,6 +221,7 @@ def run_queue(args: argparse.Namespace, runs: list[BaselineRun]) -> None:
 			"required_idle_seconds": args.required_idle_seconds,
 			"dataset_root": str(args.dataset_root),
 			"model_root": str(args.model_root),
+			"lora_scope": args.lora_scope,
 		},
 	)
 	status_path = output_root / "status.json"
@@ -245,6 +255,11 @@ def run_queue(args: argparse.Namespace, runs: list[BaselineRun]) -> None:
 			world_size=args.world_size,
 			checkpoint_every=args.checkpoint_every,
 			max_checkpoints=args.max_checkpoints,
+			lora_decoder_layer_indices=(
+				BASELINE_LORA_LAST_FOUR_DECODER_LAYERS
+				if args.lora_scope == "last_4_decoder_layers"
+				else None
+			),
 		)
 		_write_json(
 			status_path,
@@ -333,6 +348,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--world-size", type=int, default=8)
 	parser.add_argument("--checkpoint-every", type=int, default=100)
 	parser.add_argument("--max-checkpoints", type=int, choices=(1,), default=1)
+	parser.add_argument(
+		"--lora-scope",
+		choices=("all_decoder_layers", "last_4_decoder_layers"),
+		default="all_decoder_layers",
+	)
 	parser.add_argument("--required-idle-seconds", type=float, default=120.0)
 	parser.add_argument("--poll-seconds", type=float, default=5.0)
 	return parser.parse_args()

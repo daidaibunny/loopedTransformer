@@ -7,6 +7,7 @@ from looped_vl.baseline.frozen_queue import (
 	build_frozen_queue_commands,
 	parse_v100_names,
 )
+from looped_vl.baseline.model import BASELINE_LORA_LAST_FOUR_DECODER_LAYERS
 from looped_vl.baseline.queue import (
 	BaselineRun,
 	build_frozen_evaluation_command,
@@ -57,6 +58,24 @@ def test_training_command_keeps_dataset_specific_parallel_parameters(tmp_path: P
 	assert command[command.index("--visual-length-buckets") + 1] == "3"
 	assert command[command.index("--min-visual-bucket-size") + 1] == "8"
 	assert "--no-gradient-checkpointing" in command
+
+
+def test_training_command_can_select_only_the_last_four_decoder_layers(
+	tmp_path: Path,
+) -> None:
+	run = BaselineRun("coco", 32, 1, 4)
+
+	command = build_training_command(
+		run,
+		project_root=tmp_path,
+		dataset_root=tmp_path / "datasets",
+		model_root=tmp_path / "model",
+		output_root=tmp_path / "outputs",
+		world_size=8,
+		lora_decoder_layer_indices=BASELINE_LORA_LAST_FOUR_DECODER_LAYERS,
+	)
+
+	assert command[command.index("--lora-decoder-layer-indices") + 1] == "24,25,26,27"
 
 
 def test_frozen_evaluation_command_uses_all_eight_v100_ranks(tmp_path: Path) -> None:
