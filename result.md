@@ -598,15 +598,15 @@ setting.
 | EXP-004D | 32 | +0.00535 | 0.0053 | 200 | 0.6132 | 0.9530 → 0.2530 |
 
 These are recorded values from `train_metrics.jsonl`, not inferred quantities. The gate
-is `tanh(gamma)` in `fused = eos_hidden_state + gate * delta`, so a final magnitude near
-0.0053 means the slot pathway contributed roughly half of one percent of the EOS vector
-at the end of training. The gate magnitude grew monotonically and then flattened at the
-same value in all four runs, and the fusion attention entropy fell toward zero, meaning
-pooling selected essentially one slot. The final embedding therefore stayed very close to
-the frozen backbone EOS embedding, which is consistent with the small measured
-differences against the frozen baseline. Interpreting why the gate saturated at this
-magnitude requires the ablations that are not yet run; the numbers above are the
-evidence, not the explanation.
+is `tanh(gamma)` in `fused = eos_hidden_state + gate * delta`. A final magnitude near
+0.0053 is the scalar multiplier on `delta`; it is not by itself the norm ratio between
+the fused residual and EOS, which was not logged. The gate magnitude grew monotonically
+and then flattened at nearly the same value in all four runs, while fusion attention
+entropy fell toward zero, meaning the attention selected essentially one slot. These
+observations are consistent with the small measured differences against the frozen
+baseline, but they do not alone prove the residual's actual magnitude or why the gate
+followed this trajectory. Those quantities require the diagnostic ablations that have
+not yet run.
 
 ## Required record for every new experiment
 
