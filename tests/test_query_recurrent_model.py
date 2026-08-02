@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -68,6 +69,23 @@ def test_zero_gate_starts_every_recurrent_step_at_the_frozen_embedding() -> None
 	assert torch.count_nonzero(head.output_projection.weight) > 0
 	assert head.residual_gate.item() == 0.0
 	assert not hasattr(head, "exit_controller")
+
+
+def test_zero_gated_residual_scale_is_independent_of_projection_magnitude() -> None:
+	config = QueryRecurrentConfig(max_recurrent_steps=1)
+	head = QueryRecurrentHead(config)
+	inputs = _inputs(config)
+	with torch.no_grad():
+		head.output_projection.weight.mul_(1_000.0)
+		head.residual_gate.fill_(math.atanh(0.1))
+
+	output = head(**inputs)
+	movement = torch.linalg.vector_norm(
+		output.embeddings - inputs["base_embeddings"],
+		dim=-1,
+	)
+
+	assert movement.max().item() < 0.12
 
 
 def test_fixed_recurrence_returns_normalized_pass_outputs_and_final_pass() -> None:

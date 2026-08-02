@@ -50,10 +50,10 @@ def _args(tmp_path: Path) -> SimpleNamespace:
 	)
 
 
-def test_formal_queue_contains_only_the_focused_coco_v3_controls() -> None:
+def test_formal_queue_contains_only_the_focused_coco_v4_controls() -> None:
 	assert [run.name for run in FORMAL_QUERY_RECURRENT_RUNS] == [
-		"coco_v3_k8_r1_fixed",
-		"coco_v3_k8_r4_fixed",
+		"coco_v4_k8_r1_fixed",
+		"coco_v4_k8_r4_fixed",
 	]
 	assert all(run.dataset == "coco" for run in FORMAL_QUERY_RECURRENT_RUNS)
 	assert not any(hasattr(run, "exit_mode") for run in FORMAL_QUERY_RECURRENT_RUNS)

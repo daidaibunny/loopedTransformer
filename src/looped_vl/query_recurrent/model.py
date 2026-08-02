@@ -353,7 +353,11 @@ class QueryRecurrentHead(nn.Module):
 		scores = scores / (self.config.state_size**0.5)
 		weights = torch.softmax(scores, dim=1)
 		pooled = torch.einsum("bk,bkd->bd", weights.to(slots.dtype), slots)
-		residual = self.output_projection(self.output_norm(pooled)).float()
+		residual = F.normalize(
+			self.output_projection(self.output_norm(pooled)).float(),
+			p=2,
+			dim=-1,
+		)
 		fused = F.normalize(
 			base_embeddings.float() + torch.tanh(self.residual_gate.float()) * residual,
 			p=2,

@@ -8,8 +8,9 @@
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
 - The active diagnostic candidate is
-  `query_only_history_recurrent_no_lora_v3_candidate`. The completed v1 query-only runs,
-  the rejected unbounded-residual v2 diagnostic, and former
+  `query_only_history_recurrent_no_lora_v4_candidate`. The completed v1 query-only runs,
+  the rejected unbounded-residual v2 diagnostic, the unnormalized zero-gated v3
+  diagnostic, and former
   `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue remain historical only;
   never launch them as current experiments.
 - Use one training stage and one full-data epoch. All trainable recurrent parameters are
@@ -24,11 +25,14 @@
   and R=1/4.
 - Use `EOS-conditioned slot attention pooling` after every recurrent pass: the frozen
   final-valid-token embedding selects useful slots with soft attention. Project the
-  selected state to 2,048 dimensions with Xavier initialization, multiply it by a shared
-  `tanh` scalar gate initialized to zero, add it to the frozen Qwen embedding, then
-  L2-normalize. This `zero-gated residual fusion` makes every pass exactly equal to frozen
-  Qwen at initialization. The gate receives the first optimizer-step gradient; the
-  residual projection and recurrent path receive gradients after the gate becomes nonzero.
+  selected state to 2,048 dimensions with Xavier initialization and L2-normalize this
+  residual direction before multiplying it by a shared `tanh` scalar gate initialized to
+  zero. Add that norm-bounded update to the frozen Qwen embedding, then L2-normalize. This
+  `zero-gated residual fusion` makes every pass exactly equal to frozen Qwen at
+  initialization and makes the gate value an interpretable upper bound on update norm,
+  independent of projection width or weight magnitude. The gate receives the first
+  optimizer-step gradient; the residual projection and recurrent path receive gradients
+  after the gate becomes nonzero.
 - The first v2 uses an explicit fixed recurrent count only. It contains no exit controller,
   exit threshold, halting loss, or compute penalty. Reconsider dynamic exit only after a
   fixed Pass-4 model shows a measurable gain over a separately trained fixed Pass-1 model.
@@ -139,8 +143,8 @@
   or training protocol.
 - Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
   and `report.json` must declare architecture
-  `query_only_history_recurrent_no_lora_v3_candidate`, protocol
-  `single_stage_fixed_recurrence_zero_gated_v3_candidate`, `backbone_frozen: true`,
+  `query_only_history_recurrent_no_lora_v4_candidate`, protocol
+  `single_stage_fixed_recurrence_unit_residual_v4_candidate`, `backbone_frozen: true`,
   `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
