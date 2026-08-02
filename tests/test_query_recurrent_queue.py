@@ -36,6 +36,8 @@ def _args(tmp_path: Path) -> SimpleNamespace:
 		checkpoint_every=100,
 		smoke_rows=512,
 		smoke_steps=2,
+		diagnostic_rows=51_200,
+		diagnostic_steps=200,
 		project_root=tmp_path / "project",
 		dataset_root=tmp_path / "datasets",
 		model_root=tmp_path / "model",
@@ -86,6 +88,32 @@ def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
 	assert test[test.index("--recurrent-checkpoint") + 1].endswith(
 		"query_recurrent_model.pt",
 	)
+
+
+def test_quality_diagnostic_saves_a_testable_model_after_exactly_200_steps(
+	tmp_path: Path,
+) -> None:
+	args = _args(tmp_path)
+	command = build_training_command(
+		FORMAL_QUERY_RECURRENT_RUNS[1],
+		args=args,
+		output_dir=tmp_path / "diagnostic_train",
+		diagnostic=True,
+	)
+
+	assert command[command.index("--max-train-rows") + 1] == "51200"
+	assert command[command.index("--max-optimizer-steps") + 1] == "200"
+	assert "--skip-checkpoint-save" not in command
+	assert "--skip-final-save" not in command
+
+	with pytest.raises(ValueError, match="mutually exclusive"):
+		build_training_command(
+			FORMAL_QUERY_RECURRENT_RUNS[1],
+			args=args,
+			output_dir=tmp_path / "invalid",
+			smoke=True,
+			diagnostic=True,
+		)
 
 
 def test_query_only_lora_control_uses_last_four_layers_and_frozen_candidates(

@@ -76,9 +76,12 @@ def build_training_command(
 	output_dir: Path,
 	resume_checkpoint: Path | None = None,
 	smoke: bool = False,
+	diagnostic: bool = False,
 ) -> list[str]:
 	"""Build an eight-rank no-LoRA command for one immutable run identity."""
 	run.validate()
+	if smoke and diagnostic:
+		raise ValueError("Technical smoke and quality diagnostic are mutually exclusive")
 	command = [
 		sys.executable,
 		"-m",
@@ -149,6 +152,15 @@ def build_training_command(
 				str(args.smoke_steps),
 				"--skip-checkpoint-save",
 				"--skip-final-save",
+			],
+		)
+	if diagnostic:
+		command.extend(
+			[
+				"--max-train-rows",
+				str(args.diagnostic_rows),
+				"--max-optimizer-steps",
+				str(args.diagnostic_steps),
 			],
 		)
 	return command
@@ -358,6 +370,70 @@ def _run(command: list[str], *, args: argparse.Namespace) -> None:
 		raise RuntimeError(f"Command failed with exit code {result.returncode}: {command}")
 
 
+def run_quality_diagnostic(args: argparse.Namespace) -> None:
+	"""Train one fixed-window v2 model and fully test every recurrent pass."""
+	if args.world_size != 8 or args.per_device_batch_size != 32:
+		raise ValueError("Quality diagnostic is locked to 8 GPUs and batch 32 per GPU")
+	if args.diagnostic_rows != args.diagnostic_steps * 8 * args.per_device_batch_size:
+		raise ValueError("Diagnostic rows must equal steps times the global batch size")
+	output_root = Path(args.output_root)
+	output_root.mkdir(parents=True, exist_ok=True)
+	bank_identities = validate_all_candidate_banks(Path(args.candidate_root))
+	run = FORMAL_QUERY_RECURRENT_RUNS[1]
+	manifest = {
+		"scope": "non_formal_root_cause_quality_diagnostic",
+		"run": asdict(run),
+		"diagnostic_rows": args.diagnostic_rows,
+		"diagnostic_steps": args.diagnostic_steps,
+		"validation_used": False,
+		"candidate_bank_manifest_sha256": bank_identities,
+	}
+	manifest_path = output_root / "diagnostic_manifest.json"
+	if manifest_path.exists():
+		if not _queue_manifests_match(
+			json.loads(manifest_path.read_text(encoding="utf-8")),
+			manifest,
+		):
+			raise ValueError("Existing diagnostic manifest does not match this run")
+	else:
+		_write_json(manifest_path, manifest)
+	status_path = output_root / "status.json"
+	training_output = output_root / "train"
+	if not _passed(training_output / "status.json"):
+		if training_output.exists():
+			raise FileExistsError(
+				f"Incomplete diagnostic training requires diagnosis: {training_output}",
+			)
+		command = build_training_command(
+			run,
+			args=args,
+			output_dir=training_output,
+			diagnostic=True,
+		)
+		_write_json(status_path, {"status": "training", "command": command})
+		_run(command, args=args)
+	if not (training_output / "query_recurrent_model.pt").is_file():
+		raise FileNotFoundError(f"Missing diagnostic recurrent model: {training_output}")
+	evaluation_output = output_root / "test"
+	if not _passed(evaluation_output / "status.json"):
+		if evaluation_output.exists():
+			raise FileExistsError(
+				f"Incomplete diagnostic test requires diagnosis: {evaluation_output}",
+			)
+		command = build_evaluation_command(
+			run,
+			args=args,
+			training_output=training_output,
+			evaluation_output=evaluation_output,
+		)
+		_write_json(status_path, {"status": "testing", "command": command})
+		_run(command, args=args)
+	_write_json(
+		status_path,
+		{"status": "passed", "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+	)
+
+
 def run_queue(args: argparse.Namespace) -> None:
 	if args.world_size != 8 or args.per_device_batch_size != 32:
 		raise ValueError("Formal queue is locked to 8 GPUs and batch 32 per GPU")
@@ -539,6 +615,9 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--checkpoint-every", type=int, default=100)
 	parser.add_argument("--smoke-rows", type=int, default=512)
 	parser.add_argument("--smoke-steps", type=int, default=2)
+	parser.add_argument("--diagnostic-only", action="store_true")
+	parser.add_argument("--diagnostic-rows", type=int, default=51_200)
+	parser.add_argument("--diagnostic-steps", type=int, default=200)
 	parser.add_argument("--resume-source-git-commit")
 	parser.add_argument("--resume-gradient-scale", type=float)
 	return parser.parse_args()
@@ -547,7 +626,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
 	args = parse_args()
 	try:
-		run_queue(args)
+		if args.diagnostic_only:
+			run_quality_diagnostic(args)
+		else:
+			run_queue(args)
 		return 0
 	except KeyboardInterrupt:
 		status = "interrupted"
