@@ -200,3 +200,8 @@
   GQA Balanced and CLEVR records must contain their independent answer-retrieval results.
 - Do not combine a smoke metric, partial-test metric, old mixed-data metric, or another
   project result with the current full single-dataset comparison.
+- Keep the all-model horizontal comparison limited to the frozen reference, locked LoRA
+  baselines, and one final result from the locked recurrent architecture. Record controls,
+  pass outputs, slot/history ablations, and other detailed variants only in their
+  corresponding experiment sections unless the user explicitly promotes a new canonical
+  architecture after full comparable evaluation.

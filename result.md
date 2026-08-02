@@ -1027,16 +1027,15 @@ gradients were finite. Final slot pairwise absolute cosine was 0.9934.
 
 ## All-model horizontal comparison
 
-This is the single primary comparison table. Rows distinguish experiments. The first
-header level groups results by dataset; the second level lists the compared metrics.
-COCO uses the equal-direction mean of text-to-image and image-to-text. GQA Balanced and
-CLEVR use answer retrieval. Compare metrics only within the same dataset.
-
-The active query-only recurrent counts are 4,876,305 at K=1, 4,877,169 at K=4, and
-4,878,321 at K=8; every parameter is retained for inference. EXP-005 reports Pass 1
-because it is the fixed R=1 control. The four damped recurrent rows are superseded
-historical EXP-004 Pass-4 results with their older parameter accounting. `N/A` means the
-corresponding full held-out test result does not exist.
+This is the single primary comparison table. It contains only the frozen reference,
+the two locked LoRA baselines, and the final output of the locked recurrent architecture.
+Controls and ablations remain in their corresponding experiment sections above and are
+not duplicated here. COCO uses the equal-direction mean of text-to-image and image-to-text.
+GQA Balanced and CLEVR use answer retrieval. Compare metrics only within the same dataset.
+The recurrent row uses the four-history K=8, R=4 dynamic-hard-exit configuration: it is
+the only recurrent configuration evaluated on all three canonical datasets. The R=1
+control is not recurrent, while the K=1 COCO ablation's 0.0096-point mAP advantage over
+K=8 is too small and lacks GQA/CLEVR confirmation.
 
 <table>
 <thead>
@@ -1112,39 +1111,7 @@ corresponding full held-out test result does not exist.
 <td>87.4560</td><td>99.7573</td><td>99.9973</td><td>100.0000</td><td>93.3167</td><td>95.0396</td>
 </tr>
 <tr>
-<td>Query-only history recurrent Block (no LoRA), fixed Pass 1</td>
-<td>8</td>
-<td>1</td>
-<td>4,878,321</td>
-<td>Passed</td>
-<td>61.7775</td><td>64.3811</td><td>34.1789</td><td>20.7467</td><td>11.7966</td>
-<td>34.5945</td><td>65.4607</td><td>75.8858</td><td>83.9399</td><td>73.4350</td>
-<td>67.4297</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-</tr>
-<tr>
-<td>Query-only history recurrent Block (no LoRA), fixed Pass 4</td>
-<td>8</td>
-<td>4</td>
-<td>4,878,321</td>
-<td>Passed</td>
-<td>61.7421</td><td>64.3951</td><td>34.1497</td><td>20.7329</td><td>11.7867</td>
-<td>34.6085</td><td>65.4267</td><td>75.8521</td><td>83.8940</td><td>73.4158</td>
-<td>67.3995</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-</tr>
-<tr>
-<td>Query-only history recurrent Block (no LoRA), dynamic hard exit</td>
+<td>Query-only history recurrent Block (no LoRA), locked K=8/R=4 dynamic hard exit</td>
 <td>8</td>
 <td>4</td>
 <td>4,878,321</td>
@@ -1159,54 +1126,6 @@ corresponding full held-out test result does not exist.
 <td>Passed</td>
 <td>91.2619</td><td>84.0533</td><td>19.9277</td><td>10.0000</td><td>5.0000</td>
 <td>84.0533</td><td>99.6387</td><td>100.0000</td><td>100.0000</td><td>91.2619</td><td>93.5018</td>
-</tr>
-<tr>
-<td>Query-only history recurrent Block (no LoRA), K=1 dynamic hard exit</td>
-<td>1</td>
-<td>4</td>
-<td>4,876,305</td>
-<td>Passed</td>
-<td>61.7506</td><td>64.3891</td><td>34.1489</td><td>20.7417</td><td>11.7894</td>
-<td>34.5945</td><td>65.4227</td><td>75.8761</td><td>83.9080</td><td>73.4227</td>
-<td>67.4142</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-</tr>
-<tr>
-<td>Query-only history recurrent Block (no LoRA), K=4 dynamic hard exit</td>
-<td>4</td>
-<td>4</td>
-<td>4,877,169</td>
-<td>Passed</td>
-<td>61.7423</td><td>64.3971</td><td>34.1573</td><td>20.7353</td><td>11.7865</td>
-<td>34.5945</td><td>65.4327</td><td>75.8601</td><td>83.8979</td><td>73.4234</td>
-<td>67.4032</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-</tr>
-<tr>
-<td>Query-only recurrent Block (no LoRA), Layer-28-only dynamic hard exit</td>
-<td>8</td>
-<td>4</td>
-<td>4,878,321</td>
-<td>Passed</td>
-<td>61.7359</td><td>64.3251</td><td>34.1625</td><td>20.7325</td><td>11.7828</td>
-<td>34.5785</td><td>65.4267</td><td>75.8641</td><td>83.8800</td><td>73.3998</td>
-<td>67.3972</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 </tr>
 </tbody>
 </table>
