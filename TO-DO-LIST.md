@@ -261,6 +261,9 @@
 - [x] Let the v11 serial queue explicitly reuse the already completed COCO fixed-candidate
   LoRA control while keeping GQA Balanced and CLEVR in the new post-recurrent output root;
   record the exact historical COCO path in the queue manifest and hourly monitor.
+- [x] Fix COCO fixed-candidate evaluation to compare the namespaced `positive_id` used by
+  the immutable image bank instead of the raw `image_id`; cover the failed full-test path
+  with a regression test before retrying it.
 - [ ] Run the eight-V100 two-step v11 COCO smoke and verify all ranks, finite gradients,
   exact zero candidate-Qwen calls, parameter count, throughput, and peak memory.
 - [ ] Train and test full COCO v11 for one epoch, reporting frozen Pass 0 and Pass 1–4.

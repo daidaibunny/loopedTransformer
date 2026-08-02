@@ -120,7 +120,9 @@ def _build_groups(
 		image_to_caption_indices: dict[str, list[int]] = defaultdict(list)
 		text_to_image: list[tuple[int, ...]] = []
 		for caption_index, row in enumerate(rows):
-			image_id = str(row["image_id"])
+			# Candidate banks use positive_id (for example, ``image:391895``) as
+			# their stable item identity. Raw image_id omits that namespace.
+			image_id = str(row["positive_id"])
 			if image_id not in image_to_index:
 				image_to_index[image_id] = len(image_ids)
 				image_ids.append(image_id)
