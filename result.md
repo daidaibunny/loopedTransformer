@@ -34,7 +34,7 @@ the current experiments.
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA, decoder layers 24–27 only | Passed | Running | Pending | COCO only |
 | Superseded damped mid-decoder recurrent slots (no LoRA) | Passed | N/A | N/A | Historical COCO only |
-| Query-only history recurrent Block (no LoRA) | Running | Pending | Pending | Six COCO controls passed |
+| Query-only history recurrent Block (no LoRA) | Passed | Passed | Failed at step 1050 | CLEVR resumable from step 1000 |
 
 The active definition is `query_only_history_recurrent_no_lora_v1`, with protocol
 `single_stage_frozen_candidate_dynamic_exit_v1`. Candidate embeddings come only from
@@ -50,9 +50,10 @@ checkpoint, per-device batch 32 on eight V100 GPUs, and a true contrastive globa
 of 256. EXP-005 through EXP-007 have completed the COCO K=8 controls for R=1 fixed,
 R=4 fixed, and R=4 dynamic exit. EXP-008 and EXP-009 have completed the K=1 and K=4
 slot-count ablations, and EXP-010 has completed the Layer-28-only history ablation.
-The remaining GQA Balanced and CLEVR experiments are running or queued.
-EXP-004A/B/C/D use the superseded damped mid-decoder design and remain below only as
-historical evidence; they are not the active architecture.
+EXP-011 has completed GQA Balanced. The final CLEVR run stopped after step 1050 because
+FP16 gradient scaling detected a non-finite gradient; its single step-1000 checkpoint
+is intact. EXP-004A/B/C/D use the superseded damped mid-decoder design and remain below
+only as historical evidence; they are not the active architecture.
 
 For every active recurrent test, retain frozen-Qwen Pass 0, recurrent Pass 1 through
 Pass 4, dynamic hard exit, and dynamic soft exit, with every required metric and the
@@ -902,6 +903,54 @@ selected Pass 4 for all 30,010 queries; its exit probabilities were 6.39e-7,
 The final loss was 0.9812, gradient norm was 0.3148, and all logged losses and
 gradients were finite. Final slot pairwise absolute cosine was 0.9990.
 
+## EXP-011 — GQA Balanced query-only history recurrent Block, K=8, R=4
+
+- Status/date: passed. Training ran from 2026-08-01T23:29:52Z to
+  2026-08-02T02:07:45Z; full-test evaluation finished at 2026-08-02T02:11:35Z.
+- Objective: test the canonical K=8, R=4 dynamic query-only recurrent model on the
+  full GQA Balanced visual-reasoning split.
+- Route/node/code: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB,
+  commit `9792f7021807d1d441618b95345fde61c565822c`.
+- Data: 943,000 train rows and 12,578 held-out test rows; no validation. Train and
+  test manifest SHA-256 values are
+  `2022a835621ea4c072e1e09c5412b78d3322fdd1ac658485ac947859fb20abdb` and
+  `ba1442bb782bb4627efc081111009e833dbbe6a5451a9f0264075cf662318b2b`.
+  The shared immutable 1,833-answer candidate bank hash is
+  `516f9cbb5de44c84bbc7d26fdccc8cd4dc48c99a72f7713b3de88d6dda8845ee`.
+- Model/optimization: four frozen histories, K=8, R=4, dynamic exit, 4,878,321
+  trainable parameters, no LoRA, candidate Qwen forward calls zero, one query-Qwen
+  pass per batch, one epoch, 3,684 optimizer steps, per-device batch 32, global batch
+  256, and the same optimizer settings as EXP-007.
+- Runtime: training took 9,472.36 seconds; steady median throughput was 100.13
+  samples/second; peak allocated training memory was 8.79 GiB per rank. Test took
+  175.47 seconds with 5.36 GiB rank-zero peak allocated memory.
+- Checkpoints: one rolling checkpoint, `step003684.pt`; final recurrent model SHA-256
+  `321b71bfb5f3386aa8c6891d502eceb9fd8a0f7e3645c700ab74eb2bb2203d86`.
+- Evidence: tmux `query_recurrent_v1_9792f70_20260802`; output
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_recurrent_v1_9792f70_20260802/gqa_k8_r4_dynamic`.
+
+Pass 3 had the best mAP, 65.3184 (+13.2173 over Pass 0). Dynamic hard exit selected
+Pass 4 for all 12,578 test queries and produced 65.2968 (+13.1957). Mean exit
+probabilities were 0.000485, 0.000333, 0.000285, and 0.000263, all below 0.5;
+there was no early exit. Coverage was 99.9841% and the answer gallery contained 1,833
+normalized training answers.
+
+### Full-test metrics by recurrent pass and exit output (%)
+
+| Pass/output | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 | mAP change vs Pass 0 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 52.1011 | 36.2538 | 14.4077 | 8.5292 | 4.6557 | 36.2538 | 72.0385 | 85.2918 | 93.1150 | 52.1011 | 59.4911 | +0.0000 |
+| 1 | 64.4161 | 48.6087 | 17.0774 | 9.2113 | 4.7663 | 48.6087 | 85.3872 | 92.1132 | 95.3252 | 64.4161 | 70.9557 | +12.3150 |
+| 2 | 65.1924 | 49.6581 | 17.1426 | 9.2256 | 4.7690 | 49.6581 | 85.7131 | 92.2563 | 95.3808 | 65.1924 | 71.5850 | +13.0913 |
+| 3 | 65.3184 | 49.7694 | 17.1585 | 9.2296 | 4.7698 | 49.7694 | 85.7927 | 92.2961 | 95.3967 | 65.3184 | 71.6936 | +13.2173 |
+| 4 | 65.2968 | 49.6979 | 17.1713 | 9.2328 | 4.7714 | 49.6979 | 85.8563 | 92.3279 | 95.4285 | 65.2968 | 71.6876 | +13.1957 |
+| Dynamic hard (primary) | 65.2968 | 49.6979 | 17.1713 | 9.2328 | 4.7714 | 49.6979 | 85.8563 | 92.3279 | 95.4285 | 65.2968 | 71.6876 | +13.1957 |
+| Dynamic soft | 65.2966 | 49.6979 | 17.1697 | 9.2328 | 4.7714 | 49.6979 | 85.8483 | 92.3279 | 95.4285 | 65.2966 | 71.6874 | +13.1955 |
+
+The final loss was 0.5773, gradient norm was 1.3526, and all logged losses and
+gradients were finite. Final slot pairwise absolute cosine was 0.9970.
+
 ## Required record for every new experiment
 
 1. Identity: unique ID, objective, terminal status, start/end time, route, node, exact code
@@ -1043,10 +1092,11 @@ corresponding full held-out test result does not exist.
 <td>61.7410</td><td>64.3811</td><td>34.1557</td><td>20.7351</td><td>11.7851</td>
 <td>34.5945</td><td>65.4407</td><td>75.8581</td><td>83.8939</td><td>73.4197</td>
 <td>67.4011</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
+<td>Passed</td>
+<td>65.2968</td><td>49.6979</td><td>17.1713</td><td>9.2328</td><td>4.7714</td>
+<td>49.6979</td><td>85.8563</td><td>92.3279</td><td>95.4285</td><td>65.2968</td>
+<td>71.6876</td>
+<td>Failed at step 1050</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 </tr>
