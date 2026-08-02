@@ -12,6 +12,7 @@ from looped_vl.query_recurrent.launch import _queue_command, validate_gpu_invent
 from looped_vl.query_recurrent.queue import (
 	FORMAL_QUERY_RECURRENT_RUNS,
 	_next_evaluation_output,
+	_queue_manifests_match,
 	build_evaluation_command,
 	build_training_command,
 	validate_all_candidate_banks,
@@ -171,3 +172,10 @@ def test_resume_command_records_the_authorized_commit_and_lower_scale(
 	assert command[command.index("--resume-checkpoint") + 1] == str(checkpoint)
 	assert command[command.index("--resume-source-git-commit") + 1] == "old-commit"
 	assert command[command.index("--resume-gradient-scale") + 1] == "2048.0"
+
+
+def test_existing_queue_manifest_normalizes_json_tuple_round_trip() -> None:
+	current = {"runs": [{"history_layers": (7, 14, 21, 28)}]}
+	written_and_loaded = {"runs": [{"history_layers": [7, 14, 21, 28]}]}
+
+	assert _queue_manifests_match(written_and_loaded, current)

@@ -63,6 +63,12 @@ def _write_json(path: Path, value: Any) -> None:
 	path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _queue_manifests_match(existing: dict[str, Any], current: dict[str, Any]) -> bool:
+	"""Compare queue manifests after the same tuple-to-list JSON conversion as disk."""
+	json_compatible_current = json.loads(json.dumps(current, sort_keys=True))
+	return existing == json_compatible_current
+
+
 def validate_all_candidate_banks(candidate_root: Path) -> dict[str, str]:
 	"""Require all eight immutable banks before any recurrent GPU process starts."""
 	identities = {}
@@ -266,7 +272,8 @@ def run_queue(args: argparse.Namespace) -> None:
 		"candidate_root": str(args.candidate_root),
 	}
 	if manifest_path.exists():
-		if json.loads(manifest_path.read_text(encoding="utf-8")) != queue_manifest:
+		existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+		if not _queue_manifests_match(existing_manifest, queue_manifest):
 			raise ValueError("Existing queue manifest does not match this formal queue")
 	else:
 		_write_json(manifest_path, queue_manifest)
