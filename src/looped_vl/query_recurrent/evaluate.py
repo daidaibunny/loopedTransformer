@@ -92,6 +92,21 @@ def _variant_names(max_recurrent_steps: int) -> tuple[str, ...]:
 	)
 
 
+def _append_finite_embedding_chunks(
+	embedding_chunks: dict[str, list[torch.Tensor]],
+	variants: dict[str, torch.Tensor],
+	*,
+	group_name: str,
+) -> None:
+	"""Append every valid batch tensor; reject non-finite values before caching."""
+	if set(embedding_chunks) != set(variants):
+		raise ValueError("Embedding chunk and variant names must match")
+	for variant, embeddings in variants.items():
+		if not torch.isfinite(embeddings).all():
+			raise RuntimeError(f"Non-finite {variant} embeddings in {group_name}")
+		embedding_chunks[variant].append(embeddings.detach().cpu().half())
+
+
 def _encode_query_group(
 	*,
 	name: str,
@@ -184,10 +199,11 @@ def _encode_query_group(
 				for step, embedding in enumerate(output.step_embeddings, start=1)
 			},
 		}
-		for variant, embeddings in variants.items():
-			if not torch.isfinite(embeddings).all():
-				raise RuntimeError(f"Non-finite {variant} embeddings in {name}")
-				embedding_chunks[variant].append(embeddings.detach().cpu().half())
+		_append_finite_embedding_chunks(
+			embedding_chunks,
+			variants,
+			group_name=name,
+		)
 		index_chunks.append(torch.tensor(batch["global_indices"], dtype=torch.long))
 		processed_count += len(batch["global_indices"])
 		if batch_number == 1 or batch_number % args.log_every_batches == 0:

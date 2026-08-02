@@ -8,7 +8,10 @@ import pytest
 import torch
 
 from looped_vl.candidate_bank import CANDIDATE_BANK_SPECS, sha256_file
-from looped_vl.query_recurrent.evaluate import _variant_names
+from looped_vl.query_recurrent.evaluate import (
+	_append_finite_embedding_chunks,
+	_variant_names,
+)
 from looped_vl.query_recurrent.launch import _queue_command, validate_gpu_inventory
 from looped_vl.query_recurrent.queue import (
 	FORMAL_QUERY_RECURRENT_RUNS,
@@ -61,6 +64,25 @@ def test_formal_queue_contains_only_the_focused_coco_v2_controls() -> None:
 		"pass_3",
 		"pass_4",
 	)
+
+
+def test_evaluation_appends_every_finite_pass_embedding_chunk() -> None:
+	chunks: dict[str, list[torch.Tensor]] = {"pass_0": [], "pass_1": []}
+	variants = {
+		"pass_0": torch.ones(3, 2048),
+		"pass_1": torch.full((3, 2048), 2.0),
+	}
+
+	_append_finite_embedding_chunks(chunks, variants, group_name="query")
+
+	assert len(chunks["pass_0"]) == 1
+	assert len(chunks["pass_1"]) == 1
+	assert chunks["pass_0"][0].shape == (3, 2048)
+	assert chunks["pass_0"][0].dtype == torch.float16
+
+	variants["pass_1"][0, 0] = float("nan")
+	with pytest.raises(RuntimeError, match="Non-finite pass_1"):
+		_append_finite_embedding_chunks(chunks, variants, group_name="query")
 
 
 def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
