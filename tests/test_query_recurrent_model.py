@@ -65,8 +65,8 @@ def test_zero_gate_starts_every_recurrent_step_at_the_frozen_embedding() -> None
 	for embedding in output.step_embeddings:
 		assert torch.allclose(embedding, inputs["base_embeddings"], atol=1e-6)
 	assert torch.allclose(output.embeddings, inputs["base_embeddings"], atol=1e-6)
-	assert torch.count_nonzero(head.output_projection.weight) == 0
-	assert not hasattr(head, "residual_gate")
+	assert torch.count_nonzero(head.output_projection.weight) > 0
+	assert head.residual_gate.item() == 0.0
 	assert not hasattr(head, "exit_controller")
 
 
@@ -135,7 +135,8 @@ def test_zero_initialized_readout_exposes_first_step_gradient_starvation() -> No
 	first_output.embeddings.sum().backward()
 	first_norms = recurrent_gradient_group_norms(head)
 
-	assert first_norms["gradient_norm_output_projection"].item() > 0
+	assert first_norms["gradient_norm_residual_gate"].item() > 0
+	assert first_norms["gradient_norm_output_projection"].item() == 0
 	assert first_norms["gradient_norm_recurrent_layers"].item() == 0
 	assert first_norms["gradient_norm_initializer"].item() == 0
 	assert first_norms["gradient_norm_memory_projection"].item() == 0
@@ -146,6 +147,7 @@ def test_zero_initialized_readout_exposes_first_step_gradient_starvation() -> No
 	second_output.embeddings.sum().backward()
 	second_norms = recurrent_gradient_group_norms(head)
 
+	assert second_norms["gradient_norm_output_projection"].item() > 0
 	assert second_norms["gradient_norm_recurrent_layers"].item() > 0
 	assert second_norms["gradient_norm_initializer"].item() > 0
 	assert second_norms["gradient_norm_memory_projection"].item() > 0

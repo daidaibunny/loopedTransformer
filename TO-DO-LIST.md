@@ -171,7 +171,15 @@
   only that checkpoint, and postpone the control until the recurrent root cause is known.
 - [x] Add pass-wise embedding movement, slot-collapse, slot-attention, and component-gradient
   diagnostics without changing the v2 forward result or loss.
-- [ ] Run one 200-step eight-V100 COCO v2 quality diagnostic and its Pass-0-to-Pass-4 test.
+- [x] Run the 200-step eight-V100 COCO v2 training diagnostic: it showed nearly uniform
+  slot attention, approximately 0.999 slot cosine, and unbounded movement far from frozen
+  Qwen; retain its exact step-200 checkpoint as root-cause evidence.
+- [x] Fix the recurrent evaluator bug that incorrectly appended finite embeddings only
+  inside the non-finite error branch, and add a regression test.
+- [ ] Re-test the v2 diagnostic checkpoint with the corrected evaluator.
+- [x] Restore the specified Xavier-projected, scalar `tanh` zero-gated residual fusion as
+  the isolated v3 candidate fix without adding dynamic exit or LoRA.
+- [ ] Run the same 200-step COCO quality diagnostic for the v3 zero-gated candidate.
 - [ ] Use the diagnostic evidence to isolate gradient reachability, slot specialization,
   recurrent update stability, hard-negative freshness, and progressive-loss effectiveness.
 - [ ] Change one failed mechanism at a time and rerun the same fixed diagnostic window;

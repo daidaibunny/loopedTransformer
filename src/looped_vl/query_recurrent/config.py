@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
-QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v2"
-QUERY_RECURRENT_PROTOCOL = "single_stage_fixed_recurrence_directional_hard_negative_v2"
+QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v3_candidate"
+QUERY_RECURRENT_PROTOCOL = "single_stage_fixed_recurrence_zero_gated_v3_candidate"
 MAX_QUERY_RECURRENT_PARAMETERS = 5_000_000
 DEFAULT_HISTORY_LAYERS = (7, 14, 21, 28)
 SUPPORTED_SLOT_COUNTS = (1, 4, 8)

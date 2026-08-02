@@ -177,8 +177,10 @@ def test_query_recurrent_loss_backpropagates_without_candidate_gradients() -> No
 
 	assert torch.isfinite(losses["loss"])
 	assert candidates.grad is None
+	assert head.residual_gate.grad is not None
+	assert head.residual_gate.grad.abs().sum() > 0
 	assert head.output_projection.weight.grad is not None
-	assert head.output_projection.weight.grad.abs().sum() > 0
+	assert head.output_projection.weight.grad.abs().sum() == 0
 
 
 def test_contrastive_loss_never_uses_candidates_from_another_gallery() -> None:

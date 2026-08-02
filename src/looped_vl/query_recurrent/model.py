@@ -179,6 +179,7 @@ def recurrent_gradient_group_norms(head: QueryRecurrentHead) -> dict[str, torch.
 		*tuple(head.initializer_feed_forward.parameters()),
 	)
 	groups = {
+		"residual_gate": (head.residual_gate,),
 		"output_projection": tuple(head.output_projection.parameters()),
 		"output_norm": tuple(head.output_norm.parameters()),
 		"recurrent_layers": tuple(head.recurrent_layers.parameters()),
@@ -266,6 +267,7 @@ class QueryRecurrentHead(nn.Module):
 		)
 		self.output_norm = nn.LayerNorm(dimension)
 		self.output_projection = nn.Linear(dimension, config.hidden_size, bias=False)
+		self.residual_gate = nn.Parameter(torch.zeros(()))
 		self._reset_parameters()
 		trainable_count = sum(parameter.numel() for parameter in self.parameters())
 		if trainable_count > MAX_QUERY_RECURRENT_PARAMETERS:
@@ -281,7 +283,8 @@ class QueryRecurrentHead(nn.Module):
 			self.layer_embeddings.normal_(mean=0.0, std=0.02, generator=generator)
 			nn.init.orthogonal_(self.slot_queries)
 			self.slot_queries.mul_(self.config.state_size**0.5 * 0.02)
-			self.output_projection.weight.zero_()
+			nn.init.xavier_uniform_(self.output_projection.weight, generator=generator)
+			self.residual_gate.zero_()
 
 	@property
 	def trainable_parameter_count(self) -> int:
@@ -351,7 +354,11 @@ class QueryRecurrentHead(nn.Module):
 		weights = torch.softmax(scores, dim=1)
 		pooled = torch.einsum("bk,bkd->bd", weights.to(slots.dtype), slots)
 		residual = self.output_projection(self.output_norm(pooled)).float()
-		fused = F.normalize(base_embeddings.float() + residual, p=2, dim=-1)
+		fused = F.normalize(
+			base_embeddings.float() + torch.tanh(self.residual_gate.float()) * residual,
+			p=2,
+			dim=-1,
+		)
 		return fused, weights
 
 	def forward(

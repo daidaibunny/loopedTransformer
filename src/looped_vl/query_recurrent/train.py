@@ -700,6 +700,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			batch_metrics = {
 				**losses,
 				**query_recurrent_diagnostics(output, base_embeddings),
+				"residual_gate": torch.tanh(head.residual_gate.float()),
 			}
 			scaler.scale(losses["loss"]).backward()
 			scaler.unscale_(optimizer)

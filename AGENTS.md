@@ -7,10 +7,11 @@
 - The formal recurrent model is pure recurrent and must contain no LoRA modules or
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
-- The active recurrent architecture is
-  `query_only_history_recurrent_no_lora_v2`. The completed v1 query-only runs and former
-  `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue is canceled and remains
-  historical only; never launch either version as a current experiment.
+- The active diagnostic candidate is
+  `query_only_history_recurrent_no_lora_v3_candidate`. The completed v1 query-only runs,
+  the rejected unbounded-residual v2 diagnostic, and former
+  `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue remain historical only;
+  never launch them as current experiments.
 - Use one training stage and one full-data epoch. All trainable recurrent parameters are
   active from the first optimizer step; do not use validation or checkpoint selection.
 - The completely frozen Qwen query tower runs exactly once. It exposes the token states
@@ -23,16 +24,17 @@
   and R=1/4.
 - Use `EOS-conditioned slot attention pooling` after every recurrent pass: the frozen
   final-valid-token embedding selects useful slots with soft attention. Project the
-  selected state to 2,048 dimensions with a zero-initialized residual projection, add it
-  to the frozen Qwen embedding, then L2-normalize. The projection must make every pass
-  exactly equal to frozen Qwen at initialization while allowing the main retrieval loss
-  to update the full output projection on the first optimizer step.
+  selected state to 2,048 dimensions with Xavier initialization, multiply it by a shared
+  `tanh` scalar gate initialized to zero, add it to the frozen Qwen embedding, then
+  L2-normalize. This `zero-gated residual fusion` makes every pass exactly equal to frozen
+  Qwen at initialization. The gate receives the first optimizer-step gradient; the
+  residual projection and recurrent path receive gradients after the gate becomes nonzero.
 - The first v2 uses an explicit fixed recurrent count only. It contains no exit controller,
   exit threshold, halting loss, or compute penalty. Reconsider dynamic exit only after a
   fixed Pass-4 model shows a measurable gain over a separately trained fixed Pass-1 model.
 - Train only the slot initializer, shared recurrent Block, history projection,
   and zero-initialized residual readout. Enforce the 5,000,000-parameter limit. Exact v2
-  counts are 4,852,800 for K=1, 4,853,664 for K=4, and 4,854,816 for K=8.
+  candidate counts are 4,852,801 for K=1, 4,853,665 for K=4, and 4,854,817 for K=8.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
   only under experiment-specific output directories.
 - Always call the single-query attention from the final valid token over latent slots
@@ -137,8 +139,8 @@
   or training protocol.
 - Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
   and `report.json` must declare architecture
-  `query_only_history_recurrent_no_lora_v2`, protocol
-  `single_stage_fixed_recurrence_directional_hard_negative_v2`, `backbone_frozen: true`,
+  `query_only_history_recurrent_no_lora_v3_candidate`, protocol
+  `single_stage_fixed_recurrence_zero_gated_v3_candidate`, `backbone_frozen: true`,
   `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
