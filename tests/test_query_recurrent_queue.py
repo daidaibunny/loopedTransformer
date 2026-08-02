@@ -38,6 +38,7 @@ def _args(tmp_path: Path) -> SimpleNamespace:
 		smoke_steps=2,
 		diagnostic_rows=51_200,
 		diagnostic_steps=200,
+		diagnostic_only=False,
 		project_root=tmp_path / "project",
 		dataset_root=tmp_path / "datasets",
 		model_root=tmp_path / "model",
@@ -174,6 +175,16 @@ def test_launcher_requires_exactly_eight_v100s_and_preserves_batch_32(tmp_path: 
 		validate_gpu_inventory("\n".join(["Tesla V100-SXM2-32GB"] * 7), expected_count=8)
 	assert command[command.index("--per-device-batch-size") + 1] == "32"
 	assert command[command.index("--world-size") + 1] == "8"
+
+
+def test_launcher_can_select_only_the_fixed_quality_diagnostic(tmp_path: Path) -> None:
+	args = _args(tmp_path)
+	args.diagnostic_only = True
+	command = _queue_command(args)
+
+	assert "--diagnostic-only" in command
+	assert command[command.index("--diagnostic-rows") + 1] == "51200"
+	assert command[command.index("--diagnostic-steps") + 1] == "200"
 
 
 def test_recovery_requires_the_exact_checkpoint_source_commit() -> None:
