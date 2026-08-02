@@ -267,6 +267,9 @@
 - [x] Make the hourly monitor follow the published latest test retry and reject retry
   pointers outside their experiment root, so a recovered test cannot be mistaken for an
   unfinished primary test directory.
+- [x] Allow only the explicitly reused historical COCO control to predate v11 in hourly
+  stage-order checks; later GQA Balanced and CLEVR controls must still wait for recurrent
+  test and the recovered COCO control test to pass.
 - [ ] Run the eight-V100 two-step v11 COCO smoke and verify all ranks, finite gradients,
   exact zero candidate-Qwen calls, parameter count, throughput, and peak memory.
 - [ ] Train and test full COCO v11 for one epoch, reporting frozen Pass 0 and Pass 1–4.

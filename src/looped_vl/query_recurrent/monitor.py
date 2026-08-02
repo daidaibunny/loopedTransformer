@@ -94,10 +94,16 @@ def read_stage_statuses(
 	return tuple(statuses)
 
 
-def validate_stage_order(statuses: tuple[dict[str, Any], ...]) -> None:
+def validate_stage_order(
+	statuses: tuple[dict[str, Any], ...],
+	*,
+	allowed_prestarted_names: frozenset[str] = frozenset(),
+) -> None:
 	"""Reject any started stage whose predecessor did not pass."""
 	for index, stage in enumerate(statuses):
 		if stage["status"] == "pending":
+			continue
+		if stage["name"] in allowed_prestarted_names:
 			continue
 		if any(previous["status"] != "passed" for previous in statuses[:index]):
 			raise RuntimeError(f"{stage['name']} started before prior stage passed")
@@ -143,7 +149,20 @@ def collect_snapshot(args: argparse.Namespace) -> dict[str, Any]:
 		existing_coco_control_run_root=args.existing_coco_control_run_root,
 	)
 	statuses = read_stage_statuses(stages)
-	validate_stage_order(statuses)
+	allowed_prestarted_names = (
+		frozenset(
+			{
+				"coco_query_only_last4_lora_frozen_candidates_train",
+				"coco_query_only_last4_lora_frozen_candidates_test",
+			},
+		)
+		if args.existing_coco_control_run_root is not None
+		else frozenset()
+	)
+	validate_stage_order(
+		statuses,
+		allowed_prestarted_names=allowed_prestarted_names,
+	)
 	queue_status_path = args.output_root / "status.json"
 	queue_status = (
 		json.loads(queue_status_path.read_text(encoding="utf-8"))

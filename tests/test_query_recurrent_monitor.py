@@ -88,6 +88,29 @@ def test_monitor_rejects_later_stage_before_recurrent_test_passes(tmp_path: Path
 		validate_stage_order(statuses)
 
 
+def test_monitor_allows_only_explicit_reused_coco_stages_to_preexist(
+	tmp_path: Path,
+) -> None:
+	stages = expected_stage_paths(
+		output_root=tmp_path / "recurrent",
+		control_output_root=tmp_path / "controls",
+		existing_coco_control_run_root=tmp_path / "historical-coco",
+	)
+	for _name, path in stages[3:5]:
+		path.mkdir(parents=True)
+		(path / "status.json").write_text(json.dumps({"status": "passed"}))
+	statuses = read_stage_statuses(stages)
+	allowed = frozenset(name for name, _path in stages[3:5])
+
+	validate_stage_order(statuses, allowed_prestarted_names=allowed)
+	later_path = stages[5][1]
+	later_path.mkdir(parents=True)
+	(later_path / "status.json").write_text(json.dumps({"status": "training"}))
+	statuses = read_stage_statuses(stages)
+	with pytest.raises(RuntimeError, match="before prior stage"):
+		validate_stage_order(statuses, allowed_prestarted_names=allowed)
+
+
 def test_monitor_rejects_more_than_one_rolling_checkpoint(tmp_path: Path) -> None:
 	stages = expected_stage_paths(
 		output_root=tmp_path / "recurrent",
