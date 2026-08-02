@@ -52,14 +52,22 @@ def test_locked_query_recurrent_identity_is_frozen_candidate_no_lora() -> None:
 	assert identity["slot_bridge_scale"] == 0.1
 	assert identity["pass_supervision"] == "final_only"
 	assert identity["progressive_loss_weight"] == 0.0
+	assert identity["recurrent_step_conditioning"] == "learned_phase_embedding"
 	assert identity["recurrent_update_scale"] == 0.25
 
 
-@pytest.mark.parametrize("slot_count", [1, 4, 8])
-def test_slot_ablation_stays_below_five_million_parameters(slot_count: int) -> None:
+@pytest.mark.parametrize(
+	("slot_count", "expected_parameters"),
+	[(1, 4_853_953), (4, 4_854_817), (8, 4_855_969)],
+)
+def test_slot_ablation_stays_below_five_million_parameters(
+	slot_count: int,
+	expected_parameters: int,
+) -> None:
 	head = QueryRecurrentHead(QueryRecurrentConfig(num_slots=slot_count))
 
-	assert 4_800_000 < head.trainable_parameter_count < MAX_QUERY_RECURRENT_PARAMETERS
+	assert head.trainable_parameter_count == expected_parameters
+	assert head.trainable_parameter_count < MAX_QUERY_RECURRENT_PARAMETERS
 
 
 def test_zero_gate_starts_every_recurrent_step_at_the_frozen_embedding() -> None:
@@ -132,6 +140,28 @@ def test_fixed_recurrence_returns_normalized_pass_outputs_and_final_pass() -> No
 		assert movement.max().item() < 0.12
 	for weights in output.slot_attention_weights:
 		assert torch.allclose(weights.sum(dim=1), torch.ones(3), atol=1e-6)
+
+
+def test_recurrent_step_embedding_changes_only_its_current_and_later_passes() -> None:
+	config = QueryRecurrentConfig(max_recurrent_steps=2)
+	baseline = QueryRecurrentHead(config)
+	conditioned = QueryRecurrentHead(config)
+	conditioned.load_state_dict(baseline.state_dict())
+	with torch.no_grad():
+		conditioned.recurrent_step_embeddings[1].fill_(0.25)
+	inputs = _inputs(config, batch_size=2)
+
+	baseline_output = baseline(**inputs)
+	conditioned_output = conditioned(**inputs)
+
+	assert torch.allclose(
+		baseline_output.slot_states[0],
+		conditioned_output.slot_states[0],
+	)
+	assert not torch.allclose(
+		baseline_output.slot_states[1],
+		conditioned_output.slot_states[1],
+	)
 
 
 def test_recurrent_diagnostics_expose_each_pass_movement_attention_and_collapse() -> None:
@@ -260,6 +290,7 @@ def test_grouped_head_preserves_results_and_avoids_cross_bucket_padding() -> Non
 		({"history_layers": (0, 28)}, "1 through 28"),
 		({"slot_bridge_scale": 0.0}, "slot_bridge_scale"),
 		({"pass_supervision": "every_pass"}, "pass_supervision"),
+		({"recurrent_step_conditioning": "none"}, "recurrent_step_conditioning"),
 		({"progressive_loss_weight": 0.1}, "progressive_loss_weight"),
 	],
 )

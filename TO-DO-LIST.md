@@ -231,8 +231,16 @@
 - [x] Replace every-pass and progressive supervision with final-pass-only fused and bridge
   InfoNCE in the v9 candidate. Keep the v8 damping, model, data, parameter count, and all
   other settings fixed; intermediate passes remain required evaluation outputs.
+- [x] Run the same 200-step COCO quality diagnostic and full Pass-0-to-Pass-4 test for the
+  v9 final-pass-only candidate. Pass 2 rose to 61.3253 mAP, only 0.0071 above Pass 1;
+  Passes 3–4 then regressed to 61.3249 and 61.3230. Final-only supervision increased
+  later-pass movement and made the training loss monotonic through Pass 4, but a
+  time-homogeneous shared Block still reached nearly the same fixed point.
+- [x] Add one four-row learned recurrent-step embedding to condition the shared Block on
+  Pass 1/2/3/4 without changing its shared attention or feed-forward weights. This v10
+  candidate adds only 1,152 parameters and remains below the 5,000,000 limit.
 - [ ] Run the same 200-step COCO quality diagnostic and full Pass-0-to-Pass-4 test for the
-  v9 final-pass-only candidate, checking whether later passes keep moving and beat both
-  Pass 0 and Pass 1.
+  v10 phase-conditioned candidate, checking whether Pass 3/4 now keep moving and beat
+  both Pass 0 and Pass 1.
 - [ ] Change one failed mechanism at a time and rerun the same fixed diagnostic window;
   promote no architecture to full training until a later pass beats both Pass 0 and Pass 1.

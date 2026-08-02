@@ -8,7 +8,7 @@
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
 - The active diagnostic candidate is
-  `query_only_history_recurrent_no_lora_v9_candidate`. The completed v1 query-only runs,
+  `query_only_history_recurrent_no_lora_v10_candidate`. The completed v1 query-only runs,
   the rejected unbounded-residual v2 diagnostic, the unnormalized zero-gated v3
   diagnostic, and former
   `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue remain historical only;
@@ -27,6 +27,10 @@
   every recurrent pass. Do not use the rejected v5 mechanism that added an RMS-normalized
   slot identity to every attention query; the fixed diagnostic showed more slot collapse,
   not less.
+- Add one learned 288-dimensional recurrent-step embedding to every slot before each
+  shared Block pass. Maintain exactly four phase rows for every R=1/2/3/4 model so the
+  parameter count does not depend on the executed pass count. This is only a time signal;
+  all attention and feed-forward weights remain shared across recurrent passes.
 - Treat every shared Block output as a proposed state and update the recurrent state with
   pass-count-dependent damping: `state = previous + (proposed - previous) / R`. Therefore
   R=1 preserves the complete one-pass Block update exactly, while R=2/3/4 distributes one
@@ -54,9 +58,10 @@
 - The first v2 uses an explicit fixed recurrent count only. It contains no exit controller,
   exit threshold, halting loss, or compute penalty. Reconsider dynamic exit only after a
   fixed Pass-4 model shows a measurable gain over a separately trained fixed Pass-1 model.
-- Train only the slot initializer, shared recurrent Block, history projection,
+- Train only the slot initializer, recurrent-step embeddings, shared recurrent Block,
+  history projection,
   and zero-initialized residual readout. Enforce the 5,000,000-parameter limit. Exact v2
-  candidate counts are 4,852,801 for K=1, 4,853,665 for K=4, and 4,854,817 for K=8.
+  candidate counts are 4,853,953 for K=1, 4,854,817 for K=4, and 4,855,969 for K=8.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
   only under experiment-specific output directories.
 - Always call the single-query attention from the final valid token over latent slots
@@ -161,8 +166,8 @@
   or training protocol.
 - Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
   and `report.json` must declare architecture
-  `query_only_history_recurrent_no_lora_v9_candidate`, protocol
-  `single_stage_final_pass_damped_bridge_v9_candidate`, `backbone_frozen: true`,
+  `query_only_history_recurrent_no_lora_v10_candidate`, protocol
+  `single_stage_phase_conditioned_final_pass_v10_candidate`, `backbone_frozen: true`,
   `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.

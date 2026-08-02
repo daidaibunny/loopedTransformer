@@ -11,6 +11,7 @@ from torch.nn import functional as F
 
 from looped_vl.query_recurrent.config import (
 	MAX_QUERY_RECURRENT_PARAMETERS,
+	SUPPORTED_RECURRENT_STEPS,
 	QueryRecurrentConfig,
 )
 
@@ -201,6 +202,7 @@ def recurrent_gradient_group_norms(head: QueryRecurrentHead) -> dict[str, torch.
 		"initializer": initializer_parameters,
 		"memory_projection": tuple(head.memory_projection.parameters()),
 		"slot_queries": (head.slot_queries,),
+		"recurrent_step_embeddings": (head.recurrent_step_embeddings,),
 		"layer_embeddings": (head.layer_embeddings,),
 	}
 	return {
@@ -271,6 +273,9 @@ class QueryRecurrentHead(nn.Module):
 		self.memory_projection = nn.Linear(config.hidden_size, dimension, bias=False)
 		self.layer_embeddings = nn.Parameter(torch.empty(28, dimension))
 		self.slot_queries = nn.Parameter(torch.empty(config.num_slots, dimension))
+		self.recurrent_step_embeddings = nn.Parameter(
+			torch.empty(max(SUPPORTED_RECURRENT_STEPS), dimension),
+		)
 		self.initializer_norm = nn.LayerNorm(dimension)
 		self.initializer_attention = nn.MultiheadAttention(
 			dimension,
@@ -304,6 +309,11 @@ class QueryRecurrentHead(nn.Module):
 			self.layer_embeddings.normal_(mean=0.0, std=0.02, generator=generator)
 			nn.init.orthogonal_(self.slot_queries)
 			self.slot_queries.mul_(self.config.state_size**0.5 * 0.02)
+			self.recurrent_step_embeddings.normal_(
+				mean=0.0,
+				std=0.02,
+				generator=generator,
+			)
 			nn.init.xavier_uniform_(self.output_projection.weight, generator=generator)
 			self.residual_gate.zero_()
 
@@ -410,9 +420,13 @@ class QueryRecurrentHead(nn.Module):
 		slot_bridge_embeddings = []
 		slot_states = []
 		slot_attention_weights = []
-		for _step in range(self.config.max_recurrent_steps):
+		for step in range(self.config.max_recurrent_steps):
 			previous_slots = slots
-			proposed_slots = slots + self.slot_queries[None].to(slots.dtype)
+			proposed_slots = (
+				slots
+				+ self.slot_queries[None].to(slots.dtype)
+				+ self.recurrent_step_embeddings[step][None, None].to(slots.dtype)
+			)
 			for layer in self.recurrent_layers:
 				proposed_slots = layer(proposed_slots, memory, memory_padding_mask)
 			slots = _damped_state_update(

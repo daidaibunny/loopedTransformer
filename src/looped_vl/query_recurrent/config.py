@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
-QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v9_candidate"
-QUERY_RECURRENT_PROTOCOL = "single_stage_final_pass_damped_bridge_v9_candidate"
+QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v10_candidate"
+QUERY_RECURRENT_PROTOCOL = "single_stage_phase_conditioned_final_pass_v10_candidate"
 MAX_QUERY_RECURRENT_PARAMETERS = 5_000_000
 DEFAULT_HISTORY_LAYERS = (7, 14, 21, 28)
 SUPPORTED_SLOT_COUNTS = (1, 4, 8)
@@ -30,6 +30,7 @@ class QueryRecurrentConfig:
 	slot_bridge_loss_weight: float = 0.1
 	slot_bridge_scale: float = 0.1
 	pass_supervision: str = "final_only"
+	recurrent_step_conditioning: str = "learned_phase_embedding"
 	progressive_loss_weight: float = 0.0
 	progressive_margin: float = 0.02
 	hard_negative_count: int = 32
@@ -69,6 +70,10 @@ class QueryRecurrentConfig:
 			raise ValueError("slot_bridge_scale must be positive")
 		if self.pass_supervision != "final_only":
 			raise ValueError("pass_supervision must be final_only")
+		if self.recurrent_step_conditioning != "learned_phase_embedding":
+			raise ValueError(
+				"recurrent_step_conditioning must be learned_phase_embedding",
+			)
 		if self.progressive_loss_weight != 0:
 			raise ValueError("progressive_loss_weight must be zero for final-only supervision")
 		if self.direct_pass_loss_weight == 0:
