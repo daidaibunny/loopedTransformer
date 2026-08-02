@@ -52,9 +52,10 @@ slot-count ablations, and EXP-010 has completed the Layer-28-only history ablati
 EXP-011 has completed GQA Balanced and EXP-012 has completed CLEVR after an audited
 resume from the only step-1000 checkpoint. The resume lowered the restored FP16 gradient
 scale from 4,096 to 2,048 and completed all 2,735 optimizer steps with finite logged loss
-and gradients. EXP-004A/B/C/D use the superseded damped mid-decoder design and remain
-only in their archived detailed sections; they are excluded from both formal comparison
-tables because they are not the active architecture.
+and gradients. EXP-004A/B/C/D use the superseded damped mid-decoder design. Their
+reasoning-token sweep is retained in its dedicated historical comparison section,
+including a concise comparison against the active query-only model, but it is excluded
+from the primary all-model table because it is not the active architecture.
 
 For every active recurrent test, retain frozen-Qwen Pass 0, recurrent Pass 1 through
 Pass 4, dynamic hard exit, and dynamic soft exit, with every required metric and the
@@ -498,6 +499,29 @@ insufficient safety margin; they are safe selections, not proven mathematical ma
   containing `queue.sh`, `queue_progress.log` ending in `queue_finished`, and the four
   `k8`, `k12`, `k16`, `k32` subdirectories. The queue tmux log file exists but is
   empty, so per-run console output must be read from each subdirectory instead.
+
+### Reasoning-token sweep compared with the active recurrent model
+
+This table restores the former K=8/12/16/32 reasoning-token sweep as a visible
+historical comparison without treating it as the active architecture. The old runs use
+their protocol-defined Pass 4 as the final output; “best observed” separately shows the
+best test pass from the same checkpoint. The active reference uses its locked dynamic-hard
+output. All mAP values are the COCO equal-direction mean on the same held-out split, but
+the architectures and candidate/evaluation code paths differ, so the comparison is
+diagnostic rather than a controlled slot-count ablation of the active model.
+
+| Architecture / experiment | K | Maximum passes | Final output | Final mAP | Best observed output | Best observed mAP | Change from frozen Qwen | Train + test time |
+| --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: |
+| Old damped mid-decoder, EXP-004A | 8 | 4 | Pass 4 | 61.0328 | Pass 1 | 61.4771 | −0.2115 | 2h55m31s |
+| Old damped mid-decoder, EXP-004B | 12 | 4 | Pass 4 | 60.9216 | Pass 1 | 61.0989 | −0.3227 | 2h57m15s |
+| Old damped mid-decoder, EXP-004C | 16 | 4 | Pass 4 | 61.3779 | Pass 4 | 61.3779 | +0.1336 | 2h59m46s |
+| Old damped mid-decoder, EXP-004D | 32 | 4 | Pass 4 | 61.3595 | Pass 4 | 61.3595 | +0.1152 | 3h10m37s |
+| Active query-only history recurrent, EXP-007 | 8 | 4 | Dynamic hard | 61.7410 | Pass 3 | 61.7470 | +0.4921 | 0h59m15s |
+
+Among the old final Pass-4 outputs, K=16 was best. Across every recorded pass, K=8
+Pass 1 was best. Increasing K therefore did not produce a monotonic quality gain, and
+all four old final outputs remained below the active query-only recurrent result while
+taking roughly three times as long.
 
 ### Per-run identity and efficiency
 
