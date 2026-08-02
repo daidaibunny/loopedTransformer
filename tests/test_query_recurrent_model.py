@@ -50,6 +50,8 @@ def test_locked_query_recurrent_identity_is_frozen_candidate_no_lora() -> None:
 	assert identity["history_layers"] == DEFAULT_HISTORY_LAYERS
 	assert identity["slot_bridge_loss_weight"] == 0.1
 	assert identity["slot_bridge_scale"] == 0.1
+	assert identity["pass_supervision"] == "final_only"
+	assert identity["progressive_loss_weight"] == 0.0
 	assert identity["recurrent_update_scale"] == 0.25
 
 
@@ -257,6 +259,8 @@ def test_grouped_head_preserves_results_and_avoids_cross_bucket_padding() -> Non
 		({"history_layers": ()}, "history"),
 		({"history_layers": (0, 28)}, "1 through 28"),
 		({"slot_bridge_scale": 0.0}, "slot_bridge_scale"),
+		({"pass_supervision": "every_pass"}, "pass_supervision"),
+		({"progressive_loss_weight": 0.1}, "progressive_loss_weight"),
 	],
 )
 def test_invalid_formal_variants_are_rejected(changes: dict[str, object], match: str) -> None:

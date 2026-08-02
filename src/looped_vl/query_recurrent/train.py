@@ -881,7 +881,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--direct-pass-loss-weight", type=float, default=1.0)
 	parser.add_argument("--slot-bridge-loss-weight", type=float, default=0.1)
 	parser.add_argument("--slot-bridge-scale", type=float, default=0.1)
-	parser.add_argument("--progressive-loss-weight", type=float, default=0.1)
+	parser.add_argument("--progressive-loss-weight", type=float, default=0.0)
 	parser.add_argument("--progressive-margin", type=float, default=0.02)
 	parser.add_argument("--hard-negative-count", type=int, default=32)
 	parser.add_argument("--gradient-clip-norm", type=float, default=1.0)

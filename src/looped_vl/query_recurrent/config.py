@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
-QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v8_candidate"
-QUERY_RECURRENT_PROTOCOL = "single_stage_damped_slot_bridge_v8_candidate"
+QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v9_candidate"
+QUERY_RECURRENT_PROTOCOL = "single_stage_final_pass_damped_bridge_v9_candidate"
 MAX_QUERY_RECURRENT_PARAMETERS = 5_000_000
 DEFAULT_HISTORY_LAYERS = (7, 14, 21, 28)
 SUPPORTED_SLOT_COUNTS = (1, 4, 8)
@@ -29,7 +29,8 @@ class QueryRecurrentConfig:
 	direct_pass_loss_weight: float = 1.0
 	slot_bridge_loss_weight: float = 0.1
 	slot_bridge_scale: float = 0.1
-	progressive_loss_weight: float = 0.1
+	pass_supervision: str = "final_only"
+	progressive_loss_weight: float = 0.0
 	progressive_margin: float = 0.02
 	hard_negative_count: int = 32
 	seed: int = 42
@@ -66,6 +67,10 @@ class QueryRecurrentConfig:
 				raise ValueError(f"{name} cannot be negative")
 		if self.slot_bridge_scale <= 0:
 			raise ValueError("slot_bridge_scale must be positive")
+		if self.pass_supervision != "final_only":
+			raise ValueError("pass_supervision must be final_only")
+		if self.progressive_loss_weight != 0:
+			raise ValueError("progressive_loss_weight must be zero for final-only supervision")
 		if self.direct_pass_loss_weight == 0:
 			raise ValueError("direct_pass_loss_weight must be positive")
 		if self.hard_negative_count < 0:

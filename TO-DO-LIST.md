@@ -222,8 +222,17 @@
   geometry, and v7 then proved one-step convergence remained the dominant failure.
 - [x] Add parameter-free inverse-R recurrent-state damping while preserving R=1 exactly;
   support fixed R=1/2/3/4 without LoRA or dynamic exit and stamp the new v8 identity.
+- [x] Run the same 200-step COCO quality diagnostic and full Pass-0-to-Pass-4 test for the
+  v8 damped candidate. Pass 1 reached 61.3266 mAP (+0.0777 over frozen), but Pass 4 fell
+  to 61.3237 and no later pass beat Pass 1. At step 200, per-pass movement after Pass 1
+  shrank from 0.00103 to 0.00056 and 0.00038 while final slot cosine reached 0.9987.
+  Therefore update magnitude was not the root cause; every-pass supervision trained a
+  one-step fixed-point mapping.
+- [x] Replace every-pass and progressive supervision with final-pass-only fused and bridge
+  InfoNCE in the v9 candidate. Keep the v8 damping, model, data, parameter count, and all
+  other settings fixed; intermediate passes remain required evaluation outputs.
 - [ ] Run the same 200-step COCO quality diagnostic and full Pass-0-to-Pass-4 test for the
-  v8 damped candidate, checking whether later passes keep moving and beat both Pass 0 and
-  Pass 1.
+  v9 final-pass-only candidate, checking whether later passes keep moving and beat both
+  Pass 0 and Pass 1.
 - [ ] Change one failed mechanism at a time and rerun the same fixed diagnostic window;
   promote no architecture to full training until a later pass beats both Pass 0 and Pass 1.

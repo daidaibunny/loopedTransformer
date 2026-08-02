@@ -203,7 +203,7 @@ def test_contrastive_loss_never_uses_candidates_from_another_gallery() -> None:
 	assert torch.allclose(loss, torch.zeros_like(loss))
 
 
-def test_every_fused_pass_receives_direct_retrieval_gradient() -> None:
+def test_only_final_fused_pass_receives_direct_retrieval_gradient() -> None:
 	config = QueryRecurrentConfig(num_slots=4)
 	head = QueryRecurrentHead(config)
 	history = torch.randn(4, 4, 5, 2048)
@@ -228,6 +228,11 @@ def test_every_fused_pass_receives_direct_retrieval_gradient() -> None:
 	losses["loss"].backward()
 
 	assert torch.isfinite(losses["direct_pass_info_nce"])
-	for embedding in output.step_embeddings:
-		assert embedding.grad is not None
-		assert embedding.grad.abs().sum() > 0
+	for embedding in output.step_embeddings[:-1]:
+		assert embedding.grad is None or embedding.grad.abs().sum() == 0
+	assert output.step_embeddings[-1].grad is not None
+	assert output.step_embeddings[-1].grad.abs().sum() > 0
+	assert torch.allclose(
+		losses["direct_pass_info_nce"],
+		losses["step_4_info_nce"],
+	)

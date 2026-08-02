@@ -179,13 +179,14 @@ def query_recurrent_loss(
 	bridge_losses = losses[step_count:]
 	if len(bridge_losses) != step_count:
 		raise RuntimeError("Every recurrent pass must expose one slot bridge embedding")
-	pass_weights = torch.arange(
-		1,
-		step_count + 1,
+	if config.pass_supervision != "final_only":
+		raise ValueError("Query recurrent training requires final-only pass supervision")
+	pass_weights = torch.zeros(
+		step_count,
 		device=step_losses[0].device,
 		dtype=step_losses[0].dtype,
 	)
-	pass_weights = pass_weights / pass_weights.sum()
+	pass_weights[-1] = 1
 	direct_pass_loss = (torch.stack(step_losses) * pass_weights).sum()
 	slot_bridge_loss = (torch.stack(bridge_losses) * pass_weights).sum()
 	main_loss = step_losses[-1]
