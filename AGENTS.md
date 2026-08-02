@@ -151,7 +151,9 @@
   has weight 0.0. All trainable groups use one learning-rate schedule from step one.
 - The last-four-layer query-only LoRA control is separate from the ordinary two-tower LoRA
   baseline. It may read frozen candidate banks, but must declare the query-only control
-  scope, keep candidate Qwen forward calls at zero, and never replace the existing baseline.
+  scope, keep candidate Qwen forward calls at zero, use the same gallery-isolated objective
+  and 32 same-gallery hard negatives as recurrent v2, and never replace the existing
+  baseline. It must target decoder-layer indices 24, 25, 26, and 27 only.
 
 ## Verification
 

@@ -38,7 +38,9 @@ from looped_vl.baseline.model import (
 	load_frozen_evaluation_model,
 	load_lora_evaluation_model,
 )
+from looped_vl.candidate_bank import CandidateBankSpec, sha256_file
 from looped_vl.metrics import METRIC_SCALE, REQUIRED_RANKING_METRICS
+from looped_vl.query_recurrent.candidate_store import ImmutableCandidateStore
 from looped_vl.smoke import checkpoint_sha256
 
 LOGGER = logging.getLogger("baseline_evaluate")
@@ -196,6 +198,59 @@ def _build_groups(
 		"gallery_size": len(gallery),
 	}
 	return groups, relevance
+
+
+def _evaluation_group_names(dataset: str, *, query_only: bool) -> tuple[str, ...]:
+	"""Select query groups only when candidates come from immutable banks."""
+	if dataset == "coco":
+		return (
+			("text_query", "image_query")
+			if query_only
+			else ("text_query", "image_target", "image_query", "text_target")
+		)
+	return ("query",) if query_only else ("query", "answer_target")
+
+
+def _validate_candidate_store_order(
+	store: ImmutableCandidateStore,
+	items: list[EvaluationItem],
+) -> None:
+	"""Require immutable candidates to match the exact held-out gallery order."""
+	expected_item_ids = tuple(item.item_id for item in items)
+	if store.item_ids != expected_item_ids:
+		raise ValueError(f"Candidate ordering mismatch for {store.spec.key}")
+
+
+def _load_query_only_candidate_embeddings(
+	*,
+	dataset: str,
+	groups: dict[str, list[EvaluationItem]],
+	candidate_root: Path,
+	model_checkpoint_sha256: str,
+) -> tuple[dict[str, torch.Tensor], dict[str, str]]:
+	"""Load exact test candidates without executing the Qwen candidate tower."""
+	if dataset == "coco":
+		specs_by_group = {
+			"image_target": CandidateBankSpec("coco", "test", "image"),
+			"text_target": CandidateBankSpec("coco", "test", "text"),
+		}
+	else:
+		specs_by_group = {
+			"answer_target": CandidateBankSpec(dataset, "shared", "answer"),
+		}
+	embeddings = {}
+	manifest_hashes = {}
+	for group_name, spec in specs_by_group.items():
+		store = ImmutableCandidateStore(
+			candidate_root=candidate_root,
+			spec=spec,
+			model_checkpoint_sha256=model_checkpoint_sha256,
+			validate_checksums=True,
+		)
+		_validate_candidate_store_order(store, groups[group_name])
+		embeddings[group_name] = store.embeddings.float()
+		manifest_hashes[spec.key] = sha256_file(store.root / "bank_manifest.json")
+	return embeddings, manifest_hashes
 
 
 def _encode_group(
@@ -413,6 +468,9 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 		raise ValueError("visual_length_buckets must be positive")
 	if args.min_visual_bucket_size <= 0:
 		raise ValueError("min_visual_bucket_size must be positive")
+	query_only = args.candidate_root is not None
+	if query_only and args.adapter_root is None:
+		raise ValueError("Query-only LoRA evaluation requires --adapter-root")
 	rank, world_size, device = _initialize_evaluation_distributed(
 		args.expected_world_size,
 	)
@@ -462,6 +520,10 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 			model.peft_config["default"],
 		)
 		model_variant = f"lora_{lora_decoder_scope['scope']}"
+		if query_only:
+			if lora_decoder_scope["scope"] != "last_4_decoder_layers":
+				raise ValueError("Query-only LoRA evaluation requires a last-four-layer adapter")
+			model_variant = "query_only_lora_last_4_decoder_layers"
 	trainable_parameter_count = sum(
 		parameter.numel() for parameter in model.parameters() if parameter.requires_grad
 	)
@@ -471,10 +533,10 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 		)
 	torch.cuda.reset_peak_memory_stats(device)
 	start = time.perf_counter()
-	for name, items in groups.items():
+	for name in _evaluation_group_names(args.dataset, query_only=query_only):
 		_encode_group(
 			name=name,
-			items=items,
+			items=groups[name],
 			model=model,
 			processor=processor,
 			args=args,
@@ -486,6 +548,17 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	dist.barrier()
 	report = None
 	if rank == 0:
+		candidate_data = (
+			_load_query_only_candidate_embeddings(
+				dataset=args.dataset,
+				groups=groups,
+				candidate_root=Path(args.candidate_root),
+				model_checkpoint_sha256=str(base_hash_before),
+			)
+			if query_only
+			else ({}, {})
+		)
+		frozen_candidate_embeddings, candidate_bank_manifest_sha256 = candidate_data
 		if args.dataset == "coco":
 			text_to_image, coverage_t2i = compute_ranking_metrics(
 				_combine_embeddings(
@@ -494,11 +567,15 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 					world_size,
 					output_dir,
 				),
-				_combine_embeddings(
-					"image_target",
-					len(groups["image_target"]),
-					world_size,
-					output_dir,
+				(
+					frozen_candidate_embeddings["image_target"]
+					if query_only
+					else _combine_embeddings(
+						"image_target",
+						len(groups["image_target"]),
+						world_size,
+						output_dir,
+					)
 				),
 				relevance["text_to_image"],
 				device=device,
@@ -511,11 +588,15 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 					world_size,
 					output_dir,
 				),
-				_combine_embeddings(
-					"text_target",
-					len(groups["text_target"]),
-					world_size,
-					output_dir,
+				(
+					frozen_candidate_embeddings["text_target"]
+					if query_only
+					else _combine_embeddings(
+						"text_target",
+						len(groups["text_target"]),
+						world_size,
+						output_dir,
+					)
 				),
 				relevance["image_to_text"],
 				device=device,
@@ -539,11 +620,15 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 					world_size,
 					output_dir,
 				),
-				_combine_embeddings(
-					"answer_target",
-					len(groups["answer_target"]),
-					world_size,
-					output_dir,
+				(
+					frozen_candidate_embeddings["answer_target"]
+					if query_only
+					else _combine_embeddings(
+						"answer_target",
+						len(groups["answer_target"]),
+						world_size,
+						output_dir,
+					)
 				),
 				relevance["answer"],
 				device=device,
@@ -575,6 +660,13 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 				"score": "dot_product_of_unit_normalized_embeddings",
 				"retrieval_cutoffs": RETRIEVAL_CUTOFFS,
 				"ndcg_cutoff": 10,
+				"candidate_source": (
+					"immutable_preencoded_candidate_bank"
+					if query_only
+					else "online_active_qwen"
+				),
+				"candidate_qwen_forward_calls": 0 if query_only else "online",
+				"candidate_bank_manifest_sha256": candidate_bank_manifest_sha256,
 				"visual_length_bucketing": {
 					"enabled": args.visual_length_buckets > 1,
 					"maximum_buckets": args.visual_length_buckets,
@@ -583,14 +675,15 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 					"candidate_gallery_unchanged": True,
 				},
 			},
-				"model": {
+			"model": {
 				"variant": model_variant,
 				"model_root": str(model_root),
 				"adapter_root": str(adapter_root) if adapter_root is not None else None,
+				"candidate_root": str(args.candidate_root) if query_only else None,
 				"base_checkpoint_sha256_before": base_hash_before,
 				"base_checkpoint_sha256_after": base_hash_after,
-					"adapter_sha256": adapter_hash,
-					"lora_decoder_scope": lora_decoder_scope,
+				"adapter_sha256": adapter_hash,
+				"lora_decoder_scope": lora_decoder_scope,
 				"trainable_parameter_count": trainable_parameter_count,
 				"runtime_precision": "fp16",
 				"attention_implementation": args.attention_implementation,
@@ -614,6 +707,11 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--dataset", choices=BASELINE_DATASETS, required=True)
 	parser.add_argument("--dataset-root", type=Path, required=True)
 	parser.add_argument("--model-root", type=Path, required=True)
+	parser.add_argument(
+		"--candidate-root",
+		type=Path,
+		help="Use immutable candidates for the separate query-only LoRA control.",
+	)
 	parser.add_argument(
 		"--adapter-root",
 		type=Path,

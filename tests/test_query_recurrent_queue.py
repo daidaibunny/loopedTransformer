@@ -16,6 +16,8 @@ from looped_vl.query_recurrent.queue import (
 	_next_evaluation_output,
 	_queue_manifests_match,
 	build_evaluation_command,
+	build_query_only_lora_evaluation_command,
+	build_query_only_lora_training_command,
 	build_training_command,
 	validate_all_candidate_banks,
 )
@@ -84,6 +86,29 @@ def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
 	assert test[test.index("--recurrent-checkpoint") + 1].endswith(
 		"query_recurrent_model.pt",
 	)
+
+
+def test_query_only_lora_control_uses_last_four_layers_and_frozen_candidates(
+	tmp_path: Path,
+) -> None:
+	args = _args(tmp_path)
+	train = build_query_only_lora_training_command(
+		args=args,
+		output_dir=tmp_path / "lora_train",
+	)
+	test = build_query_only_lora_evaluation_command(
+		args=args,
+		training_output=tmp_path / "lora_train",
+		evaluation_output=tmp_path / "lora_test",
+	)
+
+	assert train[train.index("--lora-decoder-layer-indices") + 1] == "24,25,26,27"
+	assert train[train.index("--candidate-root") + 1] == str(args.candidate_root)
+	assert train[train.index("--hard-negative-count") + 1] == "32"
+	assert train[train.index("--epochs") + 1] == "1"
+	assert train[train.index("--max-checkpoints") + 1] == "1"
+	assert test[test.index("--candidate-root") + 1] == str(args.candidate_root)
+	assert test[test.index("--adapter-root") + 1].endswith("lora_train/adapter")
 
 
 def test_all_eight_ready_markers_are_required(tmp_path: Path) -> None:

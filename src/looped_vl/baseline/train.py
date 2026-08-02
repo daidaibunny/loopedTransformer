@@ -36,12 +36,21 @@ from looped_vl.baseline.data import (
 )
 from looped_vl.baseline.model import (
 	BASELINE_LORA_ALPHA,
+	BASELINE_LORA_LAST_FOUR_DECODER_LAYERS,
 	BASELINE_LORA_RANK,
 	BASELINE_LORA_TARGETS,
 	BaselineInputProcessor,
 	BaselineLoRATrainingModel,
+	QueryOnlyLoRATrainingModel,
 	describe_lora_decoder_scope,
 	load_lora_training_model,
+)
+from looped_vl.candidate_bank import CandidateBankSpec, sha256_file
+from looped_vl.query_recurrent.candidate_store import CandidateStoreCollection
+from looped_vl.query_recurrent.data import (
+	QueryOnlyManifestDataset,
+	close_query_only_images,
+	query_only_collate,
 )
 from looped_vl.smoke import checkpoint_sha256
 from looped_vl.training.checkpointing import (
@@ -244,6 +253,49 @@ def _validate_epoch_count(epochs: int) -> None:
 		raise ValueError("Baseline training must use exactly one epoch")
 
 
+def _validate_query_only_lora_settings(
+	*,
+	candidate_root: Path | None,
+	decoder_layer_indices: tuple[int, ...] | None,
+	hard_negative_count: int,
+) -> bool:
+	"""Lock the frozen-candidate control to the parameter-matched last-four-layer LoRA."""
+	if candidate_root is None:
+		return False
+	if decoder_layer_indices != BASELINE_LORA_LAST_FOUR_DECODER_LAYERS:
+		raise ValueError("Query-only LoRA requires exactly the last four decoder layers")
+	if hard_negative_count < 0:
+		raise ValueError("hard_negative_count cannot be negative")
+	return True
+
+
+def _required_candidate_specs(dataset: str) -> tuple[CandidateBankSpec, ...]:
+	if dataset == "coco":
+		return (
+			CandidateBankSpec("coco", "train", "image"),
+			CandidateBankSpec("coco", "train", "text"),
+		)
+	return (CandidateBankSpec(dataset, "shared", "answer"),)
+
+
+def _candidate_bank_identities(
+	candidate_root: Path,
+	specs: tuple[CandidateBankSpec, ...],
+) -> dict[str, str]:
+	identities = {}
+	for spec in specs:
+		bank_root = candidate_root / spec.relative_path
+		manifest_path = bank_root / "bank_manifest.json"
+		ready_path = bank_root / "READY"
+		if not manifest_path.is_file() or not ready_path.is_file():
+			raise FileNotFoundError(f"Candidate bank is not ready: {spec.key}")
+		manifest_hash = sha256_file(manifest_path)
+		if ready_path.read_text(encoding="utf-8").strip() != manifest_hash:
+			raise ValueError(f"Candidate bank READY checksum mismatch: {spec.key}")
+		identities[spec.key] = manifest_hash
+	return identities
+
+
 def _build_loader(
 	args: argparse.Namespace,
 	*,
@@ -251,10 +303,20 @@ def _build_loader(
 	world_size: int,
 	generator: torch.Generator,
 ) -> tuple[DataLoader[dict[str, Any]], BatchOffsetSampler]:
-	dataset = BaselineManifestDataset(
-		args.dataset_root,
-		"train",
-		max_rows=args.max_train_rows,
+	query_only = getattr(args, "candidate_root", None) is not None
+	dataset = (
+		QueryOnlyManifestDataset(
+			args.dataset_root,
+			args.dataset,
+			"train",
+			max_rows=args.max_train_rows,
+		)
+		if query_only
+		else BaselineManifestDataset(
+			args.dataset_root,
+			"train",
+			max_rows=args.max_train_rows,
+		)
 	)
 	distributed_sampler = DistributedSampler(
 		dataset,
@@ -271,7 +333,7 @@ def _build_loader(
 		"sampler": sampler,
 		"shuffle": False,
 		"num_workers": args.num_workers,
-		"collate_fn": baseline_pair_collate,
+		"collate_fn": query_only_collate if query_only else baseline_pair_collate,
 		"drop_last": False,
 		"pin_memory": True,
 		"generator": generator,
@@ -348,6 +410,11 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		raise ValueError("visual_length_buckets must be positive")
 	if args.min_visual_bucket_size <= 0:
 		raise ValueError("min_visual_bucket_size must be positive")
+	query_only = _validate_query_only_lora_settings(
+		candidate_root=args.candidate_root,
+		decoder_layer_indices=args.lora_decoder_layer_indices,
+		hard_negative_count=args.hard_negative_count,
+	)
 	rank, world_size, local_rank, device = _initialize_distributed(
 		args.expected_world_size,
 	)
@@ -385,7 +452,42 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	checkpoint_hash_before = checkpoint_sha256(checkpoint_path) if rank == 0 else None
 	checkpoint_hash_values = [checkpoint_hash_before]
 	dist.broadcast_object_list(checkpoint_hash_values, src=0)
-	checkpoint_hash_before = checkpoint_hash_values[0]
+	checkpoint_hash_before = str(checkpoint_hash_values[0])
+	candidate_stores: CandidateStoreCollection | None = None
+	candidate_bank_identities: dict[str, str] = {}
+	resolved_hard_negative_count = 0
+	if query_only:
+		candidate_root = Path(args.candidate_root)
+		required_specs = _required_candidate_specs(args.dataset)
+		identities = (
+			_candidate_bank_identities(candidate_root, required_specs)
+			if rank == 0
+			else None
+		)
+		identity_values = [identities]
+		dist.broadcast_object_list(identity_values, src=0)
+		candidate_bank_identities = dict(identity_values[0])
+		if rank == 0:
+			validator = CandidateStoreCollection(
+				candidate_root=candidate_root,
+				model_checkpoint_sha256=checkpoint_hash_before,
+				validate_checksums=True,
+			)
+			for spec in required_specs:
+				validator.get(spec)
+			del validator
+		dist.barrier()
+		candidate_stores = CandidateStoreCollection(
+			candidate_root=candidate_root,
+			model_checkpoint_sha256=checkpoint_hash_before,
+			validate_checksums=False,
+		)
+		for spec in required_specs:
+			candidate_stores.get(spec)
+		resolved_hard_negative_count = candidate_stores.resolved_hard_negative_count(
+			required_specs,
+			args.hard_negative_count,
+		)
 	processor = BaselineInputProcessor.from_pretrained(
 		model_root,
 		max_length=args.max_length,
@@ -399,10 +501,21 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		gradient_checkpointing=args.gradient_checkpointing,
 		decoder_layer_indices=args.lora_decoder_layer_indices,
 	).to(device)
-	training_model = BaselineLoRATrainingModel(
-		peft_model,
-		temperature=args.temperature,
-	)
+	training_model: BaselineLoRATrainingModel | QueryOnlyLoRATrainingModel
+	if query_only:
+		if candidate_stores is None:
+			raise RuntimeError("Query-only LoRA candidate stores were not initialized")
+		training_model = QueryOnlyLoRATrainingModel(
+			peft_model,
+			candidate_stores,
+			temperature=args.temperature,
+			hard_negative_count=resolved_hard_negative_count,
+		)
+	else:
+		training_model = BaselineLoRATrainingModel(
+			peft_model,
+			temperature=args.temperature,
+		)
 	training_model.train()
 	lora_scope = describe_lora_decoder_scope(peft_model.peft_config["default"])
 	trainable_names = [
@@ -455,8 +568,15 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"visual_length_buckets": args.visual_length_buckets,
 		"min_visual_bucket_size": args.min_visual_bucket_size,
 		"lora_decoder_scope": lora_scope,
-		"candidate_bank_used": False,
-		"candidate_encoding_protocol": "online_same_qwen_as_query",
+		"candidate_bank_used": query_only,
+		"candidate_encoding_protocol": (
+			"immutable_frozen_qwen_bank"
+			if query_only
+			else "online_same_qwen_as_query"
+		),
+		"candidate_bank_manifest_sha256": candidate_bank_identities,
+		"candidate_root": str(args.candidate_root) if query_only else None,
+		"hard_negative_count": resolved_hard_negative_count,
 	}
 	cursor = TrainingCursor(
 		stage=0,
@@ -497,12 +617,33 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		gradient_as_bucket_view=True,
 	)
 	manifest = {
-		"scope": "unmodified_qwen3_vl_embedding_2b_lora_retrieval",
+		"scope": (
+			"query_only_last_four_lora_frozen_candidates"
+			if query_only
+			else "unmodified_qwen3_vl_embedding_2b_lora_retrieval"
+		),
 		"dataset": args.dataset,
 		"dataset_root": str(args.dataset_root),
 		"train_rows": len(loader.dataset),
-		"candidate_bank_used": False,
-		"candidate_encoding_protocol": "online_same_qwen_as_query",
+		"candidate_bank_used": query_only,
+		"candidate_encoding_protocol": (
+			"immutable_frozen_qwen_bank"
+			if query_only
+			else "online_same_qwen_as_query"
+		),
+		"candidate_root": str(args.candidate_root) if query_only else None,
+		"candidate_bank_manifest_sha256": candidate_bank_identities,
+		"candidate_qwen_forward_calls": 0 if query_only else "online",
+		"hard_negative_mining": (
+			{
+				"source": "full_immutable_same_gallery_candidate_bank",
+				"requested_count": args.hard_negative_count,
+				"resolved_count": resolved_hard_negative_count,
+				"positive_exclusion": "all_matching_positive_id",
+			}
+			if query_only
+			else None
+		),
 		"direction_counts": (
 			count_coco_retrieval_directions(len(loader.dataset))
 			if args.dataset == "coco"
@@ -610,9 +751,13 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 				or batch_index + 1 == full_loader_batches
 			)
 			try:
-				combined_inputs = batch["query_inputs"] + batch["candidate_inputs"]
+				model_inputs = (
+					batch["query_inputs"]
+					if query_only
+					else batch["query_inputs"] + batch["candidate_inputs"]
+				)
 				input_groups = group_baseline_model_inputs(
-					combined_inputs,
+					model_inputs,
 					min_pixels=args.min_pixels,
 					max_pixels=args.max_pixels,
 					max_visual_buckets=args.visual_length_buckets,
@@ -623,18 +768,37 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 					for group in input_groups
 				)
 			finally:
-				close_baseline_batch_images(batch)
+				if query_only:
+					close_query_only_images(batch)
+				else:
+					close_baseline_batch_images(batch)
+			if query_only:
+				if candidate_stores is None:
+					raise RuntimeError("Query-only LoRA candidate stores are unavailable")
+				candidate_embeddings = candidate_stores.lookup(
+					batch["candidate_references"],
+					device=device,
+				)
 			synchronization_context = nullcontext() if is_boundary else ddp_model.no_sync()
 			with synchronization_context:
 				with torch.autocast(device_type="cuda", dtype=torch.float16):
-					output = ddp_model(
-						local_batch_size=len(batch["positive_ids"]),
-						processed_batches=processed_batches,
-						original_indices=tuple(
+					common_inputs = {
+						"local_batch_size": len(batch["positive_ids"]),
+						"processed_batches": processed_batches,
+						"original_indices": tuple(
 							group.original_indices for group in input_groups
 						),
-						positive_ids=batch["positive_ids"],
-					)
+						"positive_ids": batch["positive_ids"],
+					}
+					if query_only:
+						output = ddp_model(
+							**common_inputs,
+							candidate_embeddings=candidate_embeddings,
+							candidate_references=batch["candidate_references"],
+							directions=batch["directions"],
+						)
+					else:
+						output = ddp_model(**common_inputs)
 					loss = output["loss"] / group_size
 				scaler.scale(loss).backward()
 			batch_global_samples = len(batch["positive_ids"]) * world_size
@@ -821,6 +985,14 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--dataset", choices=BASELINE_DATASETS, required=True)
 	parser.add_argument("--dataset-root", type=Path, required=True)
 	parser.add_argument(
+		"--candidate-root",
+		type=Path,
+		help=(
+			"Enable the separate query-only last-four-layer LoRA control against "
+			"immutable candidates. Omit for the ordinary two-tower baseline."
+		),
+	)
+	parser.add_argument(
 		"--model-root",
 		type=Path,
 		default=Path(
@@ -862,6 +1034,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--weight-decay", type=float, default=0.01)
 	parser.add_argument("--warmup-ratio", type=float, default=0.02)
 	parser.add_argument("--temperature", type=float, default=0.02)
+	parser.add_argument("--hard-negative-count", type=int, default=32)
 	parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
 	parser.add_argument("--initial-gradient-scale", type=float, default=4096.0)
 	parser.add_argument("--seed", type=int, default=42)

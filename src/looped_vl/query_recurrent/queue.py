@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from looped_vl.baseline.data import BASELINE_DATASETS
+from looped_vl.baseline.model import BASELINE_LORA_LAST_FOUR_DECODER_LAYERS
 from looped_vl.candidate_bank import CANDIDATE_BANK_SPECS, sha256_file
 
 
@@ -39,6 +40,7 @@ FORMAL_QUERY_RECURRENT_RUNS = (
 	QueryRecurrentRun("coco_v2_k8_r1_fixed", "coco", 8, 1),
 	QueryRecurrentRun("coco_v2_k8_r4_fixed", "coco", 8, 4),
 )
+QUERY_ONLY_LORA_CONTROL_NAME = "coco_v2_query_only_last4_lora_frozen_candidates"
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -193,6 +195,113 @@ def build_evaluation_command(
 	]
 
 
+def build_query_only_lora_training_command(
+	*,
+	args: argparse.Namespace,
+	output_dir: Path,
+	resume_checkpoint: Path | None = None,
+	smoke: bool = False,
+) -> list[str]:
+	"""Build the parameter-matched query-only last-four-layer LoRA control."""
+	command = [
+		sys.executable,
+		"-m",
+		"torch.distributed.run",
+		"--standalone",
+		f"--nproc_per_node={args.world_size}",
+		"-m",
+		"looped_vl.baseline.train",
+		"--dataset",
+		"coco",
+		"--dataset-root",
+		str(Path(args.dataset_root) / "coco"),
+		"--candidate-root",
+		str(args.candidate_root),
+		"--model-root",
+		str(args.model_root),
+		"--project-root",
+		str(args.project_root),
+		"--output-dir",
+		str(output_dir),
+		"--expected-world-size",
+		str(args.world_size),
+		"--per-device-batch-size",
+		str(args.per_device_batch_size),
+		"--expected-contrastive-global-batch-size",
+		str(args.world_size * args.per_device_batch_size),
+		"--num-workers",
+		str(args.num_workers),
+		"--epochs",
+		"1",
+		"--checkpoint-every",
+		str(args.checkpoint_every),
+		"--max-checkpoints",
+		"1",
+		"--lora-decoder-layer-indices",
+		",".join(str(index) for index in BASELINE_LORA_LAST_FOUR_DECODER_LAYERS),
+		"--hard-negative-count",
+		"32",
+		"--visual-length-buckets",
+		"3",
+		"--min-visual-bucket-size",
+		"8",
+	]
+	if resume_checkpoint is not None:
+		command.extend(["--resume-checkpoint", str(resume_checkpoint)])
+	if smoke:
+		command.extend(
+			[
+				"--max-train-rows",
+				str(args.smoke_rows),
+				"--max-optimizer-steps",
+				str(args.smoke_steps),
+				"--skip-checkpoint-save",
+				"--skip-adapter-save",
+			],
+		)
+	return command
+
+
+def build_query_only_lora_evaluation_command(
+	*,
+	args: argparse.Namespace,
+	training_output: Path,
+	evaluation_output: Path,
+) -> list[str]:
+	"""Evaluate LoRA queries against the same immutable test candidates as recurrent v2."""
+	return [
+		sys.executable,
+		"-m",
+		"torch.distributed.run",
+		"--standalone",
+		f"--nproc_per_node={args.world_size}",
+		"-m",
+		"looped_vl.baseline.evaluate",
+		"--dataset",
+		"coco",
+		"--dataset-root",
+		str(Path(args.dataset_root) / "coco"),
+		"--candidate-root",
+		str(args.candidate_root),
+		"--model-root",
+		str(args.model_root),
+		"--adapter-root",
+		str(training_output / "adapter"),
+		"--output-dir",
+		str(evaluation_output),
+		"--expected-world-size",
+		str(args.world_size),
+		"--batch-size",
+		str(args.evaluation_batch_size),
+		"--num-workers",
+		str(args.num_workers),
+		"--visual-length-buckets",
+		"3",
+		"--min-visual-bucket-size",
+		"8",
+	]
+
+
 def _passed(path: Path) -> bool:
 	if not path.is_file():
 		return False
@@ -259,6 +368,12 @@ def run_queue(args: argparse.Namespace) -> None:
 	bank_identities = validate_all_candidate_banks(Path(args.candidate_root))
 	manifest_path = output_root / "queue_manifest.json"
 	queue_manifest = {
+		"query_only_lora_control": {
+			"name": QUERY_ONLY_LORA_CONTROL_NAME,
+			"dataset": "coco",
+			"decoder_layer_indices": BASELINE_LORA_LAST_FOUR_DECODER_LAYERS,
+			"candidate_qwen_forward_calls": 0,
+		},
 		"runs": [asdict(run) for run in FORMAL_QUERY_RECURRENT_RUNS],
 		"world_size": args.world_size,
 		"per_device_batch_size": args.per_device_batch_size,
@@ -279,6 +394,19 @@ def run_queue(args: argparse.Namespace) -> None:
 		_write_json(manifest_path, queue_manifest)
 	status_path = output_root / "status.json"
 
+	lora_smoke_output = output_root / "smoke_coco_query_only_last4_lora"
+	if not _passed(lora_smoke_output / "status.json"):
+		if lora_smoke_output.exists():
+			raise FileExistsError(f"Failed smoke output requires diagnosis: {lora_smoke_output}")
+		_write_json(status_path, {"status": "smoke", "run": "query_only_last4_lora"})
+		_run(
+			build_query_only_lora_training_command(
+				args=args,
+				output_dir=lora_smoke_output,
+				smoke=True,
+			),
+			args=args,
+		)
 	smoke_output = output_root / "smoke_coco_k8_r4_fixed"
 	if not _passed(smoke_output / "status.json"):
 		if smoke_output.exists():
@@ -293,6 +421,47 @@ def run_queue(args: argparse.Namespace) -> None:
 			),
 			args=args,
 		)
+	lora_root = output_root / QUERY_ONLY_LORA_CONTROL_NAME
+	lora_training_output = lora_root / "train"
+	if not _passed(lora_training_output / "status.json"):
+		resume_checkpoint = (
+			_resume_checkpoint(lora_training_output) if lora_training_output.exists() else None
+		)
+		if lora_training_output.exists() and resume_checkpoint is None:
+			raise FileExistsError(
+				f"Incomplete LoRA control has no resumable checkpoint: {lora_training_output}",
+			)
+		command = build_query_only_lora_training_command(
+			args=args,
+			output_dir=lora_training_output,
+			resume_checkpoint=resume_checkpoint,
+		)
+		_write_json(
+			status_path,
+			{"status": "training", "run": QUERY_ONLY_LORA_CONTROL_NAME, "command": command},
+		)
+		_run(command, args=args)
+	if not (lora_training_output / "adapter" / "adapter_model.safetensors").is_file():
+		raise FileNotFoundError(f"Missing final query-only LoRA adapter: {lora_training_output}")
+	lora_evaluation_output = _next_evaluation_output(lora_root)
+	if not _passed(lora_evaluation_output / "status.json"):
+		command = build_query_only_lora_evaluation_command(
+			args=args,
+			training_output=lora_training_output,
+			evaluation_output=lora_evaluation_output,
+		)
+		_write_json(
+			status_path,
+			{"status": "testing", "run": QUERY_ONLY_LORA_CONTROL_NAME, "command": command},
+		)
+		_run(command, args=args)
+	_write_json(
+		lora_root / "latest_test.json",
+		{
+			"path": str(lora_evaluation_output),
+			"report": str(lora_evaluation_output / "report.json"),
+		},
+	)
 	for index, run in enumerate(FORMAL_QUERY_RECURRENT_RUNS):
 		run_root = output_root / run.name
 		training_output = run_root / "train"

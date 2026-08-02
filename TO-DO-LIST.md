@@ -165,9 +165,10 @@
   identity injection, and full-bank same-gallery hard-negative mining.
 - [x] Remove dynamic exit from the first v2 architecture after the v1 controller selected
   maximum Pass 4 for every COCO query; lock training and evaluation to explicit Pass R.
-- [ ] Implement and test the last-four-layer query-only LoRA control against the same frozen
+- [x] Implement and test the last-four-layer query-only LoRA control against the same frozen
   candidate banks without changing the ordinary two-tower LoRA baseline.
 - [ ] Run one minimal eight-V100 v2 smoke, measuring hard-negative memory/throughput, every
   rank, finite gradients, Pass-1/Pass-4 loss, slot cosine, and exact candidate exclusion.
-- [ ] Only if the smoke is healthy, run the focused full-COCO v2 fixed Pass-1 and fixed Pass-4
-  experiments; do not add dynamic exit, slot-count, history, GQA, or CLEVR jobs beforehand.
+- [ ] Only if both minimal smokes are healthy, run the focused full-COCO query-only
+  last-four-layer LoRA control followed by v2 fixed Pass-1 and fixed Pass-4. Do not add
+  dynamic exit, slot-count, history, GQA, or CLEVR jobs beforehand.

@@ -12,6 +12,7 @@ from looped_vl.baseline.model import (
 	BASELINE_LORA_RANK,
 	BASELINE_LORA_TARGETS,
 	BaselineLoRATrainingModel,
+	QueryOnlyLoRATrainingModel,
 	build_lora_config,
 	describe_lora_decoder_scope,
 	encode_grouped_baseline_batches,
@@ -59,11 +60,16 @@ def test_baseline_lora_can_target_only_the_last_four_decoder_layers() -> None:
 
 
 class _FakeEmbeddingModel(nn.Module):
+	def __init__(self) -> None:
+		super().__init__()
+		self.forward_calls = 0
+
 	def forward(
 		self,
 		input_values: torch.Tensor,
 		attention_mask: torch.Tensor,
 	) -> object:
+		self.forward_calls += 1
 		return type(
 			"Output",
 			(),
@@ -188,3 +194,74 @@ def test_baseline_grouped_forward_restores_query_and_candidate_order(
 		captured["candidate"],
 		torch.tensor([[-diagonal, diagonal], [0.0, 1.0]]),
 	)
+
+
+class _FakeCandidateStores:
+	def __init__(self) -> None:
+		self.mined_queries: torch.Tensor | None = None
+
+	def mine_hard_negatives(
+		self,
+		query_embeddings: torch.Tensor,
+		_references: list[object],
+		*,
+		count: int,
+		device: torch.device,
+	) -> None:
+		assert count == 32
+		assert device == query_embeddings.device
+		self.mined_queries = query_embeddings
+		return None
+
+
+def test_query_only_lora_encodes_no_candidate_inputs(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	model = _FakeEmbeddingModel()
+	stores = _FakeCandidateStores()
+	training_model = QueryOnlyLoRATrainingModel(  # type: ignore[arg-type]
+		model,
+		stores,  # type: ignore[arg-type]
+	)
+	captured: dict[str, object] = {}
+
+	def fake_loss(
+		query_embeddings: tuple[torch.Tensor, ...],
+		candidate_embeddings: torch.Tensor,
+		positive_ids: list[str],
+		directions: list[str],
+		**_kwargs: object,
+	) -> tuple[torch.Tensor]:
+		captured.update(
+			queries=query_embeddings,
+			candidates=candidate_embeddings,
+			positive_ids=positive_ids,
+			directions=directions,
+		)
+		return (query_embeddings[0].sum() * 0.0,)
+
+	monkeypatch.setattr("looped_vl.baseline.model.multi_query_symmetric_info_nce", fake_loss)
+	query_values = torch.zeros(2, 2048)
+	query_values[0, 0] = 1.0
+	query_values[1, 1] = 2.0
+	query_batch = {
+		"input_values": query_values,
+		"attention_mask": torch.ones(2, 1, dtype=torch.long),
+	}
+	candidates = torch.nn.functional.normalize(torch.randn(2, 2048), dim=1)
+
+	result = training_model(
+		local_batch_size=2,
+		processed_batches=(query_batch,),
+		original_indices=((0, 1),),
+		candidate_embeddings=candidates,
+		candidate_references=[object(), object()],  # type: ignore[list-item]
+		positive_ids=["p0", "p1"],
+		directions=["image_to_text", "image_to_text"],
+	)
+
+	assert model.forward_calls == 1
+	assert stores.mined_queries is not None
+	assert stores.mined_queries.requires_grad is False
+	assert captured["candidates"] is candidates
+	assert result["loss"].shape == ()

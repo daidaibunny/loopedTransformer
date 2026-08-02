@@ -15,6 +15,11 @@ from torch.nn import functional as F
 from transformers.models.qwen3_vl.processing_qwen3_vl import Qwen3VLProcessor
 
 from looped_vl.baseline.losses import multi_positive_symmetric_info_nce
+from looped_vl.query_recurrent.candidate_store import (
+	CandidateReference,
+	CandidateStoreCollection,
+)
+from looped_vl.query_recurrent.losses import multi_query_symmetric_info_nce
 from looped_vl.smoke import load_local_embedding_module
 
 BASELINE_LORA_RANK = 32
@@ -330,6 +335,70 @@ class BaselineLoRATrainingModel(nn.Module):
 			candidate_embeddings,
 			positive_ids,
 			self.temperature,
+		)
+		return {
+			"loss": loss,
+			"query_norm": query_embeddings.norm(dim=1).mean(),
+			"candidate_norm": candidate_embeddings.norm(dim=1).mean(),
+		}
+
+
+class QueryOnlyLoRATrainingModel(nn.Module):
+	"""Train only the LoRA query tower against immutable frozen candidate banks."""
+
+	def __init__(
+		self,
+		model: PeftModel,
+		candidate_stores: CandidateStoreCollection,
+		*,
+		temperature: float = 0.02,
+		hard_negative_count: int = 32,
+	) -> None:
+		super().__init__()
+		if hard_negative_count < 0:
+			raise ValueError("hard_negative_count cannot be negative")
+		self.model = model
+		self.candidate_stores = candidate_stores
+		self.temperature = temperature
+		self.hard_negative_count = hard_negative_count
+
+	def forward(
+		self,
+		*,
+		local_batch_size: int,
+		processed_batches: tuple[dict[str, torch.Tensor], ...],
+		original_indices: tuple[tuple[int, ...], ...],
+		candidate_embeddings: torch.Tensor,
+		candidate_references: list[CandidateReference],
+		positive_ids: list[str],
+		directions: list[str],
+	) -> dict[str, torch.Tensor]:
+		"""Encode query inputs once; candidate Qwen is never called."""
+		if local_batch_size <= 0:
+			raise ValueError("local_batch_size must be positive")
+		if candidate_embeddings.shape != (local_batch_size, 2048):
+			raise ValueError("Candidate embeddings must have shape [local_batch_size, 2048]")
+		if len(candidate_references) != local_batch_size:
+			raise ValueError("Candidate references must match the local batch")
+		query_embeddings = encode_grouped_baseline_batches(
+			model=self.model,
+			processed_batches=processed_batches,
+			original_indices=original_indices,
+			total_rows=local_batch_size,
+		)
+		hard_negatives = self.candidate_stores.mine_hard_negatives(
+			query_embeddings.detach(),
+			candidate_references,
+			count=self.hard_negative_count,
+			device=query_embeddings.device,
+		)
+		(loss,) = multi_query_symmetric_info_nce(
+			(query_embeddings,),
+			candidate_embeddings,
+			positive_ids,
+			directions,
+			temperature=self.temperature,
+			hard_negative_embeddings=hard_negatives,
 		)
 		return {
 			"loss": loss,

@@ -13,6 +13,7 @@ from looped_vl.baseline.train import (
 	_finalize_logging_metrics,
 	_validate_epoch_count,
 	_validate_parallel_batch_sizes,
+	_validate_query_only_lora_settings,
 	parse_args,
 )
 from looped_vl.training.schedule import BatchOffsetSampler
@@ -92,12 +93,39 @@ def test_baseline_cli_defaults_to_true_256_pair_batch_and_one_checkpoint(
 	assert args.visual_length_buckets == 3
 	assert args.min_visual_bucket_size == 8
 	assert args.lora_decoder_layer_indices is None
+	assert args.candidate_root is None
+	assert args.hard_negative_count == 32
 
 
 def test_baseline_formal_training_is_exactly_one_epoch() -> None:
 	_validate_epoch_count(1)
 	with pytest.raises(ValueError, match="exactly one epoch"):
 		_validate_epoch_count(2)
+
+
+def test_query_only_lora_requires_last_four_layers_and_candidate_bank(tmp_path: Path) -> None:
+	assert _validate_query_only_lora_settings(
+		candidate_root=tmp_path,
+		decoder_layer_indices=(24, 25, 26, 27),
+		hard_negative_count=32,
+	)
+	assert not _validate_query_only_lora_settings(
+		candidate_root=None,
+		decoder_layer_indices=None,
+		hard_negative_count=32,
+	)
+	with pytest.raises(ValueError, match="last four"):
+		_validate_query_only_lora_settings(
+			candidate_root=tmp_path,
+			decoder_layer_indices=None,
+			hard_negative_count=32,
+		)
+	with pytest.raises(ValueError, match="hard_negative_count"):
+		_validate_query_only_lora_settings(
+			candidate_root=tmp_path,
+			decoder_layer_indices=(24, 25, 26, 27),
+			hard_negative_count=-1,
+		)
 
 
 def test_baseline_resume_sampler_skips_consumed_rows_before_loading(
@@ -110,6 +138,8 @@ def test_baseline_resume_sampler_skips_consumed_rows_before_loading(
 	)
 	args = SimpleNamespace(
 		dataset_root=tmp_path,
+		dataset="coco",
+		candidate_root=None,
 		max_train_rows=0,
 		seed=42,
 		per_device_batch_size=2,
@@ -128,3 +158,34 @@ def test_baseline_resume_sampler_skips_consumed_rows_before_loading(
 
 	assert isinstance(sampler, BatchOffsetSampler)
 	assert len(loader) == 3
+
+
+def test_query_only_loader_reuses_the_recurrent_manifest_dataset(
+	monkeypatch: pytest.MonkeyPatch,
+	tmp_path: Path,
+) -> None:
+	query_dataset = list(range(23))
+	monkeypatch.setattr(
+		"looped_vl.baseline.train.QueryOnlyManifestDataset",
+		lambda *_args, **_kwargs: query_dataset,
+	)
+	args = SimpleNamespace(
+		dataset_root=tmp_path,
+		dataset="coco",
+		candidate_root=tmp_path / "banks",
+		max_train_rows=0,
+		seed=42,
+		per_device_batch_size=2,
+		num_workers=0,
+		prefetch_factor=2,
+	)
+
+	loader, _sampler = _build_loader(
+		args,
+		rank=0,
+		world_size=2,
+		generator=torch.Generator().manual_seed(42),
+	)
+
+	assert loader.dataset is query_dataset
+	assert loader.collate_fn.__name__ == "query_only_collate"
