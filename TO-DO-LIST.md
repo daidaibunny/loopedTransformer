@@ -148,5 +148,7 @@
   test query and therefore did not provide dynamic compute savings.
 - [x] Train and fully test the COCO K=1 and K=4 dynamic slot-count ablations. Both
   selected Pass 4 for every test query; neither improved meaningfully over K=8.
+- [x] Train and fully test the COCO Layer-28-only-history ablation. It was within
+  0.0051 mAP points of four histories and again selected Pass 4 for every query.
 - [ ] Train and test all eight query-only recurrent runs after all candidate banks pass
   checksum validation; record Pass 0 through Pass 4 and dynamic-exit metrics in result.md.
