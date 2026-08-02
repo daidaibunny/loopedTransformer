@@ -196,8 +196,9 @@
   EOS-conditioned slot attention despite fixing residual scale.
 - [x] Add RMS-normalized persistent slot identity to every recurrent self-attention and
   history-attention query, replacing the ineffective small raw-state reinjection.
-- [x] Remove the recurrent launcher's eager PEFT import path so no-LoRA jobs do not depend
-  on the LoRA stack or its incompatible remote ONNX/protobuf packages.
+- [x] Remove the recurrent launcher's eager PEFT import path and configure the V100 image's
+  documented protobuf compatibility mode before unavoidable Qwen vision imports reach its
+  legacy ONNX package.
 - [ ] Run the same 200-step COCO quality diagnostic for the v5 persistent-identity candidate.
 - [ ] Use the diagnostic evidence to isolate gradient reachability, slot specialization,
   recurrent update stability, hard-negative freshness, and progressive-loss effectiveness.

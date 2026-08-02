@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +34,8 @@ from looped_vl.query_recurrent.train import (
 
 
 def test_recurrent_launcher_import_does_not_load_peft() -> None:
+	environment = os.environ.copy()
+	environment.pop("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", None)
 	result = subprocess.run(
 		[
 			sys.executable,
@@ -40,11 +43,14 @@ def test_recurrent_launcher_import_does_not_load_peft() -> None:
 			(
 				"import sys; "
 				"import looped_vl.query_recurrent.launch; "
-				"assert 'peft' not in sys.modules"
+				"assert 'peft' not in sys.modules; "
+				"assert __import__('os').environ["
+				"'PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] == 'python'"
 			),
 		],
 		check=False,
 		capture_output=True,
+		env=environment,
 		text=True,
 	)
 

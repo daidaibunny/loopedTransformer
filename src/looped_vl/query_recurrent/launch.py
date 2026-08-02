@@ -11,6 +11,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+# The V100 image ships an older ONNX generated module with a newer protobuf runtime.
+# Configure its documented compatibility mode before Qwen's vision imports reach ONNX.
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 from looped_vl.query_recurrent.queue import validate_all_candidate_banks
 
 
