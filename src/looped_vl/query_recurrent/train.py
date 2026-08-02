@@ -85,6 +85,51 @@ def _parse_history_layers(value: str) -> tuple[int, ...]:
 	return layers
 
 
+def _resolve_resume_source_commit(
+	*,
+	current_git_commit: str,
+	checkpoint_git_commit: str,
+	authorized_source_git_commit: str | None,
+) -> str:
+	"""Require an explicit exact commit when recovery code differs from a checkpoint."""
+	if not checkpoint_git_commit:
+		raise ValueError("Resume checkpoint is missing its source Git commit")
+	if checkpoint_git_commit == current_git_commit:
+		if (
+			authorized_source_git_commit is not None
+			and authorized_source_git_commit != checkpoint_git_commit
+		):
+			raise ValueError("Authorized source Git commit does not match the checkpoint")
+		return checkpoint_git_commit
+	if authorized_source_git_commit != checkpoint_git_commit:
+		raise ValueError(
+			"Resume recovery requires the exact checkpoint source Git commit",
+		)
+	return checkpoint_git_commit
+
+
+def _lower_loaded_gradient_scale(
+	scaler: Any,
+	*,
+	new_scale: float,
+) -> float:
+	"""Lower a restored gradient scale without changing model or optimizer state."""
+	if not math.isfinite(new_scale) or new_scale <= 0:
+		raise ValueError("Resume gradient scale must be finite and positive")
+	state = scaler.state_dict()
+	if not state or "scale" not in state:
+		raise RuntimeError("Loaded gradient scaler state is unavailable")
+	previous_scale = float(state["scale"])
+	if new_scale >= previous_scale:
+		raise ValueError(
+			"Resume gradient scale must be strictly below the loaded scale",
+		)
+	state["scale"] = float(new_scale)
+	state["_growth_tracker"] = 0
+	scaler.load_state_dict(state)
+	return previous_scale
+
+
 def _initialize_distributed(expected_world_size: int) -> tuple[int, int, int, torch.device]:
 	if not torch.cuda.is_available():
 		raise RuntimeError("CUDA is required; CPU fallback is disabled")
@@ -365,6 +410,11 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	generator = _seed_everything(args.seed, rank)
 	output_dir = Path(args.output_dir)
 	resume_checkpoint = Path(args.resume_checkpoint) if args.resume_checkpoint else None
+	if resume_checkpoint is None and (
+		args.resume_source_git_commit is not None
+		or args.resume_gradient_scale is not None
+	):
+		raise ValueError("Resume recovery controls require --resume-checkpoint")
 	if rank == 0:
 		mode = prepare_training_output_directory(
 			output_dir,
@@ -469,6 +519,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"seed": args.seed,
 	}
 	cursor = TrainingCursor(0, 0, 0, 0, 0, 0)
+	resume_source_git_commit: str | None = None
+	loaded_gradient_scale: float | None = None
 	if resume_checkpoint is not None:
 		cursor, metadata = load_training_checkpoint(
 			resume_checkpoint,
@@ -479,7 +531,19 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			gradient_scaler=scaler,
 			expected_training_protocol=config.identity()["protocol"],
 		)
-		validate_checkpoint_metadata(metadata, expected=checkpoint_metadata)
+		resume_source_git_commit = _resolve_resume_source_commit(
+			current_git_commit=git_commit,
+			checkpoint_git_commit=str(metadata.get("git_commit", "")),
+			authorized_source_git_commit=args.resume_source_git_commit,
+		)
+		expected_resume_metadata = dict(checkpoint_metadata)
+		expected_resume_metadata["git_commit"] = resume_source_git_commit
+		validate_checkpoint_metadata(metadata, expected=expected_resume_metadata)
+		if args.resume_gradient_scale is not None:
+			loaded_gradient_scale = _lower_loaded_gradient_scale(
+				scaler,
+				new_scale=args.resume_gradient_scale,
+			)
 		if cursor.stage != 0 or cursor.gradient_accumulation_step != 0:
 			raise ValueError("Resume requires a complete single-stage optimizer step")
 		if cursor.global_step >= total_steps:
@@ -507,6 +571,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"hostname": socket.gethostname(),
 		"git_commit": git_commit,
 		"command": sys.argv,
+		"resume_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
+		"resume_source_git_commit": resume_source_git_commit,
+		"resume_gradient_scale_before_override": loaded_gradient_scale,
+		"resume_gradient_scale": args.resume_gradient_scale,
 		"world_size": world_size,
 		"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
 		"runtime_precision": "frozen_qwen_fp16_recurrent_autocast_fp16",
@@ -748,6 +816,8 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--checkpoint-every", type=int, default=100)
 	parser.add_argument("--max-checkpoints", type=int, choices=(1,), default=1)
 	parser.add_argument("--resume-checkpoint", type=Path)
+	parser.add_argument("--resume-source-git-commit")
+	parser.add_argument("--resume-gradient-scale", type=float)
 	parser.add_argument("--skip-checkpoint-save", action="store_true")
 	parser.add_argument("--skip-final-save", action="store_true")
 	parser.add_argument("--num-slots", type=int, choices=(1, 4, 8), default=8)

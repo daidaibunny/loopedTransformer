@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from looped_vl.candidate_bank import CANDIDATE_BANK_SPECS, sha256_file
 from looped_vl.query_recurrent.launch import _queue_command, validate_gpu_inventory
@@ -14,6 +15,10 @@ from looped_vl.query_recurrent.queue import (
 	build_evaluation_command,
 	build_training_command,
 	validate_all_candidate_banks,
+)
+from looped_vl.query_recurrent.train import (
+	_lower_loaded_gradient_scale,
+	_resolve_resume_source_commit,
 )
 
 
@@ -109,3 +114,60 @@ def test_launcher_requires_exactly_eight_v100s_and_preserves_batch_32(tmp_path: 
 		validate_gpu_inventory("\n".join(["Tesla V100-SXM2-32GB"] * 7), expected_count=8)
 	assert command[command.index("--per-device-batch-size") + 1] == "32"
 	assert command[command.index("--world-size") + 1] == "8"
+
+
+def test_recovery_requires_the_exact_checkpoint_source_commit() -> None:
+	assert (
+		_resolve_resume_source_commit(
+			current_git_commit="new",
+			checkpoint_git_commit="new",
+			authorized_source_git_commit=None,
+		)
+		== "new"
+	)
+	with pytest.raises(ValueError, match="source Git commit"):
+		_resolve_resume_source_commit(
+			current_git_commit="new",
+			checkpoint_git_commit="old",
+			authorized_source_git_commit=None,
+		)
+	assert (
+		_resolve_resume_source_commit(
+			current_git_commit="new",
+			checkpoint_git_commit="old",
+			authorized_source_git_commit="old",
+		)
+		== "old"
+	)
+
+
+def test_recovery_can_only_lower_the_loaded_fp16_gradient_scale() -> None:
+	scaler = torch.amp.GradScaler("cpu", init_scale=4096.0)
+
+	previous_scale = _lower_loaded_gradient_scale(scaler, new_scale=2048.0)
+
+	assert previous_scale == 4096.0
+	assert scaler.state_dict()["scale"] == 2048.0
+	assert scaler.state_dict()["_growth_tracker"] == 0
+	with pytest.raises(ValueError, match="strictly below"):
+		_lower_loaded_gradient_scale(scaler, new_scale=2048.0)
+
+
+def test_resume_command_records_the_authorized_commit_and_lower_scale(
+	tmp_path: Path,
+) -> None:
+	args = _args(tmp_path)
+	args.resume_source_git_commit = "old-commit"
+	args.resume_gradient_scale = 2048.0
+	checkpoint = tmp_path / "step001000.pt"
+
+	command = build_training_command(
+		FORMAL_QUERY_RECURRENT_RUNS[-1],
+		args=args,
+		output_dir=tmp_path / "train",
+		resume_checkpoint=checkpoint,
+	)
+
+	assert command[command.index("--resume-checkpoint") + 1] == str(checkpoint)
+	assert command[command.index("--resume-source-git-commit") + 1] == "old-commit"
+	assert command[command.index("--resume-gradient-scale") + 1] == "2048.0"

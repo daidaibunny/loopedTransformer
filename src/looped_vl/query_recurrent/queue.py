@@ -136,6 +136,14 @@ def build_training_command(
 	]
 	if resume_checkpoint is not None:
 		command.extend(["--resume-checkpoint", str(resume_checkpoint)])
+		resume_source_git_commit = getattr(args, "resume_source_git_commit", None)
+		resume_gradient_scale = getattr(args, "resume_gradient_scale", None)
+		if resume_source_git_commit is not None:
+			command.extend(
+				["--resume-source-git-commit", str(resume_source_git_commit)],
+			)
+		if resume_gradient_scale is not None:
+			command.extend(["--resume-gradient-scale", str(resume_gradient_scale)])
 	if smoke:
 		command.extend(
 			[
@@ -355,6 +363,8 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--checkpoint-every", type=int, default=100)
 	parser.add_argument("--smoke-rows", type=int, default=512)
 	parser.add_argument("--smoke-steps", type=int, default=2)
+	parser.add_argument("--resume-source-git-commit")
+	parser.add_argument("--resume-gradient-scale", type=float)
 	return parser.parse_args()
 
 
