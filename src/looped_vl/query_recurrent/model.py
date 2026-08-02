@@ -76,16 +76,11 @@ class RecurrentHistoryLayer(nn.Module):
 
 @dataclass(frozen=True)
 class QueryRecurrentOutput:
-	"""Every recurrent result needed for training, dynamic exit, and pass-wise evaluation."""
+	"""Every fixed-pass recurrent result needed for training and evaluation."""
 
 	embeddings: torch.Tensor
-	soft_embeddings: torch.Tensor
 	step_embeddings: tuple[torch.Tensor, ...]
 	slot_states: tuple[torch.Tensor, ...]
-	exit_probabilities: torch.Tensor
-	halting_weights: torch.Tensor
-	selected_steps: torch.Tensor
-	expected_steps: torch.Tensor
 	slot_attention_weights: tuple[torch.Tensor, ...]
 
 
@@ -112,9 +107,6 @@ def combine_query_recurrent_outputs(
 		raise ValueError("Grouped recurrent outputs have different pass counts")
 	return QueryRecurrentOutput(
 		embeddings=combine_tensors(tuple(output.embeddings for _indices, output in groups)),
-		soft_embeddings=combine_tensors(
-			tuple(output.soft_embeddings for _indices, output in groups),
-		),
 		step_embeddings=tuple(
 			combine_tensors(
 				tuple(output.step_embeddings[step] for _indices, output in groups),
@@ -126,18 +118,6 @@ def combine_query_recurrent_outputs(
 				tuple(output.slot_states[step] for _indices, output in groups),
 			)
 			for step in range(step_count)
-		),
-		exit_probabilities=combine_tensors(
-			tuple(output.exit_probabilities for _indices, output in groups),
-		),
-		halting_weights=combine_tensors(
-			tuple(output.halting_weights for _indices, output in groups),
-		),
-		selected_steps=combine_tensors(
-			tuple(output.selected_steps for _indices, output in groups),
-		),
-		expected_steps=combine_tensors(
-			tuple(output.expected_steps for _indices, output in groups),
 		),
 		slot_attention_weights=tuple(
 			combine_tensors(
@@ -177,12 +157,6 @@ class QueryRecurrentHead(nn.Module):
 		)
 		self.output_norm = nn.LayerNorm(dimension)
 		self.output_projection = nn.Linear(dimension, config.hidden_size, bias=False)
-		self.exit_controller = nn.Sequential(
-			nn.LayerNorm(dimension),
-			nn.Linear(dimension, dimension // 4),
-			nn.GELU(approximate="tanh"),
-			nn.Linear(dimension // 4, 1),
-		)
 		self._reset_parameters()
 		trainable_count = sum(parameter.numel() for parameter in self.parameters())
 		if trainable_count > MAX_QUERY_RECURRENT_PARAMETERS:
@@ -199,11 +173,6 @@ class QueryRecurrentHead(nn.Module):
 			nn.init.orthogonal_(self.slot_queries)
 			self.slot_queries.mul_(self.config.state_size**0.5 * 0.02)
 			self.output_projection.weight.zero_()
-			final_exit_layer = self.exit_controller[-1]
-			if not isinstance(final_exit_layer, nn.Linear):
-				raise TypeError("Exit controller must end with a linear layer")
-			final_exit_layer.weight.zero_()
-			final_exit_layer.bias.fill_(-2.0)
 
 	@property
 	def trainable_parameter_count(self) -> int:
@@ -276,18 +245,6 @@ class QueryRecurrentHead(nn.Module):
 		fused = F.normalize(base_embeddings.float() + residual, p=2, dim=-1)
 		return fused, weights
 
-	def _halting_weights(self, probabilities: torch.Tensor) -> torch.Tensor:
-		remaining = torch.ones_like(probabilities[:, 0])
-		weights = []
-		for step in range(probabilities.shape[1]):
-			if step == probabilities.shape[1] - 1:
-				weight = remaining
-			else:
-				weight = remaining * probabilities[:, step]
-				remaining = remaining * (1.0 - probabilities[:, step])
-			weights.append(weight)
-		return torch.stack(weights, dim=1)
-
 	def forward(
 		self,
 		*,
@@ -295,7 +252,7 @@ class QueryRecurrentHead(nn.Module):
 		attention_mask: torch.Tensor,
 		base_embeddings: torch.Tensor,
 	) -> QueryRecurrentOutput:
-		"""Run a fixed number of shared updates and optionally select a dynamic exit."""
+		"""Run exactly the configured number of shared recurrent updates."""
 		if base_embeddings.ndim != 2 or base_embeddings.shape[-1] != self.config.hidden_size:
 			raise ValueError("Base embeddings must have shape [batch, 2048]")
 		memory, memory_padding_mask = self._project_history(
@@ -305,7 +262,6 @@ class QueryRecurrentHead(nn.Module):
 		slots = self._initialize_slots(memory, memory_padding_mask)
 		step_embeddings = []
 		slot_states = []
-		exit_probabilities = []
 		slot_attention_weights = []
 		for _step in range(self.config.max_recurrent_steps):
 			# Re-inject the learned slot identities at every shared update so recurrent
@@ -316,48 +272,11 @@ class QueryRecurrentHead(nn.Module):
 			fused, slot_weights = self._read_step(slots, base_embeddings)
 			step_embeddings.append(fused)
 			slot_states.append(slots)
-			exit_probabilities.append(torch.sigmoid(self.exit_controller(slots.mean(dim=1))))
 			slot_attention_weights.append(slot_weights)
-		probabilities = torch.cat(exit_probabilities, dim=1)
-		halting_weights = self._halting_weights(probabilities)
-		stacked_steps = torch.stack(step_embeddings, dim=1)
-		soft_embeddings = F.normalize(
-			(stacked_steps * halting_weights[:, :, None]).sum(dim=1),
-			p=2,
-			dim=-1,
-		)
-		if self.config.exit_mode == "dynamic":
-			threshold_met = probabilities >= self.config.exit_threshold
-			threshold_met[:, -1] = True
-			selected_steps = threshold_met.to(torch.int64).argmax(dim=1) + 1
-			embeddings = stacked_steps[
-				torch.arange(stacked_steps.shape[0], device=stacked_steps.device),
-				selected_steps - 1,
-			]
-		else:
-			selected_steps = torch.full(
-				(base_embeddings.shape[0],),
-				self.config.max_recurrent_steps,
-				device=base_embeddings.device,
-				dtype=torch.long,
-			)
-			embeddings = step_embeddings[-1]
-		step_numbers = torch.arange(
-			1,
-			self.config.max_recurrent_steps + 1,
-			device=halting_weights.device,
-			dtype=halting_weights.dtype,
-		)
-		expected_steps = (halting_weights * step_numbers[None]).sum(dim=1)
 		return QueryRecurrentOutput(
-			embeddings=embeddings,
-			soft_embeddings=soft_embeddings,
+			embeddings=step_embeddings[-1],
 			step_embeddings=tuple(step_embeddings),
 			slot_states=tuple(slot_states),
-			exit_probabilities=probabilities,
-			halting_weights=halting_weights,
-			selected_steps=selected_steps,
-			expected_steps=expected_steps,
 			slot_attention_weights=tuple(slot_attention_weights),
 		)
 

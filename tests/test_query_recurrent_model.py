@@ -49,7 +49,7 @@ def test_slot_ablation_stays_below_five_million_parameters(slot_count: int) -> N
 
 
 def test_zero_gate_starts_every_recurrent_step_at_the_frozen_embedding() -> None:
-	config = QueryRecurrentConfig(exit_mode="fixed")
+	config = QueryRecurrentConfig()
 	head = QueryRecurrentHead(config)
 	inputs = _inputs(config)
 
@@ -60,9 +60,10 @@ def test_zero_gate_starts_every_recurrent_step_at_the_frozen_embedding() -> None
 	assert torch.allclose(output.embeddings, inputs["base_embeddings"], atol=1e-6)
 	assert torch.count_nonzero(head.output_projection.weight) == 0
 	assert not hasattr(head, "residual_gate")
+	assert not hasattr(head, "exit_controller")
 
 
-def test_dynamic_exit_returns_normalized_step_outputs_and_valid_halting_weights() -> None:
+def test_fixed_recurrence_returns_normalized_pass_outputs_and_final_pass() -> None:
 	config = QueryRecurrentConfig()
 	head = QueryRecurrentHead(config)
 	output = head(**_inputs(config))
@@ -70,14 +71,8 @@ def test_dynamic_exit_returns_normalized_step_outputs_and_valid_halting_weights(
 	assert len(output.step_embeddings) == 4
 	assert len(output.slot_states) == 4
 	assert len(output.slot_attention_weights) == 4
-	assert output.exit_probabilities.shape == (3, 4)
-	assert output.halting_weights.shape == (3, 4)
-	assert torch.allclose(output.halting_weights.sum(dim=1), torch.ones(3))
 	assert torch.allclose(output.embeddings.norm(dim=1), torch.ones(3), atol=1e-5)
-	assert torch.allclose(output.soft_embeddings.norm(dim=1), torch.ones(3), atol=1e-5)
-	assert torch.equal(output.selected_steps, torch.full((3,), 4))
-	assert (output.expected_steps >= 1).all()
-	assert (output.expected_steps <= 4).all()
+	assert torch.equal(output.embeddings, output.step_embeddings[-1])
 	for weights in output.slot_attention_weights:
 		assert torch.allclose(weights.sum(dim=1), torch.ones(3), atol=1e-6)
 
@@ -86,13 +81,12 @@ def test_fixed_one_step_and_final_layer_history_are_supported_ablations() -> Non
 	config = QueryRecurrentConfig(
 		history_layers=(28,),
 		max_recurrent_steps=1,
-		exit_mode="fixed",
 	)
 	head = QueryRecurrentHead(config)
 	output = head(**_inputs(config, batch_size=2))
 
 	assert len(output.step_embeddings) == 1
-	assert torch.equal(output.selected_steps, torch.ones(2, dtype=torch.long))
+	assert torch.equal(output.embeddings, output.step_embeddings[0])
 
 
 def test_grouped_head_preserves_results_and_avoids_cross_bucket_padding() -> None:
@@ -138,7 +132,6 @@ def test_grouped_head_preserves_results_and_avoids_cross_bucket_padding() -> Non
 		({"max_recurrent_steps": 3}, "max_recurrent_steps"),
 		({"history_layers": ()}, "history"),
 		({"history_layers": (0, 28)}, "1 through 28"),
-		({"max_recurrent_steps": 1, "exit_mode": "dynamic"}, "Dynamic exit"),
 	],
 )
 def test_invalid_formal_variants_are_rejected(changes: dict[str, object], match: str) -> None:

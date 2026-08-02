@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from looped_vl.candidate_bank import CANDIDATE_BANK_SPECS, sha256_file
+from looped_vl.query_recurrent.evaluate import _variant_names
 from looped_vl.query_recurrent.launch import _queue_command, validate_gpu_inventory
 from looped_vl.query_recurrent.queue import (
 	FORMAL_QUERY_RECURRENT_RUNS,
@@ -47,7 +48,14 @@ def test_formal_queue_contains_only_the_focused_coco_v2_controls() -> None:
 		"coco_v2_k8_r4_fixed",
 	]
 	assert all(run.dataset == "coco" for run in FORMAL_QUERY_RECURRENT_RUNS)
-	assert all(run.exit_mode == "fixed" for run in FORMAL_QUERY_RECURRENT_RUNS)
+	assert not any(hasattr(run, "exit_mode") for run in FORMAL_QUERY_RECURRENT_RUNS)
+	assert _variant_names(FORMAL_QUERY_RECURRENT_RUNS[1].max_recurrent_steps) == (
+		"pass_0_frozen_backbone",
+		"pass_1",
+		"pass_2",
+		"pass_3",
+		"pass_4",
+	)
 
 
 def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
@@ -70,6 +78,8 @@ def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
 	assert train[train.index("--max-checkpoints") + 1] == "1"
 	assert train[train.index("--per-device-batch-size") + 1] == "32"
 	assert train[train.index("--hard-negative-count") + 1] == "32"
+	assert "--exit-mode" not in train
+	assert "--exit-threshold" not in train
 	assert "looped_vl.query_recurrent.evaluate" in test_text
 	assert test[test.index("--recurrent-checkpoint") + 1].endswith(
 		"query_recurrent_model.pt",

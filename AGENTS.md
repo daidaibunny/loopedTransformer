@@ -27,12 +27,12 @@
   to the frozen Qwen embedding, then L2-normalize. The projection must make every pass
   exactly equal to frozen Qwen at initialization while allowing the main retrieval loss
   to update the full output projection on the first optimizer step.
-- Dynamic exit remains an implementation capability, but it is not part of the first v2
-  quality runs. Establish a measurable fixed Pass-4 gain over fixed Pass 1 before training
-  or claiming dynamic compute savings.
+- The first v2 uses an explicit fixed recurrent count only. It contains no exit controller,
+  exit threshold, halting loss, or compute penalty. Reconsider dynamic exit only after a
+  fixed Pass-4 model shows a measurable gain over a separately trained fixed Pass-1 model.
 - Train only the slot initializer, shared recurrent Block, history projection,
-  zero-initialized residual readout, and exit controller. Enforce the 5,000,000-parameter
-  limit. Exact v2 counts are 4,874,257 for K=1, 4,875,121 for K=4, and 4,876,273 for K=8.
+  and zero-initialized residual readout. Enforce the 5,000,000-parameter limit. Exact v2
+  counts are 4,852,800 for K=1, 4,853,664 for K=4, and 4,854,816 for K=8.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
   only under experiment-specific output directories.
 - Always call the single-query attention from the final valid token over latent slots
@@ -138,7 +138,7 @@
 - Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
   and `report.json` must declare architecture
   `query_only_history_recurrent_no_lora_v2`, protocol
-  `single_stage_directional_hard_negative_pass_supervision_v2`, `backbone_frozen: true`,
+  `single_stage_fixed_recurrence_directional_hard_negative_v2`, `backbone_frozen: true`,
   `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
@@ -172,10 +172,11 @@
 - Compare model-quality metrics only within the same dataset and exact test manifest and
   candidate gallery. Do not treat values from different retrieval tasks as directly
   comparable.
-- Every recurrent report must retain the complete required metric set for frozen Qwen
-  Pass 0, recurrent Pass 1 through Pass 4, dynamic hard exit, and dynamic soft exit. It
-  must report each variant's metric change from frozen Qwen. For COCO, summaries use the
-  equal-direction mean while direction-specific pass metrics remain required.
+- Every current recurrent report must retain the complete required metric set for frozen
+  Qwen Pass 0 and recurrent Pass 1 through the configured fixed Pass R. It must report each
+  pass's metric change from frozen Qwen. For COCO, summaries use the equal-direction mean
+  while direction-specific pass metrics remain required. Historical v1 reports may retain
+  their obsolete dynamic hard/soft exit diagnostics.
 - Report the weighted Mix result only for later mixed-dataset experiments.
 - Required metrics are mAP, P@1/5/10/20, R@1/5/10/20, MRR, and nDCG@10.
 - Use percentage values from 0 to 100. Aggregate COCO directions equally, then aggregate

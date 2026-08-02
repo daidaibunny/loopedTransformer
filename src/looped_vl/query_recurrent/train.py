@@ -410,14 +410,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		num_slots=args.num_slots,
 		max_recurrent_steps=args.max_recurrent_steps,
 		history_layers=args.history_layers,
-		exit_mode=args.exit_mode,
-		exit_threshold=args.exit_threshold,
 		temperature=args.temperature,
 		direct_pass_loss_weight=args.direct_pass_loss_weight,
-		dynamic_loss_weight=args.dynamic_loss_weight,
 		progressive_loss_weight=args.progressive_loss_weight,
 		progressive_margin=args.progressive_margin,
-		compute_penalty_weight=args.compute_penalty_weight,
 		hard_negative_count=args.hard_negative_count,
 		seed=args.seed,
 	)
@@ -865,17 +861,13 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--num-slots", type=int, choices=(1, 4, 8), default=8)
 	parser.add_argument("--max-recurrent-steps", type=int, choices=(1, 4), default=4)
 	parser.add_argument("--history-layers", type=_parse_history_layers, default=(7, 14, 21, 28))
-	parser.add_argument("--exit-mode", choices=("fixed", "dynamic"), default="fixed")
-	parser.add_argument("--exit-threshold", type=float, default=0.5)
 	parser.add_argument("--learning-rate", type=float, default=1e-4)
 	parser.add_argument("--weight-decay", type=float, default=0.01)
 	parser.add_argument("--warmup-ratio", type=float, default=0.02)
 	parser.add_argument("--temperature", type=float, default=0.02)
 	parser.add_argument("--direct-pass-loss-weight", type=float, default=1.0)
-	parser.add_argument("--dynamic-loss-weight", type=float, default=0.5)
 	parser.add_argument("--progressive-loss-weight", type=float, default=0.1)
 	parser.add_argument("--progressive-margin", type=float, default=0.02)
-	parser.add_argument("--compute-penalty-weight", type=float, default=0.01)
 	parser.add_argument("--hard-negative-count", type=int, default=32)
 	parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
 	parser.add_argument("--initial-gradient-scale", type=float, default=4096.0)

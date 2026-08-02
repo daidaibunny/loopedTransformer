@@ -24,7 +24,6 @@ class QueryRecurrentRun:
 	dataset: str
 	num_slots: int
 	max_recurrent_steps: int
-	exit_mode: str
 	history_layers: tuple[int, ...] = (7, 14, 21, 28)
 
 	def validate(self) -> None:
@@ -34,15 +33,11 @@ class QueryRecurrentRun:
 			raise ValueError("Formal slot count must be 1, 4, or 8")
 		if self.max_recurrent_steps not in (1, 4):
 			raise ValueError("Formal recurrent steps must be 1 or 4")
-		if self.exit_mode not in ("fixed", "dynamic"):
-			raise ValueError("Exit mode must be fixed or dynamic")
-		if self.exit_mode == "dynamic" and self.max_recurrent_steps == 1:
-			raise ValueError("Dynamic exit requires four recurrent steps")
 
 
 FORMAL_QUERY_RECURRENT_RUNS = (
-	QueryRecurrentRun("coco_v2_k8_r1_fixed", "coco", 8, 1, "fixed"),
-	QueryRecurrentRun("coco_v2_k8_r4_fixed", "coco", 8, 4, "fixed"),
+	QueryRecurrentRun("coco_v2_k8_r1_fixed", "coco", 8, 1),
+	QueryRecurrentRun("coco_v2_k8_r4_fixed", "coco", 8, 4),
 )
 
 
@@ -118,8 +113,6 @@ def build_training_command(
 		str(run.num_slots),
 		"--max-recurrent-steps",
 		str(run.max_recurrent_steps),
-		"--exit-mode",
-		run.exit_mode,
 		"--history-layers",
 		",".join(str(layer) for layer in run.history_layers),
 		"--visual-length-buckets",
@@ -286,14 +279,14 @@ def run_queue(args: argparse.Namespace) -> None:
 		_write_json(manifest_path, queue_manifest)
 	status_path = output_root / "status.json"
 
-	smoke_output = output_root / "smoke_coco_k8_r4_dynamic"
+	smoke_output = output_root / "smoke_coco_k8_r4_fixed"
 	if not _passed(smoke_output / "status.json"):
 		if smoke_output.exists():
 			raise FileExistsError(f"Failed smoke output requires diagnosis: {smoke_output}")
-		_write_json(status_path, {"status": "smoke", "run": "coco_k8_r4_dynamic"})
+		_write_json(status_path, {"status": "smoke", "run": "coco_k8_r4_fixed"})
 		_run(
 			build_training_command(
-				FORMAL_QUERY_RECURRENT_RUNS[2],
+				FORMAL_QUERY_RECURRENT_RUNS[1],
 				args=args,
 				output_dir=smoke_output,
 				smoke=True,

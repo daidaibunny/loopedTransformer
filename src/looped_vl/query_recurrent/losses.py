@@ -166,11 +166,8 @@ def query_recurrent_loss(
 	hard_negative_embeddings: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
 	"""Train every fused pass directly within its own candidate gallery."""
-	queries = (*output.step_embeddings,)
-	if config.exit_mode == "dynamic":
-		queries = (*queries, output.soft_embeddings)
 	losses = multi_query_symmetric_info_nce(
-		queries,
+		output.step_embeddings,
 		candidate_embeddings,
 		positive_ids,
 		directions,
@@ -187,8 +184,7 @@ def query_recurrent_loss(
 	)
 	pass_weights = pass_weights / pass_weights.sum()
 	direct_pass_loss = (torch.stack(step_losses) * pass_weights).sum()
-	dynamic_loss = losses[-1] if config.exit_mode == "dynamic" else direct_pass_loss * 0.0
-	main_loss = dynamic_loss if config.exit_mode == "dynamic" else step_losses[-1]
+	main_loss = step_losses[-1]
 	if len(step_losses) > 1:
 		progressive_loss = torch.stack(
 			[
@@ -198,24 +194,15 @@ def query_recurrent_loss(
 		).mean()
 	else:
 		progressive_loss = main_loss.new_zeros(())
-	compute_penalty = output.expected_steps.float().mean() / config.max_recurrent_steps
-	if config.exit_mode != "dynamic":
-		compute_penalty = compute_penalty * 0.0
 	total = (
 		config.direct_pass_loss_weight * direct_pass_loss
-		+ config.dynamic_loss_weight * dynamic_loss
 		+ config.progressive_loss_weight * progressive_loss
-		+ config.compute_penalty_weight * compute_penalty
-		+ 0.0 * output.exit_probabilities.sum()
 	)
 	return {
 		"loss": total,
 		"main_info_nce": main_loss,
 		"direct_pass_info_nce": direct_pass_loss,
-		"dynamic_soft_info_nce": dynamic_loss,
 		"progressive_margin_loss": progressive_loss,
-		"compute_penalty": compute_penalty,
-		"expected_steps": output.expected_steps.float().mean(),
 		"slot_pairwise_absolute_cosine": slot_pairwise_absolute_cosine(
 			output.slot_states[-1],
 		),

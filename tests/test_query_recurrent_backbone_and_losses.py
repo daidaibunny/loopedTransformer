@@ -197,7 +197,7 @@ def test_contrastive_loss_never_uses_candidates_from_another_gallery() -> None:
 
 
 def test_every_fused_pass_receives_direct_retrieval_gradient() -> None:
-	config = QueryRecurrentConfig(num_slots=4, exit_mode="fixed")
+	config = QueryRecurrentConfig(num_slots=4)
 	head = QueryRecurrentHead(config)
 	history = torch.randn(4, 4, 5, 2048)
 	mask = torch.ones(4, 5, dtype=torch.long)

@@ -163,6 +163,8 @@
 - [x] Implement the v2 direction-isolated InfoNCE, direct supervision for every fused pass,
   progressive improvement margin, zero-initialized full residual projection, recurrent slot
   identity injection, and full-bank same-gallery hard-negative mining.
+- [x] Remove dynamic exit from the first v2 architecture after the v1 controller selected
+  maximum Pass 4 for every COCO query; lock training and evaluation to explicit Pass R.
 - [ ] Implement and test the last-four-layer query-only LoRA control against the same frozen
   candidate banks without changing the ordinary two-tower LoRA baseline.
 - [ ] Run one minimal eight-V100 v2 smoke, measuring hard-negative memory/throughput, every

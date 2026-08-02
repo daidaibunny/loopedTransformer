@@ -8,7 +8,6 @@ import logging
 import os
 import socket
 import time
-from collections import Counter
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -85,12 +84,11 @@ def _query_group_names(dataset: str) -> tuple[str, ...]:
 	return ("text_query", "image_query") if dataset == "coco" else ("query",)
 
 
-def _variant_names(config: QueryRecurrentConfig) -> tuple[str, ...]:
+def _variant_names(max_recurrent_steps: int) -> tuple[str, ...]:
+	"""Name the frozen baseline and every fixed recurrent pass."""
 	return (
 		"pass_0_frozen_backbone",
-		*(f"pass_{step}" for step in range(1, config.max_recurrent_steps + 1)),
-		"dynamic_soft_exit",
-		"dynamic_hard_exit",
+		*(f"pass_{step}" for step in range(1, max_recurrent_steps + 1)),
 	)
 
 
@@ -129,11 +127,8 @@ def _encode_query_group(
 	grouped_head = GroupedQueryRecurrentHead(head)
 	index_chunks: list[torch.Tensor] = []
 	embedding_chunks: dict[str, list[torch.Tensor]] = {
-		variant: [] for variant in _variant_names(head.config)
+		variant: [] for variant in _variant_names(head.config.max_recurrent_steps)
 	}
-	selected_step_chunks: list[torch.Tensor] = []
-	exit_probability_chunks: list[torch.Tensor] = []
-	expected_step_chunks: list[torch.Tensor] = []
 	start = time.perf_counter()
 	processed_count = 0
 	for batch_number, batch in enumerate(loader, start=1):
@@ -188,17 +183,12 @@ def _encode_query_group(
 				f"pass_{step}": embedding
 				for step, embedding in enumerate(output.step_embeddings, start=1)
 			},
-			"dynamic_soft_exit": output.soft_embeddings,
-			"dynamic_hard_exit": output.embeddings,
 		}
 		for variant, embeddings in variants.items():
 			if not torch.isfinite(embeddings).all():
 				raise RuntimeError(f"Non-finite {variant} embeddings in {name}")
-			embedding_chunks[variant].append(embeddings.detach().cpu().half())
+				embedding_chunks[variant].append(embeddings.detach().cpu().half())
 		index_chunks.append(torch.tensor(batch["global_indices"], dtype=torch.long))
-		selected_step_chunks.append(output.selected_steps.detach().cpu())
-		exit_probability_chunks.append(output.exit_probabilities.detach().cpu().half())
-		expected_step_chunks.append(output.expected_steps.detach().cpu().half())
 		processed_count += len(batch["global_indices"])
 		if batch_number == 1 or batch_number % args.log_every_batches == 0:
 			LOGGER.info(
@@ -224,21 +214,6 @@ def _encode_query_group(
 				)
 				for variant, chunks in embedding_chunks.items()
 			},
-			"selected_steps": (
-				torch.cat(selected_step_chunks)
-				if selected_step_chunks
-				else torch.empty(0, dtype=torch.long)
-			),
-			"exit_probabilities": (
-				torch.cat(exit_probability_chunks)
-				if exit_probability_chunks
-				else torch.empty((0, head.config.max_recurrent_steps), dtype=torch.float16)
-			),
-			"expected_steps": (
-				torch.cat(expected_step_chunks)
-				if expected_step_chunks
-				else torch.empty(0, dtype=torch.float16)
-			),
 		},
 		output_dir / "embedding_cache" / f"{name}.rank{rank}.pt",
 	)
@@ -257,9 +232,6 @@ def _combine_query_cache(
 		variant: torch.empty((item_count, 2048), dtype=torch.float16)
 		for variant in variant_names
 	}
-	selected_steps = torch.empty(item_count, dtype=torch.long)
-	exit_probabilities: torch.Tensor | None = None
-	expected_steps = torch.empty(item_count, dtype=torch.float16)
 	for rank in range(world_size):
 		shard = torch.load(
 			output_dir / "embedding_cache" / f"{name}.rank{rank}.pt",
@@ -271,23 +243,10 @@ def _combine_query_cache(
 			raise RuntimeError(f"Duplicate distributed indexes for {name}")
 		for variant in variant_names:
 			embeddings[variant][indices] = shard["embeddings"][variant]
-		selected_steps[indices] = shard["selected_steps"]
-		if exit_probabilities is None:
-			exit_probabilities = torch.empty(
-				(item_count, shard["exit_probabilities"].shape[1]),
-				dtype=torch.float16,
-			)
-		exit_probabilities[indices] = shard["exit_probabilities"]
-		expected_steps[indices] = shard["expected_steps"]
 		seen[indices] = True
-	if not seen.all() or exit_probabilities is None:
+	if not seen.all():
 		raise RuntimeError(f"Missing distributed query indexes for {name}")
-	return {
-		"embeddings": embeddings,
-		"selected_steps": selected_steps,
-		"exit_probabilities": exit_probabilities,
-		"expected_steps": expected_steps,
-	}
+	return {"embeddings": embeddings}
 
 
 def _metric_deltas(
@@ -443,7 +402,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 	dist.barrier()
 	report = None
 	if rank == 0:
-		variant_names = _variant_names(head.config)
+		variant_names = _variant_names(head.config.max_recurrent_steps)
 		query_caches = {
 			name: _combine_query_cache(
 				name,
@@ -470,24 +429,10 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 			for variant, values in metrics.items()
 			if variant != "pass_0_frozen_backbone"
 		}
-		all_selected_steps = torch.cat(
-			[cache["selected_steps"] for cache in query_caches.values()],
-		)
-		step_counts = Counter(int(step) for step in all_selected_steps.tolist())
-		all_expected_steps = torch.cat(
-			[cache["expected_steps"].float() for cache in query_caches.values()],
-		)
-		all_exit_probabilities = torch.cat(
-			[cache["exit_probabilities"].float() for cache in query_caches.values()],
-		)
 		base_hash_after = checkpoint_sha256(model_root / "model.safetensors")
 		if base_hash_after != base_hash_before:
 			raise RuntimeError("Immutable Qwen checkpoint changed during recurrent evaluation")
-		primary_variant = (
-			"dynamic_hard_exit"
-			if head.config.exit_mode == "dynamic"
-			else f"pass_{head.config.max_recurrent_steps}"
-		)
+		primary_variant = f"pass_{head.config.max_recurrent_steps}"
 		report = {
 			"status": "passed",
 			"scope": "single_dataset_query_only_recurrent_test",
@@ -496,22 +441,14 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 			"primary_variant": primary_variant,
 			"metrics_by_recurrent_pass": metrics,
 			"improvement_over_frozen_qwen_by_recurrent_pass": improvements,
-			"dynamic_exit": {
-				"mode": head.config.exit_mode,
-				"threshold": head.config.exit_threshold,
-				"selected_step_counts": {
-					str(step): step_counts.get(step, 0)
-					for step in range(1, head.config.max_recurrent_steps + 1)
-				},
-				"mean_expected_steps": float(all_expected_steps.mean().item()),
-				"mean_exit_probability_by_pass": all_exit_probabilities.mean(dim=0).tolist(),
-			},
 			"protocol": {
 				"split": "test",
 				"test_rows": len(rows),
 				"candidate_source": "immutable_preencoded_candidate_bank",
 				"candidate_qwen_forward_calls": 0,
 				"query_qwen_forward_calls_per_item": 1,
+				"recurrent_passes_executed_per_item": head.config.max_recurrent_steps,
+				"exit_policy": "fixed_pass_count",
 				"validation_used": False,
 				"score": "dot_product_of_unit_normalized_embeddings",
 				"retrieval_cutoffs": RETRIEVAL_CUTOFFS,

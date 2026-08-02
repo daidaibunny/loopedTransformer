@@ -6,12 +6,11 @@ from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v2"
-QUERY_RECURRENT_PROTOCOL = "single_stage_directional_hard_negative_pass_supervision_v2"
+QUERY_RECURRENT_PROTOCOL = "single_stage_fixed_recurrence_directional_hard_negative_v2"
 MAX_QUERY_RECURRENT_PARAMETERS = 5_000_000
 DEFAULT_HISTORY_LAYERS = (7, 14, 21, 28)
 SUPPORTED_SLOT_COUNTS = (1, 4, 8)
 SUPPORTED_RECURRENT_STEPS = (1, 4)
-SUPPORTED_EXIT_MODES = ("fixed", "dynamic")
 
 
 @dataclass(frozen=True)
@@ -26,14 +25,10 @@ class QueryRecurrentConfig:
 	num_slots: int = 8
 	max_recurrent_steps: int = 4
 	history_layers: tuple[int, ...] = DEFAULT_HISTORY_LAYERS
-	exit_mode: str = "fixed"
-	exit_threshold: float = 0.5
 	temperature: float = 0.02
 	direct_pass_loss_weight: float = 1.0
-	dynamic_loss_weight: float = 0.5
 	progressive_loss_weight: float = 0.1
 	progressive_margin: float = 0.02
-	compute_penalty_weight: float = 0.01
 	hard_negative_count: int = 32
 	seed: int = 42
 
@@ -51,26 +46,18 @@ class QueryRecurrentConfig:
 			raise ValueError(
 				f"max_recurrent_steps must be one of {SUPPORTED_RECURRENT_STEPS}",
 			)
-		if self.exit_mode not in SUPPORTED_EXIT_MODES:
-			raise ValueError(f"exit_mode must be one of {SUPPORTED_EXIT_MODES}")
-		if self.exit_mode == "dynamic" and self.max_recurrent_steps <= 1:
-			raise ValueError("Dynamic exit requires more than one recurrent step")
 		if not self.history_layers:
 			raise ValueError("At least one frozen Qwen history layer is required")
 		if tuple(sorted(set(self.history_layers))) != self.history_layers:
 			raise ValueError("history_layers must be sorted and unique")
 		if self.history_layers[0] < 1 or self.history_layers[-1] > 28:
 			raise ValueError("history_layers must use one-indexed decoder layers 1 through 28")
-		if not 0.0 < self.exit_threshold < 1.0:
-			raise ValueError("exit_threshold must be in (0, 1)")
 		if self.temperature <= 0:
 			raise ValueError("temperature must be positive")
 		for name in (
 			"direct_pass_loss_weight",
-			"dynamic_loss_weight",
 			"progressive_loss_weight",
 			"progressive_margin",
-			"compute_penalty_weight",
 		):
 			if getattr(self, name) < 0:
 				raise ValueError(f"{name} cannot be negative")
