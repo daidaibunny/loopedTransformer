@@ -474,6 +474,9 @@ insufficient safety margin; they are safe selections, not proven mathematical ma
   `fusion_residual_gate_init` 0.0. Backbone SHA-256
   `c73fa9caeddeb3ff831d46c085a7a5708343248ca777e90f2d486964464509c1` before and after
   in all four runs.
+- Encoder protocol: online two-tower encoding. The same frozen Qwen backbone encoded both
+  query and candidate inputs during training and evaluation; no precomputed candidate bank
+  was used.
 - Trainable scope, identical in structure for all four runs: `latent_slots`,
   `auxiliary_embedding_head.normalization.weight`,
   `auxiliary_embedding_head.projection.weight`, `eos_delta`, `late_fusion.gamma`,
@@ -1061,9 +1064,9 @@ The recurrent row uses the four-history K=8, R=4 dynamic-hard-exit configuration
 the only recurrent configuration evaluated on all three canonical datasets. The R=1
 control is not recurrent, while the K=1 COCO ablation's 0.0096-point mAP advantage over
 K=8 is too small and lacks GQA/CLEVR confirmation.
-The old-architecture row uses EXP-004C K=16 Pass 4 because it is the best
-protocol-defined final output in the old K=8/12/16/32 sweep. That architecture was run
-only on COCO, so its GQA Balanced and CLEVR cells are `N/A`.
+The old-architecture row uses the online two-tower EXP-004C K=16 Pass 4 because it is the
+best protocol-defined final output in the old K=8/12/16/32 sweep. No verified full GQA
+Balanced or CLEVR run exists for that architecture, so those cells are `N/A`.
 
 <table>
 <thead>
@@ -1139,7 +1142,7 @@ only on COCO, so its GQA Balanced and CLEVR cells are `N/A`.
 <td>87.4560</td><td>99.7573</td><td>99.9973</td><td>100.0000</td><td>93.3167</td><td>95.0396</td>
 </tr>
 <tr>
-<td>Superseded damped mid-decoder recurrent (no LoRA), K=16 Pass 4</td>
+<td>Superseded online two-tower damped mid-decoder recurrent (no LoRA), K=16 Pass 4</td>
 <td>16</td>
 <td>4</td>
 <td>2,658,305</td>
