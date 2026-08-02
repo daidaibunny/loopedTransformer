@@ -213,8 +213,17 @@
 - [x] Replace bare-proposal supervision with a training-only fixed-scale bridge equal to
   `L2Norm(frozen_embedding + 0.1 * proposal)`, preserving the zero-gated inference path,
   parameter count, data, and all other loss settings in the v7 candidate.
-- [ ] Run the same 200-step COCO quality diagnostic and full Pass-0-to-Pass-4 test for v7.
-- [ ] Use the diagnostic evidence to isolate gradient reachability, slot specialization,
-  recurrent update stability, hard-negative freshness, and progressive-loss effectiveness.
+- [x] Run the same 200-step COCO quality diagnostic and full Pass-0-to-Pass-4 test for v7.
+  The fixed-scale bridge restored moderate early gradients and the v4 quality level, but
+  Pass 2 improved over Pass 1 by only 0.0003 mAP and Passes 3–4 regressed. The recurrent
+  state reached a fixed point after approximately one full update.
+- [x] Use the v4–v7 diagnostic evidence to isolate gradient reachability from recurrent
+  update stability: v6 proved the former was broken, v7 fixed it in the correct additive
+  geometry, and v7 then proved one-step convergence remained the dominant failure.
+- [x] Add parameter-free inverse-R recurrent-state damping while preserving R=1 exactly;
+  support fixed R=1/2/3/4 without LoRA or dynamic exit and stamp the new v8 identity.
+- [ ] Run the same 200-step COCO quality diagnostic and full Pass-0-to-Pass-4 test for the
+  v8 damped candidate, checking whether later passes keep moving and beat both Pass 0 and
+  Pass 1.
 - [ ] Change one failed mechanism at a time and rerun the same fixed diagnostic window;
   promote no architecture to full training until a later pass beats both Pass 0 and Pass 1.

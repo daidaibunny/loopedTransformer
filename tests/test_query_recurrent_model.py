@@ -16,6 +16,7 @@ from looped_vl.query_recurrent.config import (
 from looped_vl.query_recurrent.model import (
 	GroupedQueryRecurrentHead,
 	QueryRecurrentHead,
+	_damped_state_update,
 	query_recurrent_diagnostics,
 	recurrent_gradient_group_norms,
 )
@@ -49,6 +50,7 @@ def test_locked_query_recurrent_identity_is_frozen_candidate_no_lora() -> None:
 	assert identity["history_layers"] == DEFAULT_HISTORY_LAYERS
 	assert identity["slot_bridge_loss_weight"] == 0.1
 	assert identity["slot_bridge_scale"] == 0.1
+	assert identity["recurrent_update_scale"] == 0.25
 
 
 @pytest.mark.parametrize("slot_count", [1, 4, 8])
@@ -88,6 +90,26 @@ def test_zero_gated_residual_scale_is_independent_of_projection_magnitude() -> N
 	)
 
 	assert movement.max().item() < 0.12
+
+
+@pytest.mark.parametrize(
+	("recurrent_steps", "expected_scale"),
+	[(1, 1.0), (2, 0.5), (3, 1.0 / 3.0), (4, 0.25)],
+)
+def test_recurrent_state_update_uses_inverse_pass_count_damping(
+	recurrent_steps: int,
+	expected_scale: float,
+) -> None:
+	previous = torch.tensor([[1.0, 3.0]])
+	proposed = torch.tensor([[5.0, 11.0]])
+
+	assert QueryRecurrentConfig(
+		max_recurrent_steps=recurrent_steps,
+	).recurrent_update_scale == pytest.approx(expected_scale)
+	assert torch.allclose(
+		_damped_state_update(previous, proposed, scale=expected_scale),
+		previous + expected_scale * (proposed - previous),
+	)
 
 
 def test_fixed_recurrence_returns_normalized_pass_outputs_and_final_pass() -> None:
@@ -231,7 +253,7 @@ def test_grouped_head_preserves_results_and_avoids_cross_bucket_padding() -> Non
 	"changes,match",
 	[
 		({"num_slots": 2}, "num_slots"),
-		({"max_recurrent_steps": 3}, "max_recurrent_steps"),
+		({"max_recurrent_steps": 5}, "max_recurrent_steps"),
 		({"history_layers": ()}, "history"),
 		({"history_layers": (0, 28)}, "1 through 28"),
 		({"slot_bridge_scale": 0.0}, "slot_bridge_scale"),

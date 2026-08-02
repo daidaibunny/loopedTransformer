@@ -872,7 +872,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--skip-checkpoint-save", action="store_true")
 	parser.add_argument("--skip-final-save", action="store_true")
 	parser.add_argument("--num-slots", type=int, choices=(1, 4, 8), default=8)
-	parser.add_argument("--max-recurrent-steps", type=int, choices=(1, 4), default=4)
+	parser.add_argument("--max-recurrent-steps", type=int, choices=(1, 2, 3, 4), default=4)
 	parser.add_argument("--history-layers", type=_parse_history_layers, default=(7, 14, 21, 28))
 	parser.add_argument("--learning-rate", type=float, default=1e-4)
 	parser.add_argument("--weight-decay", type=float, default=0.01)

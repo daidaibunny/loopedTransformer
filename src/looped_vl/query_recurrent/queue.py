@@ -32,13 +32,13 @@ class QueryRecurrentRun:
 			raise ValueError(f"Unsupported dataset: {self.dataset}")
 		if self.num_slots not in (1, 4, 8):
 			raise ValueError("Formal slot count must be 1, 4, or 8")
-		if self.max_recurrent_steps not in (1, 4):
-			raise ValueError("Formal recurrent steps must be 1 or 4")
+		if self.max_recurrent_steps not in (1, 2, 3, 4):
+			raise ValueError("Formal recurrent steps must be 1, 2, 3, or 4")
 
 
 FORMAL_QUERY_RECURRENT_RUNS = (
-	QueryRecurrentRun("coco_v7_k8_r1_fixed", "coco", 8, 1),
-	QueryRecurrentRun("coco_v7_k8_r4_fixed", "coco", 8, 4),
+	QueryRecurrentRun("coco_v8_k8_r1_fixed", "coco", 8, 1),
+	QueryRecurrentRun("coco_v8_k8_r4_fixed", "coco", 8, 4),
 )
 QUERY_ONLY_LORA_CONTROL_NAME = "coco_query_only_last4_lora_frozen_candidates"
 

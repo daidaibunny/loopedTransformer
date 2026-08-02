@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
-QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v7_candidate"
-QUERY_RECURRENT_PROTOCOL = "single_stage_slot_bridge_supervision_v7_candidate"
+QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v8_candidate"
+QUERY_RECURRENT_PROTOCOL = "single_stage_damped_slot_bridge_v8_candidate"
 MAX_QUERY_RECURRENT_PARAMETERS = 5_000_000
 DEFAULT_HISTORY_LAYERS = (7, 14, 21, 28)
 SUPPORTED_SLOT_COUNTS = (1, 4, 8)
-SUPPORTED_RECURRENT_STEPS = (1, 4)
+SUPPORTED_RECURRENT_STEPS = (1, 2, 3, 4)
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,11 @@ class QueryRecurrentConfig:
 		variant.validate()
 		return variant
 
+	@property
+	def recurrent_update_scale(self) -> float:
+		"""Use inverse-pass damping so R updates form one stable refinement trajectory."""
+		return 1.0 / self.max_recurrent_steps
+
 	def identity(self) -> dict[str, Any]:
 		"""Return every result-affecting architecture field for manifests."""
 		self.validate()
@@ -88,4 +93,5 @@ class QueryRecurrentConfig:
 			"lora_enabled": False,
 			"formal_training_stages": 1,
 			**asdict(self),
+			"recurrent_update_scale": self.recurrent_update_scale,
 		}

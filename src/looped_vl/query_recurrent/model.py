@@ -22,6 +22,20 @@ def parameter_free_rms_norm(values: torch.Tensor) -> torch.Tensor:
 	)
 
 
+def _damped_state_update(
+	previous: torch.Tensor,
+	proposed: torch.Tensor,
+	*,
+	scale: float,
+) -> torch.Tensor:
+	"""Blend one complete Block proposal into the recurrent state without new parameters."""
+	if previous.shape != proposed.shape:
+		raise ValueError("Previous and proposed recurrent states must have matching shapes")
+	if not 0 < scale <= 1:
+		raise ValueError("Recurrent update scale must be in (0, 1]")
+	return torch.lerp(previous, proposed, scale)
+
+
 class RecurrentHistoryLayer(nn.Module):
 	"""Update slots through self-attention, frozen-history attention, and one feed-forward path."""
 
@@ -397,10 +411,15 @@ class QueryRecurrentHead(nn.Module):
 		slot_states = []
 		slot_attention_weights = []
 		for _step in range(self.config.max_recurrent_steps):
-			# Retain the v4 behavior while testing proposal supervision in isolation.
-			slots = slots + self.slot_queries[None].to(slots.dtype)
+			previous_slots = slots
+			proposed_slots = slots + self.slot_queries[None].to(slots.dtype)
 			for layer in self.recurrent_layers:
-				slots = layer(slots, memory, memory_padding_mask)
+				proposed_slots = layer(proposed_slots, memory, memory_padding_mask)
+			slots = _damped_state_update(
+				previous_slots,
+				proposed_slots,
+				scale=self.config.recurrent_update_scale,
+			)
 			fused, bridge, slot_weights = self._read_step(slots, base_embeddings)
 			step_embeddings.append(fused)
 			slot_bridge_embeddings.append(bridge)

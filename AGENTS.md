@@ -8,7 +8,7 @@
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
 - The active diagnostic candidate is
-  `query_only_history_recurrent_no_lora_v7_candidate`. The completed v1 query-only runs,
+  `query_only_history_recurrent_no_lora_v8_candidate`. The completed v1 query-only runs,
   the rejected unbounded-residual v2 diagnostic, the unnormalized zero-gated v3
   diagnostic, and former
   `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue remain historical only;
@@ -27,6 +27,12 @@
   every recurrent pass. Do not use the rejected v5 mechanism that added an RMS-normalized
   slot identity to every attention query; the fixed diagnostic showed more slot collapse,
   not less.
+- Treat every shared Block output as a proposed state and update the recurrent state with
+  pass-count-dependent damping: `state = previous + (proposed - previous) / R`. Therefore
+  R=1 preserves the complete one-pass Block update exactly, while R=2/3/4 distributes one
+  refinement trajectory over 2/3/4 shared-parameter passes. The scale is fixed and adds no
+  parameter. Do not replace it with an exit controller or learned damping in the first
+  version.
 - Use `EOS-conditioned slot attention pooling` after every recurrent pass: the frozen
   final-valid-token embedding selects useful slots with soft attention. Project the
   selected state to a 2,048-dimensional unit slot proposal with Xavier initialization.
@@ -153,8 +159,8 @@
   or training protocol.
 - Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
   and `report.json` must declare architecture
-  `query_only_history_recurrent_no_lora_v7_candidate`, protocol
-  `single_stage_slot_bridge_supervision_v7_candidate`, `backbone_frozen: true`,
+  `query_only_history_recurrent_no_lora_v8_candidate`, protocol
+  `single_stage_damped_slot_bridge_v8_candidate`, `backbone_frozen: true`,
   `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
