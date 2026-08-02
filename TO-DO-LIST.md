@@ -169,6 +169,8 @@
   candidate banks without changing the ordinary two-tower LoRA baseline.
 - [x] Stop the query-only LoRA control at its next rolling checkpoint (step 400), retain
   only that checkpoint, and postpone the control until the recurrent root cause is known.
+- [ ] Complete the resumed COCO query-only last-four-layer LoRA control, then train and
+  test matching GQA Balanced and CLEVR controls serially against immutable candidates.
 - [x] Add pass-wise embedding movement, slot-collapse, slot-attention, and component-gradient
   diagnostics without changing the v2 forward result or loss.
 - [x] Run the 200-step eight-V100 COCO v2 training diagnostic: it showed nearly uniform

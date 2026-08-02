@@ -108,6 +108,27 @@ def _write_coco_rows(root: Path, image_path: Path) -> None:
 	)
 
 
+def _write_answer_row(root: Path, dataset: str, image_path: Path) -> None:
+	(root / "train").mkdir(parents=True)
+	pq.write_table(
+		pa.Table.from_pylist(
+			[
+				{
+					"sample_id": f"{dataset}:0",
+					"dataset": dataset,
+					"split": "train",
+					"image_id": "10",
+					"image_path": str(image_path),
+					"query_text": "What color is the object?",
+					"candidate_text": "red",
+					"positive_id": "answer:red",
+				},
+			],
+		),
+		root / "train" / "part-00000.parquet",
+	)
+
+
 def test_candidate_store_validates_and_preserves_mixed_gallery_order(tmp_path: Path) -> None:
 	image_spec = CandidateBankSpec("coco", "train", "image")
 	text_spec = CandidateBankSpec("coco", "train", "text")
@@ -158,6 +179,32 @@ def test_query_dataset_never_decodes_candidate_only_coco_image(tmp_path: Path) -
 	assert image_query.candidate_reference.item_id == "caption:1"
 	if image_query.image is not None:
 		image_query.image.close()
+
+
+@pytest.mark.parametrize("dataset_name", ("gqa_balanced", "clevr"))
+def test_query_dataset_uses_shared_answer_bank_for_vqa_rows(
+	dataset_name: str,
+	tmp_path: Path,
+) -> None:
+	image_path = tmp_path / "image.png"
+	Image.new("RGB", (4, 3), color=(1, 2, 3)).save(image_path)
+	_write_answer_row(tmp_path, dataset_name, image_path)
+	dataset = QueryOnlyManifestDataset(tmp_path, dataset_name, "train")
+
+	sample = dataset[0]
+
+	assert sample.direction == "visual_question_answering"
+	assert sample.image is sample.query_input["image"]
+	assert sample.query_input["text"] == "What color is the object?"
+	assert sample.candidate_reference.spec == CandidateBankSpec(
+		dataset_name,
+		"shared",
+		"answer",
+	)
+	assert sample.candidate_reference.item_id == "answer:red"
+	assert sample.candidate_reference.positive_id == "answer:red"
+	if sample.image is not None:
+		sample.image.close()
 
 
 def test_candidate_store_rejects_wrong_base_model(tmp_path: Path) -> None:

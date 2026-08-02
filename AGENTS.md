@@ -184,7 +184,11 @@
   baseline. It may read frozen candidate banks, but must declare the query-only control
   scope, keep candidate Qwen forward calls at zero, use the same gallery-isolated objective
   and 32 same-gallery hard negatives as recurrent v2, and never replace the existing
-  baseline. It must target decoder-layer indices 24, 25, 26, and 27 only.
+  baseline. It must target decoder-layer indices 24, 25, 26, and 27 only. Run this control
+  independently on COCO, GQA Balanced, and CLEVR; all three use the same baseline Parquet
+  rows as recurrent training, one full epoch, and no validation. COCO uses its split-specific
+  image/text galleries, while GQA Balanced and CLEVR use their shared training-answer
+  galleries.
 
 ## Verification
 
