@@ -199,13 +199,21 @@
 - [x] Remove the recurrent launcher's eager PEFT import path and configure the V100 image's
   documented protobuf compatibility mode before unavoidable Qwen vision imports reach its
   legacy ONNX package.
-- [ ] Run the same 200-step COCO quality diagnostic for the v5 persistent-identity candidate.
+- [x] Run the same 200-step COCO quality diagnostic for the v5 persistent-identity
+  candidate. It increased slot collapse and remained flat from Pass 1 through Pass 4;
+  its best mAP was 61.3232 versus v4's 61.3239, so reject the mechanism.
 - [x] Add a no-parameter, training-only InfoNCE loss on every 2,048-dimensional unit slot
   proposal so the residual projection and recurrent Block receive gradients while the
   inference residual gate remains initialized to exactly zero; restore the v4 recurrent
   state path so this v6 diagnostic changes only the supervision mechanism relative to v4.
-- [ ] Run the same 200-step COCO quality diagnostic for the v6 slot-proposal-supervised
-  candidate and compare its component gradients and Pass-0-to-Pass-4 metrics with v4/v5.
+- [x] Run the same 200-step COCO quality diagnostic for the v6 slot-proposal-supervised
+  candidate. It amplified recurrent gradients by over two orders of magnitude and reduced
+  slot collapse, but bare-proposal InfoNCE optimized the wrong additive geometry: best
+  mAP was only 61.2706 and later passes degraded.
+- [x] Replace bare-proposal supervision with a training-only fixed-scale bridge equal to
+  `L2Norm(frozen_embedding + 0.1 * proposal)`, preserving the zero-gated inference path,
+  parameter count, data, and all other loss settings in the v7 candidate.
+- [ ] Run the same 200-step COCO quality diagnostic and full Pass-0-to-Pass-4 test for v7.
 - [ ] Use the diagnostic evidence to isolate gradient reachability, slot specialization,
   recurrent update stability, hard-negative freshness, and progressive-loss effectiveness.
 - [ ] Change one failed mechanism at a time and rerun the same fixed diagnostic window;

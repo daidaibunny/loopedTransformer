@@ -8,7 +8,7 @@
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
 - The active diagnostic candidate is
-  `query_only_history_recurrent_no_lora_v6_candidate`. The completed v1 query-only runs,
+  `query_only_history_recurrent_no_lora_v7_candidate`. The completed v1 query-only runs,
   the rejected unbounded-residual v2 diagnostic, the unnormalized zero-gated v3
   diagnostic, and former
   `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue remain historical only;
@@ -30,15 +30,18 @@
 - Use `EOS-conditioned slot attention pooling` after every recurrent pass: the frozen
   final-valid-token embedding selects useful slots with soft attention. Project the
   selected state to a 2,048-dimensional unit slot proposal with Xavier initialization.
-  During training, supervise every proposal against the same frozen candidate gallery
-  with InfoNCE weight 0.1; this gives the slot branch a direct gradient even while the
-  output gate is exactly zero. This is a training-only auxiliary loss and must not create
-  a second inference output. Multiply the proposal by a shared `tanh` scalar gate initialized to
+  During training, form a fixed-scale bridge by L2-normalizing the frozen embedding plus
+  `0.1 * proposal`, then supervise every bridge against the same frozen candidate gallery
+  with InfoNCE weight 0.1. This gives the slot branch a direct first-step gradient in the
+  same additive geometry used at inference. Do not supervise the bare proposal as if it
+  were a complete embedding; the v6 diagnostic proved that objective does not generalize.
+  The bridge is training-only and must not become a reported inference output. Multiply
+  the proposal by a shared `tanh` scalar gate initialized to
   zero. Add that norm-bounded update to the frozen Qwen embedding, then L2-normalize. This
   `zero-gated residual fusion` makes every pass exactly equal to frozen Qwen at
   initialization and makes the gate value an interpretable upper bound on update norm,
   independent of projection width or weight magnitude. The gate receives the first
-  optimizer-step gradient, while the proposal loss trains the residual projection and
+  optimizer-step gradient, while the bridge loss trains the residual projection and
   recurrent path from the first optimizer step.
 - The first v2 uses an explicit fixed recurrent count only. It contains no exit controller,
   exit threshold, halting loss, or compute penalty. Reconsider dynamic exit only after a
@@ -150,16 +153,17 @@
   or training protocol.
 - Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
   and `report.json` must declare architecture
-  `query_only_history_recurrent_no_lora_v6_candidate`, protocol
-  `single_stage_slot_proposal_supervision_v6_candidate`, `backbone_frozen: true`,
+  `query_only_history_recurrent_no_lora_v7_candidate`, protocol
+  `single_stage_slot_bridge_supervision_v7_candidate`, `backbone_frozen: true`,
   `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
 - Recurrent training runs for exactly one epoch. Compute InfoNCE separately inside each
   candidate gallery; a COCO text-to-image query must never use caption candidates, and an
   image-to-text query must never use image candidates. Directly supervise every fused
-  recurrent pass and every unit slot proposal with the same linearly increasing normalized
-  pass weights. Use slot-proposal loss weight 0.1, progressive margin 0.02 with weight 0.1,
+  recurrent pass and every fixed-scale slot bridge with the same linearly increasing
+  normalized pass weights. Use bridge scale 0.1, bridge-loss weight 0.1, progressive
+  margin 0.02 with weight 0.1,
   and mine 32 same-gallery hard negatives from the complete immutable
   bank while excluding every matching `positive_id`. Slot absolute cosine is logged but
   has weight 0.0. All trainable groups use one learning-rate schedule from step one.

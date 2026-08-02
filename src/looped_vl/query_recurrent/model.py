@@ -81,7 +81,7 @@ class QueryRecurrentOutput:
 
 	embeddings: torch.Tensor
 	step_embeddings: tuple[torch.Tensor, ...]
-	slot_proposal_embeddings: tuple[torch.Tensor, ...]
+	slot_bridge_embeddings: tuple[torch.Tensor, ...]
 	slot_states: tuple[torch.Tensor, ...]
 	slot_attention_weights: tuple[torch.Tensor, ...]
 
@@ -224,9 +224,9 @@ def combine_query_recurrent_outputs(
 			)
 			for step in range(step_count)
 		),
-		slot_proposal_embeddings=tuple(
+		slot_bridge_embeddings=tuple(
 			combine_tensors(
-				tuple(output.slot_proposal_embeddings[step] for _indices, output in groups),
+				tuple(output.slot_bridge_embeddings[step] for _indices, output in groups),
 			)
 			for step in range(step_count)
 		),
@@ -365,12 +365,17 @@ class QueryRecurrentHead(nn.Module):
 			p=2,
 			dim=-1,
 		)
+		bridge = F.normalize(
+			base_embeddings.float() + self.config.slot_bridge_scale * proposal,
+			p=2,
+			dim=-1,
+		)
 		fused = F.normalize(
 			base_embeddings.float() + torch.tanh(self.residual_gate.float()) * proposal,
 			p=2,
 			dim=-1,
 		)
-		return fused, proposal, weights
+		return fused, bridge, weights
 
 	def forward(
 		self,
@@ -388,7 +393,7 @@ class QueryRecurrentHead(nn.Module):
 		)
 		slots = self._initialize_slots(memory, memory_padding_mask)
 		step_embeddings = []
-		slot_proposal_embeddings = []
+		slot_bridge_embeddings = []
 		slot_states = []
 		slot_attention_weights = []
 		for _step in range(self.config.max_recurrent_steps):
@@ -396,15 +401,15 @@ class QueryRecurrentHead(nn.Module):
 			slots = slots + self.slot_queries[None].to(slots.dtype)
 			for layer in self.recurrent_layers:
 				slots = layer(slots, memory, memory_padding_mask)
-			fused, proposal, slot_weights = self._read_step(slots, base_embeddings)
+			fused, bridge, slot_weights = self._read_step(slots, base_embeddings)
 			step_embeddings.append(fused)
-			slot_proposal_embeddings.append(proposal)
+			slot_bridge_embeddings.append(bridge)
 			slot_states.append(slots)
 			slot_attention_weights.append(slot_weights)
 		return QueryRecurrentOutput(
 			embeddings=step_embeddings[-1],
 			step_embeddings=tuple(step_embeddings),
-			slot_proposal_embeddings=tuple(slot_proposal_embeddings),
+			slot_bridge_embeddings=tuple(slot_bridge_embeddings),
 			slot_states=tuple(slot_states),
 			slot_attention_weights=tuple(slot_attention_weights),
 		)

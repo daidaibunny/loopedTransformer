@@ -47,7 +47,8 @@ def test_locked_query_recurrent_identity_is_frozen_candidate_no_lora() -> None:
 	assert identity["lora_enabled"] is False
 	assert identity["formal_training_stages"] == 1
 	assert identity["history_layers"] == DEFAULT_HISTORY_LAYERS
-	assert identity["slot_proposal_loss_weight"] == 0.1
+	assert identity["slot_bridge_loss_weight"] == 0.1
+	assert identity["slot_bridge_scale"] == 0.1
 
 
 @pytest.mark.parametrize("slot_count", [1, 4, 8])
@@ -92,16 +93,19 @@ def test_zero_gated_residual_scale_is_independent_of_projection_magnitude() -> N
 def test_fixed_recurrence_returns_normalized_pass_outputs_and_final_pass() -> None:
 	config = QueryRecurrentConfig()
 	head = QueryRecurrentHead(config)
-	output = head(**_inputs(config))
+	inputs = _inputs(config)
+	output = head(**inputs)
 
 	assert len(output.step_embeddings) == 4
-	assert len(output.slot_proposal_embeddings) == 4
+	assert len(output.slot_bridge_embeddings) == 4
 	assert len(output.slot_states) == 4
 	assert len(output.slot_attention_weights) == 4
 	assert torch.allclose(output.embeddings.norm(dim=1), torch.ones(3), atol=1e-5)
 	assert torch.equal(output.embeddings, output.step_embeddings[-1])
-	for proposal in output.slot_proposal_embeddings:
-		assert torch.allclose(proposal.norm(dim=1), torch.ones(3), atol=1e-5)
+	for bridge in output.slot_bridge_embeddings:
+		assert torch.allclose(bridge.norm(dim=1), torch.ones(3), atol=1e-5)
+		movement = torch.linalg.vector_norm(bridge - inputs["base_embeddings"], dim=-1)
+		assert movement.max().item() < 0.12
 	for weights in output.slot_attention_weights:
 		assert torch.allclose(weights.sum(dim=1), torch.ones(3), atol=1e-6)
 
@@ -230,6 +234,7 @@ def test_grouped_head_preserves_results_and_avoids_cross_bucket_padding() -> Non
 		({"max_recurrent_steps": 3}, "max_recurrent_steps"),
 		({"history_layers": ()}, "history"),
 		({"history_layers": (0, 28)}, "1 through 28"),
+		({"slot_bridge_scale": 0.0}, "slot_bridge_scale"),
 	],
 )
 def test_invalid_formal_variants_are_rejected(changes: dict[str, object], match: str) -> None:

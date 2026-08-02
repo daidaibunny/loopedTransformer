@@ -167,7 +167,7 @@ def query_recurrent_loss(
 ) -> dict[str, torch.Tensor]:
 	"""Train every fused pass directly within its own candidate gallery."""
 	losses = multi_query_symmetric_info_nce(
-		(*output.step_embeddings, *output.slot_proposal_embeddings),
+		(*output.step_embeddings, *output.slot_bridge_embeddings),
 		candidate_embeddings,
 		positive_ids,
 		directions,
@@ -176,9 +176,9 @@ def query_recurrent_loss(
 	)
 	step_count = len(output.step_embeddings)
 	step_losses = losses[:step_count]
-	proposal_losses = losses[step_count:]
-	if len(proposal_losses) != step_count:
-		raise RuntimeError("Every recurrent pass must expose one slot proposal embedding")
+	bridge_losses = losses[step_count:]
+	if len(bridge_losses) != step_count:
+		raise RuntimeError("Every recurrent pass must expose one slot bridge embedding")
 	pass_weights = torch.arange(
 		1,
 		step_count + 1,
@@ -187,7 +187,7 @@ def query_recurrent_loss(
 	)
 	pass_weights = pass_weights / pass_weights.sum()
 	direct_pass_loss = (torch.stack(step_losses) * pass_weights).sum()
-	slot_proposal_loss = (torch.stack(proposal_losses) * pass_weights).sum()
+	slot_bridge_loss = (torch.stack(bridge_losses) * pass_weights).sum()
 	main_loss = step_losses[-1]
 	if len(step_losses) > 1:
 		progressive_loss = torch.stack(
@@ -200,14 +200,14 @@ def query_recurrent_loss(
 		progressive_loss = main_loss.new_zeros(())
 	total = (
 		config.direct_pass_loss_weight * direct_pass_loss
-		+ config.slot_proposal_loss_weight * slot_proposal_loss
+		+ config.slot_bridge_loss_weight * slot_bridge_loss
 		+ config.progressive_loss_weight * progressive_loss
 	)
 	return {
 		"loss": total,
 		"main_info_nce": main_loss,
 		"direct_pass_info_nce": direct_pass_loss,
-		"slot_proposal_info_nce": slot_proposal_loss,
+		"slot_bridge_info_nce": slot_bridge_loss,
 		"progressive_margin_loss": progressive_loss,
 		"slot_pairwise_absolute_cosine": slot_pairwise_absolute_cosine(
 			output.slot_states[-1],
@@ -217,7 +217,7 @@ def query_recurrent_loss(
 			for index, loss in enumerate(step_losses, start=1)
 		},
 		**{
-			f"step_{index}_slot_proposal_info_nce": loss
-			for index, loss in enumerate(proposal_losses, start=1)
+			f"step_{index}_slot_bridge_info_nce": loss
+			for index, loss in enumerate(bridge_losses, start=1)
 		},
 	}

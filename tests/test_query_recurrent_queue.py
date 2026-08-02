@@ -77,10 +77,10 @@ def _args(tmp_path: Path) -> SimpleNamespace:
 	)
 
 
-def test_formal_queue_contains_only_the_focused_coco_v6_controls() -> None:
+def test_formal_queue_contains_only_the_focused_coco_v7_controls() -> None:
 	assert [run.name for run in FORMAL_QUERY_RECURRENT_RUNS] == [
-		"coco_v6_k8_r1_fixed",
-		"coco_v6_k8_r4_fixed",
+		"coco_v7_k8_r1_fixed",
+		"coco_v7_k8_r4_fixed",
 	]
 	assert all(run.dataset == "coco" for run in FORMAL_QUERY_RECURRENT_RUNS)
 	assert not any(hasattr(run, "exit_mode") for run in FORMAL_QUERY_RECURRENT_RUNS)
@@ -132,7 +132,8 @@ def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
 	assert train[train.index("--max-checkpoints") + 1] == "1"
 	assert train[train.index("--per-device-batch-size") + 1] == "32"
 	assert train[train.index("--hard-negative-count") + 1] == "32"
-	assert train[train.index("--slot-proposal-loss-weight") + 1] == "0.1"
+	assert train[train.index("--slot-bridge-loss-weight") + 1] == "0.1"
+	assert train[train.index("--slot-bridge-scale") + 1] == "0.1"
 	assert "--exit-mode" not in train
 	assert "--exit-threshold" not in train
 	assert "looped_vl.query_recurrent.evaluate" in test_text
