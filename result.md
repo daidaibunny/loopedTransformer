@@ -33,7 +33,7 @@ the current experiments.
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA, decoder layers 24–27 only | Passed | Passed | Passed | All three datasets |
-| Query-only parallel-world recurrent Block (no LoRA) | Pending | N/A | N/A | No accepted v11 result yet |
+| Query-only parallel-world recurrent Block (no LoRA) | Running | N/A | N/A | No accepted v11 result yet |
 
 The current formal candidate is `query_only_parallel_world_recurrent_no_lora_v11`, with
 protocol `single_stage_antithetic_final_mean_v11`. Candidate
@@ -53,6 +53,10 @@ with every required metric and the change from the in-run Pass 0. COCO uses its
 equal-direction mean for the concise comparison while retaining text-to-image and
 image-to-text details. EXP-004 through EXP-012 remain historical evidence for rejected
 architectures and are excluded from the primary all-model table.
+
+The frozen Qwen query forward runs in FP16. The small trainable recurrent Block and final
+InfoNCE run in FP32 after the first V100 smoke exposed FP16 backward overflow; this changes
+only numerical precision, not the model, loss, data order, or batch definition.
 
 ## Current recurrent parameter accounting
 
@@ -1029,6 +1033,42 @@ training answers.
 
 The final loss was 0.2741, gradient norm was 1.5879, and all 55 logged losses and
 gradients were finite. Final slot pairwise absolute cosine was 0.9934.
+
+## EXP-013S — COCO parallel-world v11 numerical smoke
+
+- Status/time: passed, 2026-08-02T18:38:17Z to 2026-08-02T18:40:45Z. This is a
+  runtime-selection smoke, not a held-out quality result. The full COCO run is currently
+  `Running` and therefore has no metrics in the primary comparison table.
+- Objective: verify the new no-LoRA parallel-world recurrent training path on eight V100s
+  before launching the one-epoch COCO run.
+- Route/node/code: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB,
+  commit `8fa9c101807ec0ea3487e01e043174ed4775380e`.
+- Data: first 512 distributed rows from the unchanged 566,747-row COCO train manifest,
+  whose SHA-256 is
+  `555211fd08280e4e9ab72f040d64b002c1e2aa4b72f6cb6b42427adabb381ff8`;
+  validation was not used. Candidate banks were the immutable COCO train image and text
+  galleries with manifest hashes `9c8fb538574c0687dd415e4dad9212454bcb8d4ff6d0d9e8cda1e6496aed692c`
+  and `9d2f1b0b77ccce7cb9ead1a6f188cb0bfd8f5fb5cdd8ab3d51b794236a02b0c1`.
+- Model/optimization: architecture `query_only_parallel_world_recurrent_no_lora_v11`,
+  four antithetic worlds, four fixed recurrent passes, final-mean-only InfoNCE,
+  4,391,554 trainable parameters, no LoRA, no dynamic exit, candidate-Qwen forward calls
+  zero, seed 42, scaled-dot-product attention, per-device batch 32, global batch 256,
+  learning rate 1e-4, and two optimizer steps. Frozen Qwen ran in FP16; the recurrent
+  Block and InfoNCE ran in FP32.
+- Result: loss was 1.979148 at step 1 and 1.850619 at step 2. Every parameter group had a
+  finite nonzero gradient at both steps. Step-2 observed throughput was 187.61 samples/s;
+  peak allocated memory was 7.38 GiB per rank. No checkpoint or final model was published
+  because smoke publication was explicitly disabled.
+- Failure resolved: the preceding commit `0669280d10e9d25c347e17cc273c26d5524aaa89`
+  stopped before its first optimizer update when FP16 recurrent backward overflowed on all
+  ranks. Isolating only the recurrent Block and loss in FP32 fixed the same batch-32 smoke
+  without changing the architecture or lowering the batch.
+- Evaluation: N/A; this smoke did not run test retrieval and must not be compared by mAP.
+- Evidence: tmux `query_parallel_v11_8fa9c10_20260803`; output
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_parallel_world_v11_8fa9c10_20260803/smoke_coco_v11_p4_r4_final_mean`;
+  queue log
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_parallel_world_v11_8fa9c10_20260803/queue.log`.
 
 ## Required record for every new experiment
 
