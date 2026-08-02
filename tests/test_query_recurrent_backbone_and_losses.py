@@ -11,7 +11,10 @@ from looped_vl.query_recurrent.backbone import (
 	combine_frozen_query_groups,
 )
 from looped_vl.query_recurrent.config import QueryRecurrentConfig
-from looped_vl.query_recurrent.losses import query_recurrent_loss
+from looped_vl.query_recurrent.losses import (
+	multi_query_symmetric_info_nce,
+	query_recurrent_loss,
+)
 from looped_vl.query_recurrent.model import QueryRecurrentHead
 
 
@@ -108,7 +111,7 @@ def test_frozen_histories_can_feed_a_trainable_recurrent_backward() -> None:
 		attention_mask=features.attention_mask,
 		base_embeddings=features.base_embeddings,
 	)
-	output.auxiliary_embeddings[-1].sum().backward()
+	output.slot_states[-1].sum().backward()
 
 	assert head.memory_projection.weight.grad is not None
 	assert model.model.weight.grad is None
@@ -166,7 +169,8 @@ def test_query_recurrent_loss_backpropagates_without_candidate_gradients() -> No
 	losses = query_recurrent_loss(
 		output,
 		candidates,
-		["same", "same", "different"],
+		["first", "second", "different"],
+		["text_to_image", "text_to_image", "image_to_text"],
 		config,
 	)
 	losses["loss"].backward()
@@ -175,6 +179,48 @@ def test_query_recurrent_loss_backpropagates_without_candidate_gradients() -> No
 	assert candidates.grad is None
 	assert head.output_projection.weight.grad is not None
 	assert head.output_projection.weight.grad.abs().sum() > 0
-	attention = head.recurrent_layers[0].self_attention
-	assert attention.in_proj_weight.grad is not None
-	assert attention.in_proj_weight.grad.abs().sum() > 0
+
+
+def test_contrastive_loss_never_uses_candidates_from_another_gallery() -> None:
+	queries = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+	candidates = torch.tensor([[1.0, 0.0], [1.0, 0.0]])
+
+	(loss,) = multi_query_symmetric_info_nce(
+		(queries,),
+		candidates,
+		["image:1", "image:2"],
+		["text_to_image", "image_to_text"],
+		temperature=1.0,
+	)
+
+	assert torch.allclose(loss, torch.zeros_like(loss))
+
+
+def test_every_fused_pass_receives_direct_retrieval_gradient() -> None:
+	config = QueryRecurrentConfig(num_slots=4, exit_mode="fixed")
+	head = QueryRecurrentHead(config)
+	history = torch.randn(4, 4, 5, 2048)
+	mask = torch.ones(4, 5, dtype=torch.long)
+	base = torch.nn.functional.normalize(torch.randn(4, 2048), dim=-1)
+	candidates = torch.nn.functional.normalize(torch.randn(4, 2048), dim=-1)
+	output = head(
+		history_hidden_states=history,
+		attention_mask=mask,
+		base_embeddings=base,
+	)
+	for embedding in output.step_embeddings:
+		embedding.retain_grad()
+
+	losses = query_recurrent_loss(
+		output,
+		candidates,
+		["a", "b", "c", "d"],
+		["text_to_image"] * 4,
+		config,
+	)
+	losses["loss"].backward()
+
+	assert torch.isfinite(losses["direct_pass_info_nce"])
+	for embedding in output.step_embeddings:
+		assert embedding.grad is not None
+		assert embedding.grad.abs().sum() > 0

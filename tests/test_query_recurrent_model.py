@@ -58,6 +58,8 @@ def test_zero_gate_starts_every_recurrent_step_at_the_frozen_embedding() -> None
 	for embedding in output.step_embeddings:
 		assert torch.allclose(embedding, inputs["base_embeddings"], atol=1e-6)
 	assert torch.allclose(output.embeddings, inputs["base_embeddings"], atol=1e-6)
+	assert torch.count_nonzero(head.output_projection.weight) == 0
+	assert not hasattr(head, "residual_gate")
 
 
 def test_dynamic_exit_returns_normalized_step_outputs_and_valid_halting_weights() -> None:
@@ -66,7 +68,6 @@ def test_dynamic_exit_returns_normalized_step_outputs_and_valid_halting_weights(
 	output = head(**_inputs(config))
 
 	assert len(output.step_embeddings) == 4
-	assert len(output.auxiliary_embeddings) == 4
 	assert len(output.slot_states) == 4
 	assert len(output.slot_attention_weights) == 4
 	assert output.exit_probabilities.shape == (3, 4)
@@ -126,7 +127,7 @@ def test_grouped_head_preserves_results_and_avoids_cross_bucket_padding() -> Non
 	assert torch.allclose(output.step_embeddings[-1][1], short_output.step_embeddings[-1][0])
 	assert torch.allclose(output.step_embeddings[-1][0], long_output.step_embeddings[-1][0])
 	assert torch.allclose(output.step_embeddings[-1][2], long_output.step_embeddings[-1][1])
-	output.auxiliary_embeddings[-1].sum().backward()
+	output.slot_states[-1].sum().backward()
 	assert head.memory_projection.weight.grad is not None
 
 

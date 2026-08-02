@@ -41,26 +41,20 @@ def _args(tmp_path: Path) -> SimpleNamespace:
 	)
 
 
-def test_formal_queue_contains_the_locked_eight_experiments() -> None:
+def test_formal_queue_contains_only_the_focused_coco_v2_controls() -> None:
 	assert [run.name for run in FORMAL_QUERY_RECURRENT_RUNS] == [
-		"coco_k8_r1_fixed",
-		"coco_k8_r4_fixed",
-		"coco_k8_r4_dynamic",
-		"coco_k1_r4_dynamic",
-		"coco_k4_r4_dynamic",
-		"coco_k8_r4_dynamic_layer28",
-		"gqa_k8_r4_dynamic",
-		"clevr_k8_r4_dynamic",
+		"coco_v2_k8_r1_fixed",
+		"coco_v2_k8_r4_fixed",
 	]
-	assert FORMAL_QUERY_RECURRENT_RUNS[5].history_layers == (28,)
-	assert sum(run.dataset == "coco" for run in FORMAL_QUERY_RECURRENT_RUNS) == 6
+	assert all(run.dataset == "coco" for run in FORMAL_QUERY_RECURRENT_RUNS)
+	assert all(run.exit_mode == "fixed" for run in FORMAL_QUERY_RECURRENT_RUNS)
 
 
 def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
 	tmp_path: Path,
 ) -> None:
 	args = _args(tmp_path)
-	run = FORMAL_QUERY_RECURRENT_RUNS[2]
+	run = FORMAL_QUERY_RECURRENT_RUNS[1]
 	train = build_training_command(run, args=args, output_dir=tmp_path / "train")
 	test = build_evaluation_command(
 		run,
@@ -75,6 +69,7 @@ def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
 	assert train[train.index("--epochs") + 1] == "1"
 	assert train[train.index("--max-checkpoints") + 1] == "1"
 	assert train[train.index("--per-device-batch-size") + 1] == "32"
+	assert train[train.index("--hard-negative-count") + 1] == "32"
 	assert "looped_vl.query_recurrent.evaluate" in test_text
 	assert test[test.index("--recurrent-checkpoint") + 1].endswith(
 		"query_recurrent_model.pt",

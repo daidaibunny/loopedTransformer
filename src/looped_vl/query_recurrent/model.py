@@ -81,7 +81,6 @@ class QueryRecurrentOutput:
 	embeddings: torch.Tensor
 	soft_embeddings: torch.Tensor
 	step_embeddings: tuple[torch.Tensor, ...]
-	auxiliary_embeddings: tuple[torch.Tensor, ...]
 	slot_states: tuple[torch.Tensor, ...]
 	exit_probabilities: torch.Tensor
 	halting_weights: torch.Tensor
@@ -119,12 +118,6 @@ def combine_query_recurrent_outputs(
 		step_embeddings=tuple(
 			combine_tensors(
 				tuple(output.step_embeddings[step] for _indices, output in groups),
-			)
-			for step in range(step_count)
-		),
-		auxiliary_embeddings=tuple(
-			combine_tensors(
-				tuple(output.auxiliary_embeddings[step] for _indices, output in groups),
 			)
 			for step in range(step_count)
 		),
@@ -184,7 +177,6 @@ class QueryRecurrentHead(nn.Module):
 		)
 		self.output_norm = nn.LayerNorm(dimension)
 		self.output_projection = nn.Linear(dimension, config.hidden_size, bias=False)
-		self.residual_gate = nn.Parameter(torch.zeros(config.hidden_size))
 		self.exit_controller = nn.Sequential(
 			nn.LayerNorm(dimension),
 			nn.Linear(dimension, dimension // 4),
@@ -204,7 +196,9 @@ class QueryRecurrentHead(nn.Module):
 		generator.manual_seed(self.config.seed)
 		with torch.no_grad():
 			self.layer_embeddings.normal_(mean=0.0, std=0.02, generator=generator)
-			self.slot_queries.normal_(mean=0.0, std=0.02, generator=generator)
+			nn.init.orthogonal_(self.slot_queries)
+			self.slot_queries.mul_(self.config.state_size**0.5 * 0.02)
+			self.output_projection.weight.zero_()
 			final_exit_layer = self.exit_controller[-1]
 			if not isinstance(final_exit_layer, nn.Linear):
 				raise TypeError("Exit controller must end with a linear layer")
@@ -269,7 +263,7 @@ class QueryRecurrentHead(nn.Module):
 		self,
 		slots: torch.Tensor,
 		base_embeddings: torch.Tensor,
-	) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+	) -> tuple[torch.Tensor, torch.Tensor]:
 		condition = parameter_free_rms_norm(
 			self.memory_projection(base_embeddings.to(slots.dtype)),
 		)
@@ -278,14 +272,9 @@ class QueryRecurrentHead(nn.Module):
 		scores = scores / (self.config.state_size**0.5)
 		weights = torch.softmax(scores, dim=1)
 		pooled = torch.einsum("bk,bkd->bd", weights.to(slots.dtype), slots)
-		residual = F.normalize(
-			self.output_projection(self.output_norm(pooled)).float(),
-			p=2,
-			dim=-1,
-		)
-		gate = torch.tanh(self.residual_gate.float())
-		fused = F.normalize(base_embeddings.float() + gate * residual, p=2, dim=-1)
-		return fused, residual, weights
+		residual = self.output_projection(self.output_norm(pooled)).float()
+		fused = F.normalize(base_embeddings.float() + residual, p=2, dim=-1)
+		return fused, weights
 
 	def _halting_weights(self, probabilities: torch.Tensor) -> torch.Tensor:
 		remaining = torch.ones_like(probabilities[:, 0])
@@ -315,16 +304,17 @@ class QueryRecurrentHead(nn.Module):
 		)
 		slots = self._initialize_slots(memory, memory_padding_mask)
 		step_embeddings = []
-		auxiliary_embeddings = []
 		slot_states = []
 		exit_probabilities = []
 		slot_attention_weights = []
 		for _step in range(self.config.max_recurrent_steps):
+			# Re-inject the learned slot identities at every shared update so recurrent
+			# attention cannot erase all slot distinctions after initialization.
+			slots = slots + self.slot_queries[None].to(slots.dtype)
 			for layer in self.recurrent_layers:
 				slots = layer(slots, memory, memory_padding_mask)
-			fused, auxiliary, slot_weights = self._read_step(slots, base_embeddings)
+			fused, slot_weights = self._read_step(slots, base_embeddings)
 			step_embeddings.append(fused)
-			auxiliary_embeddings.append(auxiliary)
 			slot_states.append(slots)
 			exit_probabilities.append(torch.sigmoid(self.exit_controller(slots.mean(dim=1))))
 			slot_attention_weights.append(slot_weights)
@@ -363,7 +353,6 @@ class QueryRecurrentHead(nn.Module):
 			embeddings=embeddings,
 			soft_embeddings=soft_embeddings,
 			step_embeddings=tuple(step_embeddings),
-			auxiliary_embeddings=tuple(auxiliary_embeddings),
 			slot_states=tuple(slot_states),
 			exit_probabilities=probabilities,
 			halting_weights=halting_weights,

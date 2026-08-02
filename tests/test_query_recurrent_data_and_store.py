@@ -170,3 +170,35 @@ def test_candidate_store_rejects_wrong_base_model(tmp_path: Path) -> None:
 			spec=spec,
 			model_checkpoint_sha256="wrong",
 		)
+
+
+def test_candidate_store_mines_same_gallery_non_positive_neighbors(tmp_path: Path) -> None:
+	spec = CandidateBankSpec("coco", "train", "text")
+	_write_ready_bank(
+		tmp_path,
+		spec,
+		[("positive", "image:1"), ("hard", "image:2"), ("easy", "image:3")],
+	)
+	store = ImmutableCandidateStore(
+		candidate_root=tmp_path,
+		spec=spec,
+		model_checkpoint_sha256="model-hash",
+	)
+	values = torch.zeros(3, 2048, dtype=torch.float16)
+	values[0, 0] = 1.0
+	values[1, :2] = torch.tensor([0.9, 0.1], dtype=torch.float16)
+	values[2, 0] = -1.0
+	values[1] = torch.nn.functional.normalize(values[1].float(), dim=0).half()
+	store._shard_tensors = [values]
+	query = torch.zeros(1, 2048)
+	query[0, 0] = 1.0
+
+	embeddings, item_indices = store.mine_hard_negatives(
+		query,
+		positive_ids=["image:1"],
+		count=1,
+		device=torch.device("cpu"),
+	)
+
+	assert item_indices.tolist() == [[1]]
+	assert torch.equal(embeddings[0, 0], values[1])

@@ -8,9 +8,9 @@
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
 - The active recurrent architecture is
-  `query_only_history_recurrent_no_lora_v1`. The former
+  `query_only_history_recurrent_no_lora_v2`. The completed v1 query-only runs and former
   `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue is canceled and remains
-  historical only; never launch it as a current experiment.
+  historical only; never launch either version as a current experiment.
 - Use one training stage and one full-data epoch. All trainable recurrent parameters are
   active from the first optimizer step; do not use validation or checkpoint selection.
 - The completely frozen Qwen query tower runs exactly once. It exposes the token states
@@ -23,16 +23,16 @@
   and R=1/4.
 - Use `EOS-conditioned slot attention pooling` after every recurrent pass: the frozen
   final-valid-token embedding selects useful slots with soft attention. Project the
-  selected state to 2,048 dimensions, apply `zero-gated residual fusion` with the frozen
-  Qwen embedding, then L2-normalize. The zero gate must make every pass exactly equal to
-  frozen Qwen at initialization.
-- Dynamic exit uses a shared sample-dependent controller and differentiable stick-breaking
-  weights during training. At test time, select the first pass whose exit probability is
-  at least 0.5, forcing the last pass as a fallback. Fixed-exit variants remain required
-  controls.
-- Train only the slot initializer, shared recurrent Block, history projection, readout,
-  zero gate, and exit controller. Enforce the 5,000,000-parameter limit. Exact current
-  counts are 4,876,305 for K=1, 4,877,169 for K=4, and 4,878,321 for K=8.
+  selected state to 2,048 dimensions with a zero-initialized residual projection, add it
+  to the frozen Qwen embedding, then L2-normalize. The projection must make every pass
+  exactly equal to frozen Qwen at initialization while allowing the main retrieval loss
+  to update the full output projection on the first optimizer step.
+- Dynamic exit remains an implementation capability, but it is not part of the first v2
+  quality runs. Establish a measurable fixed Pass-4 gain over fixed Pass 1 before training
+  or claiming dynamic compute savings.
+- Train only the slot initializer, shared recurrent Block, history projection,
+  zero-initialized residual readout, and exit controller. Enforce the 5,000,000-parameter
+  limit. Exact v2 counts are 4,874,257 for K=1, 4,875,121 for K=4, and 4,876,273 for K=8.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
   only under experiment-specific output directories.
 - Always call the single-query attention from the final valid token over latent slots
@@ -135,17 +135,23 @@
   optimizer checkpoint.
 - Reject recurrent checkpoints containing LoRA parameters or any superseded architecture
   or training protocol.
-- Every recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata, and
-  `report.json` must declare architecture
-  `query_only_history_recurrent_no_lora_v1`, protocol
-  `single_stage_frozen_candidate_dynamic_exit_v1`, `backbone_frozen: true`,
+- Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
+  and `report.json` must declare architecture
+  `query_only_history_recurrent_no_lora_v2`, protocol
+  `single_stage_directional_hard_negative_pass_supervision_v2`, `backbone_frozen: true`,
   `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
-- Recurrent training runs for exactly one epoch with final retrieval InfoNCE weight 1.0,
-  mean pass-wise state-only auxiliary InfoNCE weight 0.1, progressive non-degradation
-  weight 0.1, and dynamic compute penalty weight 0.001. Slot absolute cosine is logged
-  but has weight 0.0. All trainable groups use one learning-rate schedule from step one.
+- Recurrent training runs for exactly one epoch. Compute InfoNCE separately inside each
+  candidate gallery; a COCO text-to-image query must never use caption candidates, and an
+  image-to-text query must never use image candidates. Directly supervise every fused
+  recurrent pass with linearly increasing normalized pass weights. Use progressive margin
+  0.02 with weight 0.1 and mine 32 same-gallery hard negatives from the complete immutable
+  bank while excluding every matching `positive_id`. Slot absolute cosine is logged but
+  has weight 0.0. All trainable groups use one learning-rate schedule from step one.
+- The last-four-layer query-only LoRA control is separate from the ordinary two-tower LoRA
+  baseline. It may read frozen candidate banks, but must declare the query-only control
+  scope, keep candidate Qwen forward calls at zero, and never replace the existing baseline.
 
 ## Verification
 

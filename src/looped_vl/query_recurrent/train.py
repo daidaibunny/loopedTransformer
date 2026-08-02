@@ -305,6 +305,23 @@ def _encode_query_batch(
 	return tuple(features)
 
 
+def _restore_base_embeddings(
+	feature_groups: tuple[
+		tuple[tuple[int, ...], torch.Tensor, torch.Tensor, torch.Tensor],
+		...,
+	],
+	*,
+	total_rows: int,
+) -> torch.Tensor:
+	"""Restore frozen query embeddings from padding groups to logical batch order."""
+	flat_indices = tuple(index for group in feature_groups for index in group[0])
+	if tuple(sorted(flat_indices)) != tuple(range(total_rows)):
+		raise ValueError("Frozen feature groups must cover every logical query row")
+	values = torch.cat(tuple(group[3] for group in feature_groups), dim=0)
+	restore_order = torch.argsort(torch.tensor(flat_indices, device=values.device))
+	return values.index_select(0, restore_order)
+
+
 def _reduce_metrics(
 	accumulator: dict[str, torch.Tensor],
 	*,
@@ -396,9 +413,12 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		exit_mode=args.exit_mode,
 		exit_threshold=args.exit_threshold,
 		temperature=args.temperature,
-		auxiliary_loss_weight=args.auxiliary_loss_weight,
+		direct_pass_loss_weight=args.direct_pass_loss_weight,
+		dynamic_loss_weight=args.dynamic_loss_weight,
 		progressive_loss_weight=args.progressive_loss_weight,
+		progressive_margin=args.progressive_margin,
 		compute_penalty_weight=args.compute_penalty_weight,
+		hard_negative_count=args.hard_negative_count,
 		seed=args.seed,
 	)
 	config.validate()
@@ -458,6 +478,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	)
 	for spec in required_specs:
 		candidate_stores.get(spec)
+	resolved_hard_negative_count = candidate_stores.resolved_hard_negative_count(
+		required_specs,
+		config.hard_negative_count,
+	)
 
 	processor = BaselineInputProcessor.from_pretrained(
 		model_root,
@@ -592,6 +616,12 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"max_checkpoints": 1,
 		"no_validation": True,
 		"candidate_qwen_forward_calls": 0,
+		"hard_negative_mining": {
+			"source": "full_immutable_same_gallery_candidate_bank",
+			"requested_count": config.hard_negative_count,
+			"resolved_count": resolved_hard_negative_count,
+			"positive_exclusion": "all_matching_positive_id",
+		},
 		"query_qwen_forward_calls_per_batch": 1,
 		"trainable_parameter_count": head.trainable_parameter_count,
 		"base_checkpoint_sha256_before": base_hash,
@@ -643,6 +673,16 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 				batch["candidate_references"],
 				device=device,
 			).detach()
+			base_embeddings = _restore_base_embeddings(
+				feature_groups,
+				total_rows=len(batch["positive_ids"]),
+			)
+			hard_negative_embeddings = candidate_stores.mine_hard_negatives(
+				base_embeddings.detach(),
+				batch["candidate_references"],
+				count=resolved_hard_negative_count,
+				device=device,
+			)
 			with torch.autocast(device_type="cuda", dtype=torch.float16):
 				output = ddp_head(
 					feature_groups=feature_groups,
@@ -652,7 +692,9 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 					output,
 					candidate_embeddings,
 					batch["positive_ids"],
+					batch["directions"],
 					config,
+					hard_negative_embeddings=hard_negative_embeddings,
 				)
 			scaler.scale(losses["loss"]).backward()
 			scaler.unscale_(optimizer)
@@ -823,15 +865,18 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--num-slots", type=int, choices=(1, 4, 8), default=8)
 	parser.add_argument("--max-recurrent-steps", type=int, choices=(1, 4), default=4)
 	parser.add_argument("--history-layers", type=_parse_history_layers, default=(7, 14, 21, 28))
-	parser.add_argument("--exit-mode", choices=("fixed", "dynamic"), default="dynamic")
+	parser.add_argument("--exit-mode", choices=("fixed", "dynamic"), default="fixed")
 	parser.add_argument("--exit-threshold", type=float, default=0.5)
 	parser.add_argument("--learning-rate", type=float, default=1e-4)
 	parser.add_argument("--weight-decay", type=float, default=0.01)
 	parser.add_argument("--warmup-ratio", type=float, default=0.02)
 	parser.add_argument("--temperature", type=float, default=0.02)
-	parser.add_argument("--auxiliary-loss-weight", type=float, default=0.1)
+	parser.add_argument("--direct-pass-loss-weight", type=float, default=1.0)
+	parser.add_argument("--dynamic-loss-weight", type=float, default=0.5)
 	parser.add_argument("--progressive-loss-weight", type=float, default=0.1)
-	parser.add_argument("--compute-penalty-weight", type=float, default=0.001)
+	parser.add_argument("--progressive-margin", type=float, default=0.02)
+	parser.add_argument("--compute-penalty-weight", type=float, default=0.01)
+	parser.add_argument("--hard-negative-count", type=int, default=32)
 	parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
 	parser.add_argument("--initial-gradient-scale", type=float, default=4096.0)
 	parser.add_argument("--seed", type=int, default=42)

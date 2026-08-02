@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
-QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v1"
-QUERY_RECURRENT_PROTOCOL = "single_stage_frozen_candidate_dynamic_exit_v1"
+QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v2"
+QUERY_RECURRENT_PROTOCOL = "single_stage_directional_hard_negative_pass_supervision_v2"
 MAX_QUERY_RECURRENT_PARAMETERS = 5_000_000
 DEFAULT_HISTORY_LAYERS = (7, 14, 21, 28)
 SUPPORTED_SLOT_COUNTS = (1, 4, 8)
@@ -26,12 +26,15 @@ class QueryRecurrentConfig:
 	num_slots: int = 8
 	max_recurrent_steps: int = 4
 	history_layers: tuple[int, ...] = DEFAULT_HISTORY_LAYERS
-	exit_mode: str = "dynamic"
+	exit_mode: str = "fixed"
 	exit_threshold: float = 0.5
 	temperature: float = 0.02
-	auxiliary_loss_weight: float = 0.1
+	direct_pass_loss_weight: float = 1.0
+	dynamic_loss_weight: float = 0.5
 	progressive_loss_weight: float = 0.1
-	compute_penalty_weight: float = 0.001
+	progressive_margin: float = 0.02
+	compute_penalty_weight: float = 0.01
+	hard_negative_count: int = 32
 	seed: int = 42
 
 	def validate(self) -> None:
@@ -63,12 +66,18 @@ class QueryRecurrentConfig:
 		if self.temperature <= 0:
 			raise ValueError("temperature must be positive")
 		for name in (
-			"auxiliary_loss_weight",
+			"direct_pass_loss_weight",
+			"dynamic_loss_weight",
 			"progressive_loss_weight",
+			"progressive_margin",
 			"compute_penalty_weight",
 		):
 			if getattr(self, name) < 0:
 				raise ValueError(f"{name} cannot be negative")
+		if self.direct_pass_loss_weight == 0:
+			raise ValueError("direct_pass_loss_weight must be positive")
+		if self.hard_negative_count < 0:
+			raise ValueError("hard_negative_count cannot be negative")
 
 	def with_variant(self, **changes: Any) -> QueryRecurrentConfig:
 		"""Return one validated immutable ablation variant."""

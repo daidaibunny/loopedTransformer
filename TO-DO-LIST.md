@@ -157,3 +157,15 @@
   to 2,048 and retaining only the final step-2,735 checkpoint.
 - [x] Train and test all eight query-only recurrent runs after all candidate banks pass
   checksum validation; record Pass 0 through Pass 4 and dynamic-exit metrics in result.md.
+- [x] Diagnose the completed COCO v1 runs: verify the data and banks, quantify slot collapse,
+  ineffective recurrence/history/exit controls, zero-gate gradient starvation, mixed-gallery
+  negatives, and the much smaller embedding movement than last-four-layer LoRA.
+- [x] Implement the v2 direction-isolated InfoNCE, direct supervision for every fused pass,
+  progressive improvement margin, zero-initialized full residual projection, recurrent slot
+  identity injection, and full-bank same-gallery hard-negative mining.
+- [ ] Implement and test the last-four-layer query-only LoRA control against the same frozen
+  candidate banks without changing the ordinary two-tower LoRA baseline.
+- [ ] Run one minimal eight-V100 v2 smoke, measuring hard-negative memory/throughput, every
+  rank, finite gradients, Pass-1/Pass-4 loss, slot cosine, and exact candidate exclusion.
+- [ ] Only if the smoke is healthy, run the focused full-COCO v2 fixed Pass-1 and fixed Pass-4
+  experiments; do not add dynamic exit, slot-count, history, GQA, or CLEVR jobs beforehand.

@@ -1,4 +1,4 @@
-"""Run one query-only recurrent smoke and eight formal ablations serially."""
+"""Run the focused COCO v2 recurrent repair controls serially."""
 
 from __future__ import annotations
 
@@ -41,21 +41,8 @@ class QueryRecurrentRun:
 
 
 FORMAL_QUERY_RECURRENT_RUNS = (
-	QueryRecurrentRun("coco_k8_r1_fixed", "coco", 8, 1, "fixed"),
-	QueryRecurrentRun("coco_k8_r4_fixed", "coco", 8, 4, "fixed"),
-	QueryRecurrentRun("coco_k8_r4_dynamic", "coco", 8, 4, "dynamic"),
-	QueryRecurrentRun("coco_k1_r4_dynamic", "coco", 1, 4, "dynamic"),
-	QueryRecurrentRun("coco_k4_r4_dynamic", "coco", 4, 4, "dynamic"),
-	QueryRecurrentRun(
-		"coco_k8_r4_dynamic_layer28",
-		"coco",
-		8,
-		4,
-		"dynamic",
-		history_layers=(28,),
-	),
-	QueryRecurrentRun("gqa_k8_r4_dynamic", "gqa_balanced", 8, 4, "dynamic"),
-	QueryRecurrentRun("clevr_k8_r4_dynamic", "clevr", 8, 4, "dynamic"),
+	QueryRecurrentRun("coco_v2_k8_r1_fixed", "coco", 8, 1, "fixed"),
+	QueryRecurrentRun("coco_v2_k8_r4_fixed", "coco", 8, 4, "fixed"),
 )
 
 
@@ -139,6 +126,14 @@ def build_training_command(
 		"3",
 		"--min-visual-bucket-size",
 		"8",
+		"--hard-negative-count",
+		"32",
+		"--direct-pass-loss-weight",
+		"1.0",
+		"--progressive-loss-weight",
+		"0.1",
+		"--progressive-margin",
+		"0.02",
 	]
 	if resume_checkpoint is not None:
 		command.extend(["--resume-checkpoint", str(resume_checkpoint)])

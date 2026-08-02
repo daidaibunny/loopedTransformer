@@ -38,20 +38,42 @@ def _directional_loss(
 	local_embeddings: torch.Tensor,
 	global_targets: torch.Tensor,
 	positive_mask: torch.Tensor,
+	valid_target_mask: torch.Tensor,
 	*,
 	temperature: float,
+	hard_negative_embeddings: torch.Tensor | None = None,
 ) -> torch.Tensor:
 	logits = local_embeddings.float() @ global_targets.float().T / temperature
+	logits = logits.masked_fill(~valid_target_mask, float("-inf"))
 	positive_logits = logits.masked_fill(~positive_mask, float("-inf"))
-	return (torch.logsumexp(logits, dim=1) - torch.logsumexp(positive_logits, dim=1)).mean()
+	denominator_logits = logits
+	if hard_negative_embeddings is not None:
+		if (
+			hard_negative_embeddings.ndim != 3
+			or hard_negative_embeddings.shape[0] != local_embeddings.shape[0]
+			or hard_negative_embeddings.shape[2] != local_embeddings.shape[1]
+		):
+			raise ValueError("Hard-negative embeddings must have shape [batch, negatives, hidden]")
+		hard_logits = torch.einsum(
+			"bd,bnd->bn",
+			local_embeddings.float(),
+			hard_negative_embeddings.float(),
+		) / temperature
+		denominator_logits = torch.cat((logits, hard_logits), dim=1)
+	return (
+		torch.logsumexp(denominator_logits, dim=1)
+		- torch.logsumexp(positive_logits, dim=1)
+	).mean()
 
 
 def multi_query_symmetric_info_nce(
 	query_embeddings: Sequence[torch.Tensor],
 	candidate_embeddings: torch.Tensor,
 	positive_ids: Sequence[str],
+	directions: Sequence[str],
 	*,
 	temperature: float,
+	hard_negative_embeddings: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, ...]:
 	"""Gather candidates and all recurrent query outputs exactly once per microbatch."""
 	if not query_embeddings:
@@ -61,17 +83,39 @@ def multi_query_symmetric_info_nce(
 	batch_size, hidden_size = candidate_embeddings.shape
 	if len(positive_ids) != batch_size:
 		raise ValueError("positive_ids must contain one identifier per local candidate")
+	if len(directions) != batch_size:
+		raise ValueError("directions must contain one gallery identity per local candidate")
 	if temperature <= 0:
 		raise ValueError("temperature must be positive")
 	if any(tensor.shape != (batch_size, hidden_size) for tensor in query_embeddings):
 		raise ValueError("Every query tensor must match candidate shape")
 	local_ids = tuple(str(identifier) for identifier in positive_ids)
 	global_ids = _gather_ids(local_ids)
+	local_directions = tuple(str(direction) for direction in directions)
+	global_directions = _gather_ids(local_directions)
 	global_candidates = _gather_candidates(candidate_embeddings)
 	local_query_stack = torch.stack(tuple(query_embeddings), dim=0)
 	global_query_stack = _gather_query_stack(local_query_stack)
+	valid_target_mask = torch.tensor(
+		[
+			[local_direction == global_direction for global_direction in global_directions]
+			for local_direction in local_directions
+		],
+		device=candidate_embeddings.device,
+		dtype=torch.bool,
+	)
 	positive_mask = torch.tensor(
-		[[local_id == global_id for global_id in global_ids] for local_id in local_ids],
+		[
+			[
+				local_id == global_id and local_direction == global_direction
+				for global_id, global_direction in zip(
+					global_ids,
+					global_directions,
+					strict=True,
+				)
+			]
+			for local_id, local_direction in zip(local_ids, local_directions, strict=True)
+		],
 		device=candidate_embeddings.device,
 		dtype=torch.bool,
 	)
@@ -83,12 +127,15 @@ def multi_query_symmetric_info_nce(
 			local_queries,
 			global_candidates,
 			positive_mask,
+			valid_target_mask,
 			temperature=temperature,
+			hard_negative_embeddings=hard_negative_embeddings,
 		)
 		candidate_loss = _directional_loss(
 			candidate_embeddings,
 			global_query_stack[query_index],
 			positive_mask,
+			valid_target_mask,
 			temperature=temperature,
 		)
 		losses.append(0.5 * (query_loss + candidate_loss))
@@ -113,32 +160,39 @@ def query_recurrent_loss(
 	output: QueryRecurrentOutput,
 	candidate_embeddings: torch.Tensor,
 	positive_ids: Sequence[str],
+	directions: Sequence[str],
 	config: QueryRecurrentConfig,
+	*,
+	hard_negative_embeddings: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
-	"""Train retrieval, recurrent improvement, slot signal, and differentiable exit jointly."""
-	main_embeddings = (
-		output.soft_embeddings if config.exit_mode == "dynamic" else output.embeddings
-	)
-	queries = (
-		main_embeddings,
-		*output.step_embeddings,
-		*output.auxiliary_embeddings,
-	)
+	"""Train every fused pass directly within its own candidate gallery."""
+	queries = (*output.step_embeddings,)
+	if config.exit_mode == "dynamic":
+		queries = (*queries, output.soft_embeddings)
 	losses = multi_query_symmetric_info_nce(
 		queries,
 		candidate_embeddings,
 		positive_ids,
+		directions,
 		temperature=config.temperature,
+		hard_negative_embeddings=hard_negative_embeddings,
 	)
 	step_count = len(output.step_embeddings)
-	main_loss = losses[0]
-	step_losses = losses[1 : 1 + step_count]
-	auxiliary_losses = losses[1 + step_count :]
-	auxiliary_loss = torch.stack(auxiliary_losses).mean()
+	step_losses = losses[:step_count]
+	pass_weights = torch.arange(
+		1,
+		step_count + 1,
+		device=step_losses[0].device,
+		dtype=step_losses[0].dtype,
+	)
+	pass_weights = pass_weights / pass_weights.sum()
+	direct_pass_loss = (torch.stack(step_losses) * pass_weights).sum()
+	dynamic_loss = losses[-1] if config.exit_mode == "dynamic" else direct_pass_loss * 0.0
+	main_loss = dynamic_loss if config.exit_mode == "dynamic" else step_losses[-1]
 	if len(step_losses) > 1:
 		progressive_loss = torch.stack(
 			[
-				torch.relu(current - previous)
+				torch.relu(current - previous + config.progressive_margin)
 				for previous, current in zip(step_losses[:-1], step_losses[1:], strict=True)
 			],
 		).mean()
@@ -148,8 +202,8 @@ def query_recurrent_loss(
 	if config.exit_mode != "dynamic":
 		compute_penalty = compute_penalty * 0.0
 	total = (
-		main_loss
-		+ config.auxiliary_loss_weight * auxiliary_loss
+		config.direct_pass_loss_weight * direct_pass_loss
+		+ config.dynamic_loss_weight * dynamic_loss
 		+ config.progressive_loss_weight * progressive_loss
 		+ config.compute_penalty_weight * compute_penalty
 		+ 0.0 * output.exit_probabilities.sum()
@@ -157,8 +211,9 @@ def query_recurrent_loss(
 	return {
 		"loss": total,
 		"main_info_nce": main_loss,
-		"auxiliary_info_nce": auxiliary_loss,
-		"progressive_non_degradation": progressive_loss,
+		"direct_pass_info_nce": direct_pass_loss,
+		"dynamic_soft_info_nce": dynamic_loss,
+		"progressive_margin_loss": progressive_loss,
 		"compute_penalty": compute_penalty,
 		"expected_steps": output.expected_steps.float().mean(),
 		"slot_pairwise_absolute_cosine": slot_pairwise_absolute_cosine(

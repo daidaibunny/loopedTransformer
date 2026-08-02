@@ -77,6 +77,9 @@ class ImmutableCandidateStore:
 		self.index_by_item_id = {
 			item_id: index for index, item_id in enumerate(self.item_ids)
 		}
+		self.indices_by_positive_id: dict[str, list[int]] = {}
+		for item_index, positive_id in enumerate(self.positive_ids):
+			self.indices_by_positive_id.setdefault(positive_id, []).append(item_index)
 		self._shard_starts: list[int] = []
 		self._shard_ends: list[int] = []
 		self._shard_tensors: list[torch.Tensor] = []
@@ -111,6 +114,7 @@ class ImmutableCandidateStore:
 			covered_until = end
 		if covered_until != len(self.item_ids):
 			raise ValueError(f"Candidate embeddings do not cover every item under {self.root}")
+		self._device_embedding_cache: dict[str, torch.Tensor] = {}
 
 	@property
 	def embeddings(self) -> torch.Tensor:
@@ -140,6 +144,51 @@ class ImmutableCandidateStore:
 			item_indexes = indices[positions] - self._shard_starts[shard_index]
 			result[positions] = self._shard_tensors[shard_index][item_indexes]
 		return result.to(device=device, non_blocking=True)
+
+	@property
+	def maximum_hard_negative_count(self) -> int:
+		"""Return a count that leaves every semantic positive excluded."""
+		largest_positive_group = max(map(len, self.indices_by_positive_id.values()))
+		return len(self.item_ids) - largest_positive_group
+
+	def _embeddings_on_device(self, device: torch.device) -> torch.Tensor:
+		key = str(device)
+		if key not in self._device_embedding_cache:
+			self._device_embedding_cache[key] = self.embeddings.to(
+				device=device,
+				non_blocking=True,
+			)
+		return self._device_embedding_cache[key]
+
+	def mine_hard_negatives(
+		self,
+		query_embeddings: torch.Tensor,
+		*,
+		positive_ids: list[str],
+		count: int,
+		device: torch.device,
+	) -> tuple[torch.Tensor, torch.Tensor]:
+		"""Select nearest frozen candidates while excluding every semantic positive."""
+		if query_embeddings.ndim != 2 or query_embeddings.shape[1] != 2048:
+			raise ValueError("Queries for hard-negative mining must have shape [batch, 2048]")
+		if len(positive_ids) != query_embeddings.shape[0]:
+			raise ValueError("positive_ids must match the hard-negative query batch")
+		if count <= 0 or count > self.maximum_hard_negative_count:
+			raise ValueError("Hard-negative count is outside the valid gallery range")
+		gallery = self._embeddings_on_device(device)
+		if device.type == "cpu":
+			scores = query_embeddings.float() @ gallery.float().T
+		else:
+			scores = query_embeddings.to(dtype=gallery.dtype) @ gallery.T
+		for row, positive_id in enumerate(positive_ids):
+			positive_indexes = self.indices_by_positive_id.get(positive_id)
+			if not positive_indexes:
+				raise KeyError(
+					f"Positive identifier {positive_id!r} is absent from {self.spec.key}",
+				)
+			scores[row, torch.tensor(positive_indexes, device=device)] = float("-inf")
+		item_indices = torch.topk(scores, k=count, dim=1, largest=True, sorted=True).indices
+		return gallery[item_indices], item_indices
 
 
 class CandidateStoreCollection:
@@ -192,4 +241,54 @@ class CandidateStoreCollection:
 			item_ids = [references[position].item_id for position in positions]
 			values = store.lookup(item_ids, device=device)
 			result[torch.tensor(positions, device=device)] = values
+		return result
+
+	def resolved_hard_negative_count(
+		self,
+		specs: tuple[CandidateBankSpec, ...],
+		requested_count: int,
+	) -> int:
+		"""Resolve one fixed count valid for every gallery in a dataset."""
+		if requested_count < 0:
+			raise ValueError("requested_count cannot be negative")
+		if requested_count == 0:
+			return 0
+		return min(
+			requested_count,
+			*(self.get(spec).maximum_hard_negative_count for spec in specs),
+		)
+
+	def mine_hard_negatives(
+		self,
+		query_embeddings: torch.Tensor,
+		references: list[CandidateReference],
+		*,
+		count: int,
+		device: torch.device,
+	) -> torch.Tensor | None:
+		"""Mine same-gallery negatives and restore the logical mixed-batch order."""
+		if count == 0:
+			return None
+		if len(references) != query_embeddings.shape[0]:
+			raise ValueError("Candidate references must match hard-negative queries")
+		result = torch.empty(
+			(len(references), count, 2048),
+			device=device,
+			dtype=torch.float16,
+		)
+		positions_by_key: dict[str, list[int]] = {}
+		spec_by_key: dict[str, CandidateBankSpec] = {}
+		for position, reference in enumerate(references):
+			positions_by_key.setdefault(reference.spec.key, []).append(position)
+			spec_by_key[reference.spec.key] = reference.spec
+		for key, positions in positions_by_key.items():
+			store = self.get(spec_by_key[key])
+			position_tensor = torch.tensor(positions, device=device)
+			mined, _indices = store.mine_hard_negatives(
+				query_embeddings.index_select(0, position_tensor),
+				positive_ids=[references[position].positive_id for position in positions],
+				count=count,
+				device=device,
+			)
+			result[position_tensor] = mined
 		return result
