@@ -32,8 +32,7 @@ the current experiments.
 | --- | --- | --- | --- | --- |
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
-| Backbone + LoRA, decoder layers 24–27 only | Passed | Running | Pending | COCO only |
-| Superseded damped mid-decoder recurrent slots (no LoRA) | Passed | N/A | N/A | Historical COCO only |
+| Backbone + LoRA, decoder layers 24–27 only | Passed | Passed | Passed | All three datasets |
 | Query-only history recurrent Block (no LoRA) | Passed | Passed | Passed | All three canonical datasets |
 
 The active definition is `query_only_history_recurrent_no_lora_v1`, with protocol
@@ -54,7 +53,8 @@ EXP-011 has completed GQA Balanced and EXP-012 has completed CLEVR after an audi
 resume from the only step-1000 checkpoint. The resume lowered the restored FP16 gradient
 scale from 4,096 to 2,048 and completed all 2,735 optimizer steps with finite logged loss
 and gradients. EXP-004A/B/C/D use the superseded damped mid-decoder design and remain
-below only as historical evidence; they are not the active architecture.
+only in their archived detailed sections; they are excluded from both formal comparison
+tables because they are not the active architecture.
 
 For every active recurrent test, retain frozen-Qwen Pass 0, recurrent Pass 1 through
 Pass 4, dynamic hard exit, and dynamic soft exit, with every required metric and the
@@ -1104,12 +1104,12 @@ corresponding full held-out test result does not exist.
 <td>64.8443</td><td>66.7622</td><td>35.3295</td><td>21.4518</td><td>12.1616</td>
 <td>37.0155</td><td>68.1486</td><td>78.5195</td><td>86.1819</td><td>75.8752</td>
 <td>70.3234</td>
-<td>Running</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Passed</td>
+<td>71.5734</td><td>58.5944</td><td>17.3414</td><td>9.1310</td><td>4.7245</td>
+<td>58.5944</td><td>86.7069</td><td>91.3102</td><td>94.4904</td><td>71.5734</td><td>76.2046</td>
+<td>Passed</td>
+<td>93.3167</td><td>87.4560</td><td>19.9515</td><td>9.9997</td><td>5.0000</td>
+<td>87.4560</td><td>99.7573</td><td>99.9973</td><td>100.0000</td><td>93.3167</td><td>95.0396</td>
 </tr>
 <tr>
 <td>Query-only history recurrent Block (no LoRA), fixed Pass 1</td>
@@ -1201,66 +1201,6 @@ corresponding full held-out test result does not exist.
 <td>61.7359</td><td>64.3251</td><td>34.1625</td><td>20.7325</td><td>11.7828</td>
 <td>34.5785</td><td>65.4267</td><td>75.8641</td><td>83.8800</td><td>73.3998</td>
 <td>67.3972</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-</tr>
-<tr>
-<td>Superseded damped recurrent latent slots (no LoRA), Pass 4</td>
-<td>8</td>
-<td>4</td>
-<td>2,641,921</td>
-<td>Passed</td>
-<td>61.0328</td><td>63.0428</td><td>33.0560</td><td>20.2317</td><td>11.5925</td>
-<td>34.9362</td><td>64.7595</td><td>75.1130</td><td>83.2989</td><td>72.4682</td><td>66.6219</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-</tr>
-<tr>
-<td>Superseded damped recurrent latent slots (no LoRA), Pass 4</td>
-<td>12</td>
-<td>4</td>
-<td>2,650,113</td>
-<td>Passed</td>
-<td>60.9216</td><td>63.0370</td><td>33.1513</td><td>20.2729</td><td>11.6177</td>
-<td>34.6980</td><td>64.6189</td><td>74.9158</td><td>83.2030</td><td>72.3803</td><td>66.4778</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-</tr>
-<tr>
-<td>Superseded damped recurrent latent slots (no LoRA), Pass 4</td>
-<td>16</td>
-<td>4</td>
-<td>2,658,305</td>
-<td>Passed</td>
-<td>61.3779</td><td>63.4129</td><td>33.4504</td><td>20.4321</td><td>11.7182</td>
-<td>34.9299</td><td>65.1075</td><td>75.3321</td><td>83.6843</td><td>72.7805</td><td>66.9165</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>Pending</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-</tr>
-<tr>
-<td>Superseded damped recurrent latent slots (no LoRA), Pass 4</td>
-<td>32</td>
-<td>4</td>
-<td>2,691,073</td>
-<td>Passed</td>
-<td>61.3595</td><td>63.3088</td><td>33.2960</td><td>20.2955</td><td>11.6780</td>
-<td>35.0658</td><td>65.0624</td><td>75.3096</td><td>83.6089</td><td>72.6758</td><td>66.8573</td>
 <td>Pending</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>

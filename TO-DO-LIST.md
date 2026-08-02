@@ -115,7 +115,7 @@
   damped connector-free model before launching any formal recurrent experiment.
 - [x] (Superseded) Retire the old K=8/16/32/64 GQA recurrent-v5 smoke plan.
 - [x] (Superseded) Retire the old causal-attention recurrent-v5 COCO K=8/12/16/32 plan.
-- [ ] Train and evaluate rank-32 LoRA limited to decoder layers 24–27 on full COCO,
+- [x] Train and evaluate rank-32 LoRA limited to decoder layers 24–27 on full COCO,
   GQA Balanced, and CLEVR, preserving the original all-layer LoRA baseline.
 - [x] Replace the ineffective recurrent v3 path with the direct-EOS recurrent v5 path:
   no LoRA, shared per-layer recurrent channel scales, pass-count-independent step size,
