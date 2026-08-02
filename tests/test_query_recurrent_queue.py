@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +30,25 @@ from looped_vl.query_recurrent.train import (
 	_lower_loaded_gradient_scale,
 	_resolve_resume_source_commit,
 )
+
+
+def test_recurrent_launcher_import_does_not_load_peft() -> None:
+	result = subprocess.run(
+		[
+			sys.executable,
+			"-c",
+			(
+				"import sys; "
+				"import looped_vl.query_recurrent.launch; "
+				"assert 'peft' not in sys.modules"
+			),
+		],
+		check=False,
+		capture_output=True,
+		text=True,
+	)
+
+	assert result.returncode == 0, result.stderr
 
 
 def _args(tmp_path: Path) -> SimpleNamespace:

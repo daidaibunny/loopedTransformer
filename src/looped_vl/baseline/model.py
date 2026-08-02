@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import unicodedata
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
-from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from PIL import Image
 from qwen_vl_utils.vision_process import process_vision_info
 from torch import nn
@@ -21,6 +20,9 @@ from looped_vl.query_recurrent.candidate_store import (
 )
 from looped_vl.query_recurrent.losses import multi_query_symmetric_info_nce
 from looped_vl.smoke import load_local_embedding_module
+
+if TYPE_CHECKING:
+	from peft import LoraConfig, PeftModel
 
 BASELINE_LORA_RANK = 32
 BASELINE_LORA_ALPHA = 32
@@ -40,6 +42,8 @@ def build_lora_config(
 	decoder_layer_indices: tuple[int, ...] | None = None,
 ) -> LoraConfig:
 	"""Return the model-specific LoRA configuration published by Qwen."""
+	from peft import LoraConfig, TaskType
+
 	if decoder_layer_indices is not None:
 		if not decoder_layer_indices:
 			raise ValueError("decoder_layer_indices must not be empty")
@@ -243,6 +247,8 @@ def load_lora_training_model(
 	decoder_layer_indices: tuple[int, ...] | None = None,
 ) -> PeftModel:
 	"""Load the immutable base checkpoint and expose only LoRA parameters as trainable."""
+	from peft import get_peft_model
+
 	module = load_local_embedding_module(Path(model_root))
 	base_model = module.Qwen3VLForEmbedding.from_pretrained(
 		str(model_root),
@@ -272,6 +278,8 @@ def load_lora_evaluation_model(
 	attention_implementation: str,
 ) -> PeftModel:
 	"""Load a saved adapter without making either it or the base checkpoint trainable."""
+	from peft import PeftModel
+
 	module = load_local_embedding_module(Path(model_root))
 	base_model = module.Qwen3VLForEmbedding.from_pretrained(
 		str(model_root),

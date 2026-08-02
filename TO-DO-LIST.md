@@ -176,20 +176,28 @@
   Qwen; retain its exact step-200 checkpoint as root-cause evidence.
 - [x] Fix the recurrent evaluator bug that incorrectly appended finite embeddings only
   inside the non-finite error branch, and add a regression test.
-- [ ] Re-test the v2 diagnostic checkpoint with the corrected evaluator.
+- [x] Re-test the v2 diagnostic checkpoint with the corrected evaluator; Pass 4 recovered
+  only to 53.6398 mAP versus the frozen Pass-0 value of 61.2489, confirming destructive
+  unbounded residual movement rather than an evaluator-only failure.
 - [x] Restore the specified Xavier-projected, scalar `tanh` zero-gated residual fusion as
   the isolated v3 candidate fix without adding dynamic exit or LoRA.
 - [x] Run the v3 200-step training diagnostic; its gate controlled the initial update, but
   the unnormalized 2,048-dimensional residual still reached L2 movement 0.44 by step 200
   while slots remained collapsed.
-- [ ] Complete the full Pass-0-to-Pass-4 test for the v3 zero-gated candidate.
+- [x] Complete the full Pass-0-to-Pass-4 test for the v3 zero-gated candidate; Pass 4
+  reached 60.5458 mAP versus 61.2489 at Pass 0, so a scalar gate alone did not bound the
+  unnormalized residual magnitude.
 - [x] L2-normalize the residual direction before the scalar gate so projection magnitude
   cannot bypass zero-gated fusion; add a scale-invariance regression test.
-- [ ] Run the same 200-step COCO quality diagnostic for the v4 unit-residual candidate.
+- [x] Run the same 200-step COCO quality diagnostic for the v4 unit-residual candidate;
+  Pass 2 reached 61.3239 mAP (+0.0751 over Pass 0) while unit residuals kept mean movement
+  near 0.01, but Passes 2–4 remained nearly identical.
 - [x] Diagnose that v4 step 50 still has approximately 0.999 slot cosine and near-uniform
   EOS-conditioned slot attention despite fixing residual scale.
 - [x] Add RMS-normalized persistent slot identity to every recurrent self-attention and
   history-attention query, replacing the ineffective small raw-state reinjection.
+- [x] Remove the recurrent launcher's eager PEFT import path so no-LoRA jobs do not depend
+  on the LoRA stack or its incompatible remote ONNX/protobuf packages.
 - [ ] Run the same 200-step COCO quality diagnostic for the v5 persistent-identity candidate.
 - [ ] Use the diagnostic evidence to isolate gradient reachability, slot specialization,
   recurrent update stability, hard-negative freshness, and progressive-loss effectiveness.
