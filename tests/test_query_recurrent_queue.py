@@ -11,6 +11,7 @@ from looped_vl.candidate_bank import CANDIDATE_BANK_SPECS, sha256_file
 from looped_vl.query_recurrent.launch import _queue_command, validate_gpu_inventory
 from looped_vl.query_recurrent.queue import (
 	FORMAL_QUERY_RECURRENT_RUNS,
+	_child_process_environment,
 	_next_evaluation_output,
 	_queue_manifests_match,
 	build_evaluation_command,
@@ -179,3 +180,12 @@ def test_existing_queue_manifest_normalizes_json_tuple_round_trip() -> None:
 	written_and_loaded = {"runs": [{"history_layers": [7, 14, 21, 28]}]}
 
 	assert _queue_manifests_match(written_and_loaded, current)
+
+
+def test_distributed_children_use_the_compatible_protobuf_runtime(tmp_path: Path) -> None:
+	environment = _child_process_environment(_args(tmp_path))
+
+	assert environment["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] == "python"
+	assert environment["TOKENIZERS_PARALLELISM"] == "false"
+	assert environment["CUDA_VISIBLE_DEVICES"] == "0,1,2,3,4,5,6,7"
+	assert environment["PYTHONPATH"] == str(tmp_path / "project" / "src")

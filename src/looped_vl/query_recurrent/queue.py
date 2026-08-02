@@ -234,11 +234,23 @@ def _next_evaluation_output(run_root: Path) -> Path:
 	raise RuntimeError(f"Too many failed evaluation attempts under {run_root}")
 
 
-def _run(command: list[str], *, args: argparse.Namespace) -> None:
+def _child_process_environment(args: argparse.Namespace) -> dict[str, str]:
+	"""Build the stable environment inherited by every distributed child process."""
 	environment = os.environ.copy()
-	environment["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-	environment["CUDA_VISIBLE_DEVICES"] = ",".join(str(index) for index in range(args.world_size))
-	environment["PYTHONPATH"] = str(Path(args.project_root) / "src")
+	environment.update(
+		{
+			"CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+			"CUDA_VISIBLE_DEVICES": ",".join(str(index) for index in range(args.world_size)),
+			"PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION": "python",
+			"TOKENIZERS_PARALLELISM": "false",
+			"PYTHONPATH": str(Path(args.project_root) / "src"),
+		},
+	)
+	return environment
+
+
+def _run(command: list[str], *, args: argparse.Namespace) -> None:
+	environment = _child_process_environment(args)
 	result = subprocess.run(
 		command,
 		cwd=args.project_root,
