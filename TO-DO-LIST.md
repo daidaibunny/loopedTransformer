@@ -152,8 +152,8 @@
   0.0051 mAP points of four histories and again selected Pass 4 for every query.
 - [x] Train and fully test the canonical GQA Balanced query-only recurrent run; record
   its +13.1957-point primary mAP gain and all Pass 0–4 metrics.
-- [ ] Resume the canonical CLEVR query-only recurrent run from its only rolling
-  checkpoint at step 1000. The first attempt stopped after step 1050 when all ranks
-  detected a skipped non-finite FP16 optimizer step.
-- [ ] Train and test all eight query-only recurrent runs after all candidate banks pass
+- [x] Resume and complete the canonical CLEVR query-only recurrent run from its only
+  rolling step-1000 checkpoint, lowering the restored FP16 gradient scale from 4,096
+  to 2,048 and retaining only the final step-2,735 checkpoint.
+- [x] Train and test all eight query-only recurrent runs after all candidate banks pass
   checksum validation; record Pass 0 through Pass 4 and dynamic-exit metrics in result.md.

@@ -34,7 +34,7 @@ the current experiments.
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA, decoder layers 24–27 only | Passed | Running | Pending | COCO only |
 | Superseded damped mid-decoder recurrent slots (no LoRA) | Passed | N/A | N/A | Historical COCO only |
-| Query-only history recurrent Block (no LoRA) | Passed | Passed | Failed at step 1050 | CLEVR resumable from step 1000 |
+| Query-only history recurrent Block (no LoRA) | Passed | Passed | Passed | All three canonical datasets |
 
 The active definition is `query_only_history_recurrent_no_lora_v1`, with protocol
 `single_stage_frozen_candidate_dynamic_exit_v1`. Candidate embeddings come only from
@@ -50,10 +50,11 @@ checkpoint, per-device batch 32 on eight V100 GPUs, and a true contrastive globa
 of 256. EXP-005 through EXP-007 have completed the COCO K=8 controls for R=1 fixed,
 R=4 fixed, and R=4 dynamic exit. EXP-008 and EXP-009 have completed the K=1 and K=4
 slot-count ablations, and EXP-010 has completed the Layer-28-only history ablation.
-EXP-011 has completed GQA Balanced. The final CLEVR run stopped after step 1050 because
-FP16 gradient scaling detected a non-finite gradient; its single step-1000 checkpoint
-is intact. EXP-004A/B/C/D use the superseded damped mid-decoder design and remain below
-only as historical evidence; they are not the active architecture.
+EXP-011 has completed GQA Balanced and EXP-012 has completed CLEVR after an audited
+resume from the only step-1000 checkpoint. The resume lowered the restored FP16 gradient
+scale from 4,096 to 2,048 and completed all 2,735 optimizer steps with finite logged loss
+and gradients. EXP-004A/B/C/D use the superseded damped mid-decoder design and remain
+below only as historical evidence; they are not the active architecture.
 
 For every active recurrent test, retain frozen-Qwen Pass 0, recurrent Pass 1 through
 Pass 4, dynamic hard exit, and dynamic soft exit, with every required metric and the
@@ -951,6 +952,65 @@ normalized training answers.
 The final loss was 0.5773, gradient norm was 1.3526, and all logged losses and
 gradients were finite. Final slot pairwise absolute cosine was 0.9970.
 
+## EXP-012 — CLEVR query-only history recurrent Block, K=8, R=4
+
+- Status/date: passed. The original run started at 2026-08-02T02:12:26Z and retained
+  its only step-1000 checkpoint after a non-finite FP16 update. The audited recovery
+  started at 2026-08-02T08:35:29Z, finished training at 2026-08-02T09:09:53Z, and
+  completed full-test evaluation at 2026-08-02T09:18:32Z.
+- Objective: test the canonical K=8, R=4 dynamic query-only recurrent model on the
+  full CLEVR compositional-reasoning split.
+- Route/node/code: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB.
+  Steps 1–1,000 used commit `9792f7021807d1d441618b95345fde61c565822c`;
+  the exactly authorized recovery used commit
+  `81bfd8390e9e0e8576c70843dd16084961688a1c`, whose changes were limited to
+  queue/resume safety and the compatible distributed-worker environment.
+- Data: 699,989 train rows and 75,000 held-out test rows; no validation. Train and
+  test manifest SHA-256 values are
+  `f9d000f6a5258da38fa31f9f75b1ac6a65756039d4db15c5c3e8109aa770bf71` and
+  `d6d46dde537152465bb479684efd083ca6c6975d8a4d2fa3e3a1f1776395d094`.
+  The shared immutable 28-answer candidate-bank manifest hash is
+  `4c60833c10f3d7f2a216a76aaabbb0bdbad556e5fe38b703b70db4ff87e399de`.
+- Model/optimization: four frozen histories, K=8, R=4, dynamic exit, 4,878,321
+  trainable parameters, no LoRA, candidate-Qwen forward calls zero, one query-Qwen
+  pass per batch, one epoch, 2,735 optimizer steps, per-device batch 32, global batch
+  256, learning rate 1e-4, weight decay 0.01, warmup ratio 0.02, and seed 42.
+  The resumed FP16 gradient scale was conservatively reduced from 4,096 to 2,048.
+- Runtime: the retained recovery segment took 2,063.91 seconds; steady median
+  throughput across logged windows was 218.27 samples/second and peak allocated
+  training memory was 5.13 GiB per rank. Test took 464.61 seconds (161.42 rows/second)
+  with 5.06 GiB rank-zero peak allocated memory.
+- Checkpoints: one rolling checkpoint, `step002735.pt`; final recurrent model SHA-256
+  `0a5aa118a77146bd38f6d479a783f2074544da8f7910b88f06b365b82eb22cdf`.
+- Evidence: original queue tmux `query_recurrent_v1_9792f70_20260802`, recovery tmux
+  `query_recurrent_clevr_resume_81bfd83_20260802`, recovery log
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_recurrent_clevr_resume_81bfd83_20260802.log`,
+  and output
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_recurrent_v1_9792f70_20260802/clevr_k8_r4_dynamic`.
+
+Dynamic hard exit achieved the best mAP, 91.2619 (+6.3229 over Pass 0). It selected
+Pass 1 for 7,130 queries, Pass 2 for 244, Pass 3 for 46, and Pass 4 for 67,580;
+therefore 9.8933% of queries exited before Pass 4. Mean exit probabilities by pass
+were 0.118868, 0.116415, 0.112734, and 0.109774, and the mean soft expected compute
+was 3.4976 passes. Coverage was 100% and the answer gallery contained 28 normalized
+training answers.
+
+### Full-test metrics by recurrent pass and exit output (%)
+
+| Pass/output | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 | mAP change vs Pass 0 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 84.9390 | 73.1707 | 19.8501 | 9.9995 | 5.0000 | 73.1707 | 99.2507 | 99.9947 | 100.0000 | 84.9390 | 88.7779 | +0.0000 |
+| 1 | 90.8996 | 83.3667 | 19.9272 | 9.9999 | 5.0000 | 83.3667 | 99.6360 | 99.9987 | 100.0000 | 90.8996 | 93.2330 | +5.9606 |
+| 2 | 91.1474 | 83.8240 | 19.9277 | 10.0000 | 5.0000 | 83.8240 | 99.6387 | 100.0000 | 100.0000 | 91.1474 | 93.4175 | +6.2084 |
+| 3 | 91.1947 | 83.9107 | 19.9277 | 10.0000 | 5.0000 | 83.9107 | 99.6387 | 100.0000 | 100.0000 | 91.1947 | 93.4525 | +6.2557 |
+| 4 | 91.2178 | 83.9600 | 19.9277 | 10.0000 | 5.0000 | 83.9600 | 99.6387 | 100.0000 | 100.0000 | 91.2178 | 93.4695 | +6.2788 |
+| Dynamic hard (primary) | 91.2619 | 84.0533 | 19.9277 | 10.0000 | 5.0000 | 84.0533 | 99.6387 | 100.0000 | 100.0000 | 91.2619 | 93.5018 | +6.3229 |
+| Dynamic soft | 91.2509 | 84.0307 | 19.9277 | 10.0000 | 5.0000 | 84.0307 | 99.6387 | 100.0000 | 100.0000 | 91.2509 | 93.4938 | +6.3119 |
+
+The final loss was 0.2741, gradient norm was 1.5879, and all 55 logged losses and
+gradients were finite. Final slot pairwise absolute cosine was 0.9934.
+
 ## Required record for every new experiment
 
 1. Identity: unique ID, objective, terminal status, start/end time, route, node, exact code
@@ -1096,9 +1156,9 @@ corresponding full held-out test result does not exist.
 <td>65.2968</td><td>49.6979</td><td>17.1713</td><td>9.2328</td><td>4.7714</td>
 <td>49.6979</td><td>85.8563</td><td>92.3279</td><td>95.4285</td><td>65.2968</td>
 <td>71.6876</td>
-<td>Failed at step 1050</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>Passed</td>
+<td>91.2619</td><td>84.0533</td><td>19.9277</td><td>10.0000</td><td>5.0000</td>
+<td>84.0533</td><td>99.6387</td><td>100.0000</td><td>100.0000</td><td>91.2619</td><td>93.5018</td>
 </tr>
 <tr>
 <td>Query-only history recurrent Block (no LoRA), K=1 dynamic hard exit</td>
