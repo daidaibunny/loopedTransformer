@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -82,6 +83,114 @@ class QueryRecurrentOutput:
 	step_embeddings: tuple[torch.Tensor, ...]
 	slot_states: tuple[torch.Tensor, ...]
 	slot_attention_weights: tuple[torch.Tensor, ...]
+
+
+def _mean_l2_norm(values: torch.Tensor) -> torch.Tensor:
+	return torch.linalg.vector_norm(values.float(), dim=-1).mean()
+
+
+def _normalized_attention_entropy(weights: torch.Tensor) -> torch.Tensor:
+	if weights.shape[-1] <= 1:
+		return weights.new_zeros((), dtype=torch.float32)
+	probabilities = weights.float().clamp_min(torch.finfo(torch.float32).tiny)
+	entropy = -(probabilities * probabilities.log()).sum(dim=-1)
+	return (entropy / math.log(weights.shape[-1])).mean()
+
+
+def _slot_pairwise_absolute_cosine(slot_states: torch.Tensor) -> torch.Tensor:
+	if slot_states.shape[1] <= 1:
+		return slot_states.new_zeros((), dtype=torch.float32)
+	normalized = F.normalize(slot_states.float(), dim=-1)
+	cosine = normalized @ normalized.transpose(1, 2)
+	off_diagonal = ~torch.eye(
+		slot_states.shape[1],
+		device=slot_states.device,
+		dtype=torch.bool,
+	)
+	return cosine[:, off_diagonal].abs().mean()
+
+
+def query_recurrent_diagnostics(
+	output: QueryRecurrentOutput,
+	base_embeddings: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+	"""Measure whether each pass moves, specializes slots, and changes the readout."""
+	if not output.step_embeddings:
+		raise ValueError("At least one recurrent pass is required for diagnostics")
+	if not (
+		len(output.step_embeddings)
+		== len(output.slot_states)
+		== len(output.slot_attention_weights)
+	):
+		raise ValueError("Recurrent diagnostic tensors must have the same pass count")
+	diagnostics: dict[str, torch.Tensor] = {}
+	previous = base_embeddings.float()
+	for step, (embedding, slots, weights) in enumerate(
+		zip(
+			output.step_embeddings,
+			output.slot_states,
+			output.slot_attention_weights,
+			strict=True,
+		),
+		start=1,
+	):
+		embedding_float = embedding.float()
+		prefix = f"step_{step}"
+		diagnostics[f"{prefix}_embedding_delta_from_base_l2"] = _mean_l2_norm(
+			embedding_float - base_embeddings.float(),
+		)
+		diagnostics[f"{prefix}_embedding_delta_from_previous_l2"] = _mean_l2_norm(
+			embedding_float - previous,
+		)
+		diagnostics[f"{prefix}_embedding_cosine_to_base"] = F.cosine_similarity(
+			embedding_float,
+			base_embeddings.float(),
+			dim=-1,
+		).mean()
+		diagnostics[f"{prefix}_slot_pairwise_absolute_cosine"] = (
+			_slot_pairwise_absolute_cosine(slots)
+		)
+		diagnostics[f"{prefix}_slot_attention_normalized_entropy"] = (
+			_normalized_attention_entropy(weights)
+		)
+		diagnostics[f"{prefix}_slot_attention_max_weight"] = (
+			weights.float().amax(dim=-1).mean()
+		)
+		previous = embedding_float
+	return diagnostics
+
+
+def _gradient_l2_norm(parameters: tuple[nn.Parameter, ...]) -> torch.Tensor:
+	if not parameters:
+		raise ValueError("A gradient group must contain at least one parameter")
+	total = torch.zeros((), device=parameters[0].device, dtype=torch.float32)
+	for parameter in parameters:
+		if parameter.grad is not None:
+			total = total + parameter.grad.detach().float().pow(2).sum()
+	return total.sqrt()
+
+
+def recurrent_gradient_group_norms(head: QueryRecurrentHead) -> dict[str, torch.Tensor]:
+	"""Expose gradient reachability for every distinct recurrent-head component."""
+	initializer_parameters = (
+		*tuple(head.initializer_norm.parameters()),
+		*tuple(head.initializer_attention.parameters()),
+		*tuple(head.initializer_feed_forward_norm.parameters()),
+		*tuple(head.initializer_feed_forward.parameters()),
+	)
+	groups = {
+		"output_projection": tuple(head.output_projection.parameters()),
+		"output_norm": tuple(head.output_norm.parameters()),
+		"recurrent_layers": tuple(head.recurrent_layers.parameters()),
+		"initializer": initializer_parameters,
+		"memory_projection": tuple(head.memory_projection.parameters()),
+		"slot_queries": (head.slot_queries,),
+		"layer_embeddings": (head.layer_embeddings,),
+	}
+	return {
+		f"gradient_norm_{name}": _gradient_l2_norm(parameters)
+		for name, parameters in groups.items()
+	}
 
 
 def combine_query_recurrent_outputs(

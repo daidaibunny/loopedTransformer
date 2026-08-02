@@ -43,7 +43,12 @@ from looped_vl.query_recurrent.data import (
 	query_only_collate,
 )
 from looped_vl.query_recurrent.losses import query_recurrent_loss
-from looped_vl.query_recurrent.model import GroupedQueryRecurrentHead, QueryRecurrentHead
+from looped_vl.query_recurrent.model import (
+	GroupedQueryRecurrentHead,
+	QueryRecurrentHead,
+	query_recurrent_diagnostics,
+	recurrent_gradient_group_norms,
+)
 from looped_vl.smoke import checkpoint_sha256
 from looped_vl.training.checkpointing import (
 	TrainingCursor,
@@ -692,8 +697,13 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 					config,
 					hard_negative_embeddings=hard_negative_embeddings,
 				)
+			batch_metrics = {
+				**losses,
+				**query_recurrent_diagnostics(output, base_embeddings),
+			}
 			scaler.scale(losses["loss"]).backward()
 			scaler.unscale_(optimizer)
+			batch_metrics.update(recurrent_gradient_group_norms(head))
 			gradient_norm = torch.nn.utils.clip_grad_norm_(
 				head.parameters(),
 				args.gradient_clip_norm,
@@ -713,7 +723,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			total_samples += batch_global_samples
 			log_samples += batch_global_samples
 			metric_samples += len(batch["positive_ids"])
-			for key, value in losses.items():
+			for key, value in batch_metrics.items():
 				detached = value.detach().float()
 				metric_accumulator[key] = (
 					metric_accumulator.get(key, torch.zeros_like(detached))
@@ -732,7 +742,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 				optimizer_steps_since_log=optimizer_steps_since_log,
 				global_step=global_step,
 				optimizer_step_limit=total_steps,
-				force_every_step=args.max_optimizer_steps > 0,
+				force_every_step=0 < total_steps <= 2,
 			):
 				torch.cuda.synchronize(device)
 				averages, global_metric_samples = _reduce_metrics(

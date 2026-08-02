@@ -167,8 +167,12 @@
   maximum Pass 4 for every COCO query; lock training and evaluation to explicit Pass R.
 - [x] Implement and test the last-four-layer query-only LoRA control against the same frozen
   candidate banks without changing the ordinary two-tower LoRA baseline.
-- [ ] Run one minimal eight-V100 v2 smoke, measuring hard-negative memory/throughput, every
-  rank, finite gradients, Pass-1/Pass-4 loss, slot cosine, and exact candidate exclusion.
-- [ ] Only if both minimal smokes are healthy, run the focused full-COCO query-only
-  last-four-layer LoRA control followed by v2 fixed Pass-1 and fixed Pass-4. Do not add
-  dynamic exit, slot-count, history, GQA, or CLEVR jobs beforehand.
+- [x] Stop the query-only LoRA control at its next rolling checkpoint (step 400), retain
+  only that checkpoint, and postpone the control until the recurrent root cause is known.
+- [x] Add pass-wise embedding movement, slot-collapse, slot-attention, and component-gradient
+  diagnostics without changing the v2 forward result or loss.
+- [ ] Run one 200-step eight-V100 COCO v2 quality diagnostic and its Pass-0-to-Pass-4 test.
+- [ ] Use the diagnostic evidence to isolate gradient reachability, slot specialization,
+  recurrent update stability, hard-negative freshness, and progressive-loss effectiveness.
+- [ ] Change one failed mechanism at a time and rerun the same fixed diagnostic window;
+  promote no architecture to full training until a later pass beats both Pass 0 and Pass 1.

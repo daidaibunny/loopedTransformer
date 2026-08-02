@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -10,7 +12,12 @@ from looped_vl.query_recurrent.config import (
 	QUERY_RECURRENT_PROTOCOL,
 	QueryRecurrentConfig,
 )
-from looped_vl.query_recurrent.model import GroupedQueryRecurrentHead, QueryRecurrentHead
+from looped_vl.query_recurrent.model import (
+	GroupedQueryRecurrentHead,
+	QueryRecurrentHead,
+	query_recurrent_diagnostics,
+	recurrent_gradient_group_norms,
+)
 
 
 def _inputs(config: QueryRecurrentConfig, batch_size: int = 3) -> dict[str, torch.Tensor]:
@@ -75,6 +82,73 @@ def test_fixed_recurrence_returns_normalized_pass_outputs_and_final_pass() -> No
 	assert torch.equal(output.embeddings, output.step_embeddings[-1])
 	for weights in output.slot_attention_weights:
 		assert torch.allclose(weights.sum(dim=1), torch.ones(3), atol=1e-6)
+
+
+def test_recurrent_diagnostics_expose_each_pass_movement_attention_and_collapse() -> None:
+	base = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+	pass_one = torch.nn.functional.normalize(
+		torch.tensor([[1.0, 1.0], [1.0, 1.0]]),
+		dim=-1,
+	)
+	pass_two = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+	collapsed_slots = torch.tensor(
+		[
+			[[1.0, 0.0], [1.0, 0.0]],
+			[[0.0, 1.0], [0.0, 1.0]],
+		],
+	)
+	diverse_slots = torch.tensor(
+		[
+			[[1.0, 0.0], [0.0, 1.0]],
+			[[1.0, 0.0], [0.0, 1.0]],
+		],
+	)
+	output = SimpleNamespace(
+		step_embeddings=(pass_one, pass_two),
+		slot_states=(collapsed_slots, diverse_slots),
+		slot_attention_weights=(
+			torch.full((2, 2), 0.5),
+			torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+		),
+	)
+
+	diagnostics = query_recurrent_diagnostics(output, base)
+
+	assert diagnostics["step_1_embedding_delta_from_base_l2"].item() > 0
+	assert diagnostics["step_1_embedding_delta_from_previous_l2"].item() > 0
+	assert diagnostics["step_2_embedding_delta_from_previous_l2"].item() > 0
+	assert diagnostics["step_1_slot_pairwise_absolute_cosine"].item() == pytest.approx(1.0)
+	assert diagnostics["step_2_slot_pairwise_absolute_cosine"].item() == pytest.approx(0.0)
+	assert diagnostics["step_1_slot_attention_normalized_entropy"].item() == pytest.approx(1.0)
+	assert diagnostics["step_2_slot_attention_normalized_entropy"].item() == pytest.approx(0.0)
+	assert diagnostics["step_1_slot_attention_max_weight"].item() == pytest.approx(0.5)
+	assert diagnostics["step_2_slot_attention_max_weight"].item() == pytest.approx(1.0)
+
+
+def test_zero_initialized_readout_exposes_first_step_gradient_starvation() -> None:
+	config = QueryRecurrentConfig(num_slots=4, max_recurrent_steps=1)
+	head = QueryRecurrentHead(config)
+	inputs = _inputs(config, batch_size=2)
+	optimizer = torch.optim.SGD(head.parameters(), lr=0.1)
+
+	first_output = head(**inputs)
+	first_output.embeddings.sum().backward()
+	first_norms = recurrent_gradient_group_norms(head)
+
+	assert first_norms["gradient_norm_output_projection"].item() > 0
+	assert first_norms["gradient_norm_recurrent_layers"].item() == 0
+	assert first_norms["gradient_norm_initializer"].item() == 0
+	assert first_norms["gradient_norm_memory_projection"].item() == 0
+	optimizer.step()
+	optimizer.zero_grad(set_to_none=True)
+
+	second_output = head(**inputs)
+	second_output.embeddings.sum().backward()
+	second_norms = recurrent_gradient_group_norms(head)
+
+	assert second_norms["gradient_norm_recurrent_layers"].item() > 0
+	assert second_norms["gradient_norm_initializer"].item() > 0
+	assert second_norms["gradient_norm_memory_projection"].item() > 0
 
 
 def test_fixed_one_step_and_final_layer_history_are_supported_ablations() -> None:
