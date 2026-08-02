@@ -38,7 +38,11 @@ from looped_vl.query_recurrent.backbone import (
 )
 from looped_vl.query_recurrent.candidate_store import ImmutableCandidateStore
 from looped_vl.query_recurrent.config import QueryRecurrentConfig
-from looped_vl.query_recurrent.model import GroupedQueryRecurrentHead, QueryRecurrentHead
+from looped_vl.query_recurrent.model import (
+	GroupedQueryRecurrentHead,
+	QueryRecurrentHead,
+	recurrent_fp32_context,
+)
 from looped_vl.smoke import checkpoint_sha256
 
 LOGGER = logging.getLogger("query_recurrent_evaluate")
@@ -170,26 +174,26 @@ def _encode_query_group(
 						frozen.base_embeddings,
 					),
 				)
-			with torch.inference_mode():
-				output = grouped_head(
-					feature_groups=tuple(frozen_groups),
-					total_rows=len(batch["global_indices"]),
-				)
-				base_embeddings = torch.cat(
-					[feature_group[1] for feature_group in frozen_groups],
-					dim=0,
-				)
-				restore_order = torch.argsort(
-					torch.tensor(
-						[
-							index
-							for feature_group in frozen_groups
-							for index in feature_group[0]
-						],
-						device=device,
-					),
-				)
-				base_embeddings = base_embeddings.index_select(0, restore_order)
+		with torch.inference_mode(), recurrent_fp32_context(device.type):
+			output = grouped_head(
+				feature_groups=tuple(frozen_groups),
+				total_rows=len(batch["global_indices"]),
+			)
+			base_embeddings = torch.cat(
+				[feature_group[1] for feature_group in frozen_groups],
+				dim=0,
+			)
+			restore_order = torch.argsort(
+				torch.tensor(
+					[
+						index
+						for feature_group in frozen_groups
+						for index in feature_group[0]
+					],
+					device=device,
+				),
+			)
+			base_embeddings = base_embeddings.index_select(0, restore_order)
 		variants = {
 			"pass_0_frozen_backbone": base_embeddings,
 			**{
@@ -476,6 +480,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 				"recurrent_checkpoint_sha256": recurrent_hash,
 				"base_checkpoint_sha256_before": base_hash_before,
 				"base_checkpoint_sha256_after": base_hash_after,
+				"runtime_precision": "frozen_qwen_fp16_recurrent_fp32",
 			},
 			"distributed": {
 				"hostname": socket.gethostname(),

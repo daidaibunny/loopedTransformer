@@ -270,6 +270,9 @@
 - [x] Allow only the explicitly reused historical COCO control to predate v11 in hourly
   stage-order checks; later GQA Balanced and CLEVR controls must still wait for recurrent
   test and the recovered COCO control test to pass.
+- [x] Diagnose the first v11 V100 smoke failure as recurrent FP16 backward overflow and
+  isolate the small trainable recurrent Block plus final InfoNCE in FP32 while retaining
+  the frozen Qwen forward in FP16; record the precision split and add a regression test.
 - [ ] Run the eight-V100 two-step v11 COCO smoke and verify all ranks, finite gradients,
   exact zero candidate-Qwen calls, parameter count, throughput, and peak memory.
 - [ ] Train and test full COCO v11 for one epoch, reporting frozen Pass 0 and Pass 1–4.

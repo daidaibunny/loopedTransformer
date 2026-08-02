@@ -15,6 +15,7 @@ from looped_vl.query_recurrent.model import (
 	GroupedQueryRecurrentHead,
 	QueryRecurrentHead,
 	query_recurrent_diagnostics,
+	recurrent_fp32_context,
 	recurrent_gradient_group_norms,
 )
 
@@ -111,6 +112,20 @@ def test_fixed_recurrence_returns_only_mean_pooled_unit_embeddings() -> None:
 	assert not hasattr(head, "recurrent_step_embeddings")
 	assert not hasattr(head, "exit_controller")
 	assert not hasattr(output, "slot_bridge_embeddings")
+
+
+def test_recurrent_block_stays_float32_inside_outer_mixed_precision() -> None:
+	head = QueryRecurrentHead(QueryRecurrentConfig(max_recurrent_steps=1))
+	base = _base_embeddings(batch_size=2)
+
+	with (
+		torch.autocast(device_type="cpu", dtype=torch.bfloat16),
+		recurrent_fp32_context("cpu"),
+	):
+		output = head(base_embeddings=base)
+
+	assert output.embeddings.dtype == torch.float32
+	assert output.world_states[0].dtype == torch.float32
 
 
 def test_one_shared_cell_is_reused_for_every_recurrent_step() -> None:

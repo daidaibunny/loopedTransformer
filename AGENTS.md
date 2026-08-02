@@ -156,6 +156,10 @@
   spread, interaction entropy, off-diagonal attention mass, pass-wise movement, and every
   component's gradient norm. All trainable groups use one learning-rate schedule from
   step one.
+- Keep the frozen Qwen query forward in FP16, but execute the 4.39M-parameter recurrent
+  Block and its InfoNCE loss in FP32. This avoids first-step FP16 activation-gradient
+  overflow on V100 while leaving the frozen backbone, objective, batch, and data order
+  unchanged.
 - The last-four-layer query-only LoRA control is separate from the ordinary two-tower LoRA
   baseline. It may read frozen candidate banks, but must declare the query-only control
   scope, keep candidate Qwen forward calls at zero, use the same gallery-isolated objective

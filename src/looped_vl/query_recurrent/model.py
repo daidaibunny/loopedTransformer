@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 import torch
@@ -13,6 +14,11 @@ from looped_vl.query_recurrent.config import (
 	MAX_QUERY_RECURRENT_PARAMETERS,
 	QueryRecurrentConfig,
 )
+
+
+def recurrent_fp32_context(device_type: str) -> AbstractContextManager[None]:
+	"""Disable an outer autocast region for the small trainable recurrent Block."""
+	return torch.autocast(device_type=device_type, enabled=False)
 
 
 def parameter_free_rms_norm(values: torch.Tensor) -> torch.Tensor:

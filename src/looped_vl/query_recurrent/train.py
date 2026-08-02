@@ -47,6 +47,7 @@ from looped_vl.query_recurrent.model import (
 	GroupedQueryRecurrentHead,
 	QueryRecurrentHead,
 	query_recurrent_diagnostics,
+	recurrent_fp32_context,
 	recurrent_gradient_group_norms,
 )
 from looped_vl.smoke import checkpoint_sha256
@@ -585,7 +586,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"resume_gradient_scale": args.resume_gradient_scale,
 		"world_size": world_size,
 		"cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-		"runtime_precision": "frozen_qwen_fp16_recurrent_autocast_fp16",
+		"runtime_precision": "frozen_qwen_fp16_recurrent_fp32_loss_fp32",
+		"initial_gradient_scale": args.initial_gradient_scale,
 		"attention_implementation": args.attention_implementation,
 		"per_device_batch_size": args.per_device_batch_size,
 		"contrastive_global_batch_size": args.per_device_batch_size * world_size,
@@ -667,7 +669,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 				count=resolved_hard_negative_count,
 				device=device,
 			)
-			with torch.autocast(device_type="cuda", dtype=torch.float16):
+			with recurrent_fp32_context(device.type):
 				output = ddp_head(
 					feature_groups=feature_groups,
 					total_rows=len(batch["positive_ids"]),
@@ -703,7 +705,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			optimizer.zero_grad(set_to_none=True)
 			if scaler.get_scale() < scale_before_step:
 				raise FloatingPointError(
-					"Non-finite FP16 gradients skipped an optimizer step; resume from checkpoint",
+					"Non-finite recurrent gradients skipped an optimizer step; "
+					"resume from checkpoint",
 				)
 			scheduler.step()
 			global_step += 1
