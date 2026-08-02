@@ -13,6 +13,20 @@ from typing import Any
 from looped_vl.query_recurrent.queue import QUERY_ONLY_LORA_RUNS
 
 
+def _latest_evaluation_path(run_root: Path) -> Path:
+	"""Follow the published retry pointer, or the newest in-progress retry."""
+	pointer_path = run_root / "latest_test.json"
+	if pointer_path.is_file():
+		path = Path(json.loads(pointer_path.read_text(encoding="utf-8"))["path"])
+		if not path.resolve().is_relative_to(run_root.resolve()):
+			raise ValueError(f"Evaluation pointer escapes its run root: {path}")
+		return path
+	retry_paths = tuple(sorted(path for path in run_root.glob("test_retry_*") if path.is_dir()))
+	if retry_paths:
+		return retry_paths[-1]
+	return run_root / "test"
+
+
 def expected_stage_paths(
 	*,
 	output_root: Path,
@@ -27,7 +41,10 @@ def expected_stage_paths(
 			output_root / "smoke_coco_v11_p4_r4_final_mean",
 		),
 		("coco_v11_p4_r4_final_mean_train", recurrent_root / "train"),
-		("coco_v11_p4_r4_final_mean_test", recurrent_root / "test"),
+		(
+			"coco_v11_p4_r4_final_mean_test",
+			_latest_evaluation_path(recurrent_root),
+		),
 	]
 	for run in QUERY_ONLY_LORA_RUNS:
 		run_root = (
@@ -38,7 +55,7 @@ def expected_stage_paths(
 		stages.extend(
 			(
 				(f"{run.name}_train", run_root / "train"),
-				(f"{run.name}_test", run_root / "test"),
+				(f"{run.name}_test", _latest_evaluation_path(run_root)),
 			),
 		)
 	return tuple(stages)

@@ -264,6 +264,9 @@
 - [x] Fix COCO fixed-candidate evaluation to compare the namespaced `positive_id` used by
   the immutable image bank instead of the raw `image_id`; cover the failed full-test path
   with a regression test before retrying it.
+- [x] Make the hourly monitor follow the published latest test retry and reject retry
+  pointers outside their experiment root, so a recovered test cannot be mistaken for an
+  unfinished primary test directory.
 - [ ] Run the eight-V100 two-step v11 COCO smoke and verify all ranks, finite gradients,
   exact zero candidate-Qwen calls, parameter count, throughput, and peak memory.
 - [ ] Train and test full COCO v11 for one epoch, reporting frozen Pass 0 and Pass 1–4.

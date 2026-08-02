@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from looped_vl.query_recurrent.monitor import (
+	_latest_evaluation_path,
 	expected_stage_paths,
 	read_stage_statuses,
 	validate_stage_order,
@@ -41,6 +42,32 @@ def test_monitor_uses_explicit_existing_coco_control_root(tmp_path: Path) -> Non
 
 	assert stages[3][1] == existing_coco_root / "train"
 	assert stages[4][1] == existing_coco_root / "test"
+
+
+def test_monitor_follows_the_latest_evaluation_retry(tmp_path: Path) -> None:
+	run_root = tmp_path / "run"
+	(run_root / "test").mkdir(parents=True)
+	(run_root / "test_retry_01").mkdir()
+
+	assert _latest_evaluation_path(run_root) == run_root / "test_retry_01"
+	(run_root / "test_retry_02").mkdir()
+	(run_root / "latest_test.json").write_text(
+		json.dumps({"path": str(run_root / "test_retry_01")}),
+		encoding="utf-8",
+	)
+	assert _latest_evaluation_path(run_root) == run_root / "test_retry_01"
+
+
+def test_monitor_rejects_evaluation_pointer_outside_run_root(tmp_path: Path) -> None:
+	run_root = tmp_path / "run"
+	run_root.mkdir()
+	(run_root / "latest_test.json").write_text(
+		json.dumps({"path": str(tmp_path / "other" / "test")}),
+		encoding="utf-8",
+	)
+
+	with pytest.raises(ValueError, match="escapes"):
+		_latest_evaluation_path(run_root)
 
 
 def test_monitor_rejects_later_stage_before_recurrent_test_passes(tmp_path: Path) -> None:
