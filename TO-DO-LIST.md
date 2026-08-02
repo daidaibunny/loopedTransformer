@@ -273,8 +273,10 @@
 - [x] Diagnose the first v11 V100 smoke failure as recurrent FP16 backward overflow and
   isolate the small trainable recurrent Block plus final InfoNCE in FP32 while retaining
   the frozen Qwen forward in FP16; record the precision split and add a regression test.
-- [ ] Run the eight-V100 two-step v11 COCO smoke and verify all ranks, finite gradients,
+- [x] Run the eight-V100 two-step v11 COCO smoke and verify all ranks, finite gradients,
   exact zero candidate-Qwen calls, parameter count, throughput, and peak memory.
-- [ ] Train and test full COCO v11 for one epoch, reporting frozen Pass 0 and Pass 1–4.
+- [ ] Train and test full COCO v11 for one epoch, reporting frozen Pass 0 and Pass 1–4;
+  currently running in tmux `query_parallel_v11_8fa9c10_20260803` after the passed smoke.
 - [ ] After COCO v11 completes, resume or run the COCO, GQA Balanced, and CLEVR
-  last-four-layer query-only LoRA fixed-candidate controls serially.
+  last-four-layer query-only LoRA fixed-candidate controls serially; all three are locked
+  into that same queue, with the completed COCO adapter reused by explicit path.
