@@ -33,34 +33,26 @@ the current experiments.
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA, decoder layers 24–27 only | Passed | Passed | Passed | All three datasets |
-| Query-only history recurrent Block (no LoRA) | Passed | Passed | Passed | All three canonical datasets |
+| Query-only history recurrent Block (no LoRA) | No accepted current result | N/A | N/A | Historical v1 only |
 
-The active definition is `query_only_history_recurrent_no_lora_v1`, with protocol
-`single_stage_frozen_candidate_dynamic_exit_v1`. Candidate embeddings come only from
-the eight immutable frozen-Qwen banks. Candidate Qwen therefore has zero training and
-test forward calls. Query Qwen is also frozen and runs once, exposing decoder histories
-from Layers 7, 14, 21, and 28 to a trainable 288-dimensional shared recurrent Block.
-The default uses K=8 slots, at most R=4 shared updates, EOS-conditioned slot attention
-pooling, zero-gated residual fusion, and a sample-dependent exit controller. It contains
-no LoRA.
+The current diagnostic candidate is `query_only_history_recurrent_no_lora_v10_candidate`,
+with protocol `single_stage_phase_conditioned_final_pass_v10_candidate`. Candidate
+embeddings come only from the eight immutable frozen-Qwen banks, so candidate Qwen has
+zero training and test forward calls. Query Qwen is frozen and runs once, exposing
+decoder histories from Layers 7, 14, 21, and 28 to a trainable 288-dimensional shared
+recurrent Block. The default uses K=8 slots and executes exactly R=4 updates. It has no
+exit controller, exit threshold, halting loss, compute penalty, or LoRA. The first v10
+launch was interrupted before evaluation because the new phase-embedding initialization
+changed an existing parameter's random initialization; it is invalid and is not reported
+as an experiment result.
 
-Every active run uses one stage, one full-data epoch, no validation, one rolling
+Every future formal run uses one stage, one full-data epoch, no validation, one rolling
 checkpoint, per-device batch 32 on eight V100 GPUs, and a true contrastive global batch
-of 256. EXP-005 through EXP-007 have completed the COCO K=8 controls for R=1 fixed,
-R=4 fixed, and R=4 dynamic exit. EXP-008 and EXP-009 have completed the K=1 and K=4
-slot-count ablations, and EXP-010 has completed the Layer-28-only history ablation.
-EXP-011 has completed GQA Balanced and EXP-012 has completed CLEVR after an audited
-resume from the only step-1000 checkpoint. The resume lowered the restored FP16 gradient
-scale from 4,096 to 2,048 and completed all 2,735 optimizer steps with finite logged loss
-and gradients. EXP-004A/B/C/D use the superseded damped mid-decoder design. Their
-reasoning-token sweep is retained in its dedicated historical comparison section,
-including a concise comparison against the active query-only model, but it is excluded
-from the primary all-model table because it is not the active architecture.
-
-For every active recurrent test, retain frozen-Qwen Pass 0, recurrent Pass 1 through
-Pass 4, dynamic hard exit, and dynamic soft exit, with every required metric and the
-change from the in-run Pass 0. COCO uses its equal-direction mean for the concise
-comparison while retaining text-to-image and image-to-text details.
+of 256. Evaluation must retain frozen-Qwen Pass 0 and every fixed Pass 1 through Pass R,
+with every required metric and the change from the in-run Pass 0. COCO uses its
+equal-direction mean for the concise comparison while retaining text-to-image and
+image-to-text details. EXP-004 through EXP-012 remain historical evidence for rejected
+architectures and are excluded from the primary all-model table.
 
 ## Current recurrent parameter accounting
 
@@ -72,14 +64,14 @@ unchanged. The active K=8 query recurrent head adds:
 | Frozen-history projection and layer identities | 597,888 | Yes |
 | Slot queries and slot initializer | 1,001,376 | Yes |
 | Two-layer shared recurrent Block | 2,665,152 | Yes |
-| EOS-conditioned readout and zero-gated residual fusion | 592,448 | Yes |
-| Dynamic exit controller | 21,457 | Yes |
-| **Total trainable addition** | **4,878,321** | **Yes** |
+| Recurrent-step embeddings | 1,152 | Yes |
+| EOS-conditioned readout and zero-gated residual fusion | 590,401 | Yes |
+| **Total trainable addition** | **4,855,969** | **Yes** |
 
 All active recurrent parameters are retained for inference; there is no training-only
-head. The exact totals are 4,876,305 for K=1, 4,877,169 for K=4, and 4,878,321 for K=8.
+head. The current K=8 candidate has 4,855,969 trainable parameters.
 The independent last-four-decoder-layer LoRA baseline trains 4,456,448 parameters, so
-K=8 recurrent adds 421,873 more parameters, or 1.0947 times that LoRA parameter count.
+K=8 recurrent adds 399,521 more parameters, or 1.0896 times that LoRA parameter count.
 The full 28-layer LoRA baseline trains 31,195,136 parameters. Parameter counts alone do
 not establish quality; use the held-out metrics below.
 
@@ -503,15 +495,15 @@ insufficient safety margin; they are safe selections, not proven mathematical ma
   `k8`, `k12`, `k16`, `k32` subdirectories. The queue tmux log file exists but is
   empty, so per-run console output must be read from each subdirectory instead.
 
-### Reasoning-token sweep compared with the active recurrent model
+### Historical reasoning-token sweep and historical query-only v1
 
 This table restores the former K=8/12/16/32 reasoning-token sweep as a visible
 historical comparison without treating it as the active architecture. The old runs use
 their protocol-defined Pass 4 as the final output; “best observed” separately shows the
-best test pass from the same checkpoint. The active reference uses its locked dynamic-hard
+best test pass from the same checkpoint. The v1 reference uses its historical dynamic-hard
 output. All mAP values are the COCO equal-direction mean on the same held-out split, but
 the architectures and candidate/evaluation code paths differ, so the comparison is
-diagnostic rather than a controlled slot-count ablation of the active model.
+diagnostic rather than a controlled slot-count ablation of the current candidate.
 
 | Architecture / experiment | K | Maximum passes | Final output | Final mAP | Best observed output | Best observed mAP | Change from frozen Qwen | Train + test time |
 | --- | ---: | ---: | --- | ---: | --- | ---: | ---: | ---: |
@@ -519,11 +511,11 @@ diagnostic rather than a controlled slot-count ablation of the active model.
 | Old damped mid-decoder, EXP-004B | 12 | 4 | Pass 4 | 60.9216 | Pass 1 | 61.0989 | −0.3227 | 2h57m15s |
 | Old damped mid-decoder, EXP-004C | 16 | 4 | Pass 4 | 61.3779 | Pass 4 | 61.3779 | +0.1336 | 2h59m46s |
 | Old damped mid-decoder, EXP-004D | 32 | 4 | Pass 4 | 61.3595 | Pass 4 | 61.3595 | +0.1152 | 3h10m37s |
-| Active query-only history recurrent, EXP-007 | 8 | 4 | Dynamic hard | 61.7410 | Pass 3 | 61.7470 | +0.4921 | 0h59m15s |
+| Historical query-only history recurrent v1, EXP-007 | 8 | 4 | Dynamic hard | 61.7410 | Pass 3 | 61.7470 | +0.4921 | 0h59m15s |
 
 Among the old final Pass-4 outputs, K=16 was best. Across every recorded pass, K=8
 Pass 1 was best. Increasing K therefore did not produce a monotonic quality gain, and
-all four old final outputs remained below the active query-only recurrent result while
+all four old final outputs remained below the historical query-only v1 result while
 taking roughly three times as long.
 
 ### Per-run identity and efficiency
@@ -621,7 +613,7 @@ not yet run.
 
 - Status/date: passed. Training ran from 2026-08-01T17:25:17Z to
   2026-08-01T18:16:08Z; full-test evaluation finished at 2026-08-01T18:20:02Z.
-- Objective: parameter-matched non-recurrent control for the active query-only design.
+- Objective: parameter-matched non-recurrent control for the historical query-only v1.
   It applies the trainable Block once and tests whether the new history readout helps
   before attributing any gain to repeated shared computation.
 - Route/node: `8XV100`,
@@ -1054,19 +1046,12 @@ gradients were finite. Final slot pairwise absolute cosine was 0.9934.
 
 ## All-model horizontal comparison
 
-This is the single primary comparison table. It contains the frozen reference, the two
-locked LoRA baselines, the final output of the locked recurrent architecture, and one
-explicitly requested old-architecture recurrent reference. Other controls and ablations
-remain in their corresponding experiment sections above and are not duplicated here.
+This is the single primary comparison table. It contains the frozen reference and the two
+locked LoRA baselines. No recurrent row is included until the current fixed-pass design
+passes its diagnostic gate and completes a formal run. Historical recurrent controls and
+ablations remain in their corresponding experiment sections above.
 COCO uses the equal-direction mean of text-to-image and image-to-text. GQA Balanced and
 CLEVR use answer retrieval. Compare metrics only within the same dataset.
-The recurrent row uses the four-history K=8, R=4 dynamic-hard-exit configuration: it is
-the only recurrent configuration evaluated on all three canonical datasets. The R=1
-control is not recurrent, while the K=1 COCO ablation's 0.0096-point mAP advantage over
-K=8 is too small and lacks GQA/CLEVR confirmation.
-The old-architecture row uses the online two-tower EXP-004C K=16 Pass 4 because it is the
-best protocol-defined final output in the old K=8/12/16/32 sweep. No verified full GQA
-Balanced or CLEVR run exists for that architecture, so those cells are `N/A`.
 
 <table>
 <thead>
@@ -1140,39 +1125,6 @@ Balanced or CLEVR run exists for that architecture, so those cells are `N/A`.
 <td>Passed</td>
 <td>93.3167</td><td>87.4560</td><td>19.9515</td><td>9.9997</td><td>5.0000</td>
 <td>87.4560</td><td>99.7573</td><td>99.9973</td><td>100.0000</td><td>93.3167</td><td>95.0396</td>
-</tr>
-<tr>
-<td>Superseded online two-tower damped mid-decoder recurrent (no LoRA), K=16 Pass 4</td>
-<td>16</td>
-<td>4</td>
-<td>2,658,305</td>
-<td>Passed</td>
-<td>61.3779</td><td>63.4129</td><td>33.4504</td><td>20.4321</td><td>11.7182</td>
-<td>34.9299</td><td>65.1075</td><td>75.3321</td><td>83.6843</td><td>72.7805</td>
-<td>66.9165</td>
-<td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
-</tr>
-<tr>
-<td>Query-only history recurrent Block (no LoRA), locked K=8/R=4 dynamic hard exit</td>
-<td>8</td>
-<td>4</td>
-<td>4,878,321</td>
-<td>Passed</td>
-<td>61.7410</td><td>64.3811</td><td>34.1557</td><td>20.7351</td><td>11.7851</td>
-<td>34.5945</td><td>65.4407</td><td>75.8581</td><td>83.8939</td><td>73.4197</td>
-<td>67.4011</td>
-<td>Passed</td>
-<td>65.2968</td><td>49.6979</td><td>17.1713</td><td>9.2328</td><td>4.7714</td>
-<td>49.6979</td><td>85.8563</td><td>92.3279</td><td>95.4285</td><td>65.2968</td>
-<td>71.6876</td>
-<td>Passed</td>
-<td>91.2619</td><td>84.0533</td><td>19.9277</td><td>10.0000</td><td>5.0000</td>
-<td>84.0533</td><td>99.6387</td><td>100.0000</td><td>100.0000</td><td>91.2619</td><td>93.5018</td>
 </tr>
 </tbody>
 </table>

@@ -164,6 +164,28 @@ def test_recurrent_step_embedding_changes_only_its_current_and_later_passes() ->
 	)
 
 
+def test_phase_initialization_does_not_change_existing_parameter_initialization() -> None:
+	config = QueryRecurrentConfig()
+	common_generator = torch.Generator(device="cpu")
+	common_generator.manual_seed(config.seed)
+	expected_layer_embeddings = torch.empty(28, config.state_size)
+	expected_layer_embeddings.normal_(
+		mean=0.0,
+		std=0.02,
+		generator=common_generator,
+	)
+	expected_output_projection = torch.empty(config.hidden_size, config.state_size)
+	torch.nn.init.xavier_uniform_(
+		expected_output_projection,
+		generator=common_generator,
+	)
+
+	head = QueryRecurrentHead(config)
+
+	assert torch.equal(head.layer_embeddings, expected_layer_embeddings)
+	assert torch.equal(head.output_projection.weight, expected_output_projection)
+
+
 def test_recurrent_diagnostics_expose_each_pass_movement_attention_and_collapse() -> None:
 	base = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
 	pass_one = torch.nn.functional.normalize(

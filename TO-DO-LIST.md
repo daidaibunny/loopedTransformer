@@ -239,6 +239,10 @@
 - [x] Add one four-row learned recurrent-step embedding to condition the shared Block on
   Pass 1/2/3/4 without changing its shared attention or feed-forward weights. This v10
   candidate adds only 1,152 parameters and remains below the 5,000,000 limit.
+- [x] Reject the first v10 diagnostic launch as an unfair ablation: initializing the new
+  recurrent-step embeddings advanced the existing output-projection random generator.
+  Give recurrent-step embeddings an independent seed and add a regression test that locks
+  the pre-v10 layer-embedding and output-projection initialization.
 - [ ] Run the same 200-step COCO quality diagnostic and full Pass-0-to-Pass-4 test for the
   v10 phase-conditioned candidate, checking whether Pass 3/4 now keep moving and beat
   both Pass 0 and Pass 1.

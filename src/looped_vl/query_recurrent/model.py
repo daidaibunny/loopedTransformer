@@ -303,18 +303,27 @@ class QueryRecurrentHead(nn.Module):
 			)
 
 	def _reset_parameters(self) -> None:
-		generator = torch.Generator(device="cpu")
-		generator.manual_seed(self.config.seed)
+		common_generator = torch.Generator(device="cpu")
+		common_generator.manual_seed(self.config.seed)
+		phase_generator = torch.Generator(device="cpu")
+		phase_generator.manual_seed(self.config.seed + 1)
 		with torch.no_grad():
-			self.layer_embeddings.normal_(mean=0.0, std=0.02, generator=generator)
+			self.layer_embeddings.normal_(
+				mean=0.0,
+				std=0.02,
+				generator=common_generator,
+			)
 			nn.init.orthogonal_(self.slot_queries)
 			self.slot_queries.mul_(self.config.state_size**0.5 * 0.02)
 			self.recurrent_step_embeddings.normal_(
 				mean=0.0,
 				std=0.02,
-				generator=generator,
+				generator=phase_generator,
 			)
-			nn.init.xavier_uniform_(self.output_projection.weight, generator=generator)
+			nn.init.xavier_uniform_(
+				self.output_projection.weight,
+				generator=common_generator,
+			)
 			self.residual_gate.zero_()
 
 	@property
