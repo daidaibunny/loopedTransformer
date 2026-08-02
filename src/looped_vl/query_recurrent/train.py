@@ -417,6 +417,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		history_layers=args.history_layers,
 		temperature=args.temperature,
 		direct_pass_loss_weight=args.direct_pass_loss_weight,
+		slot_proposal_loss_weight=args.slot_proposal_loss_weight,
 		progressive_loss_weight=args.progressive_loss_weight,
 		progressive_margin=args.progressive_margin,
 		hard_negative_count=args.hard_negative_count,
@@ -877,6 +878,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--warmup-ratio", type=float, default=0.02)
 	parser.add_argument("--temperature", type=float, default=0.02)
 	parser.add_argument("--direct-pass-loss-weight", type=float, default=1.0)
+	parser.add_argument("--slot-proposal-loss-weight", type=float, default=0.1)
 	parser.add_argument("--progressive-loss-weight", type=float, default=0.1)
 	parser.add_argument("--progressive-margin", type=float, default=0.02)
 	parser.add_argument("--hard-negative-count", type=int, default=32)

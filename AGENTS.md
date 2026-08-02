@@ -8,7 +8,7 @@
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
 - The active diagnostic candidate is
-  `query_only_history_recurrent_no_lora_v5_candidate`. The completed v1 query-only runs,
+  `query_only_history_recurrent_no_lora_v6_candidate`. The completed v1 query-only runs,
   the rejected unbounded-residual v2 diagnostic, the unnormalized zero-gated v3
   diagnostic, and former
   `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue remain historical only;
@@ -23,21 +23,23 @@
   layer contains slot self-attention, cross-attention to the unchanged Qwen histories,
   and a feed-forward network. The default is K=8 and R=4; formal ablations use K=1/4/8
   and R=1/4.
-- Preserve slot identity in every shared Block layer by adding the RMS-normalized learned
-  slot query to the self-attention query and history cross-attention query. Do not add it
-  to the recurrent state residual itself. This keeps parallel slot tracks distinguishable
-  even when their accumulated state has a large common component, without a diversity
-  loss or extra parameters.
+- Add each learned slot query back to its corresponding slot state once at the start of
+  every recurrent pass. Do not use the rejected v5 mechanism that added an RMS-normalized
+  slot identity to every attention query; the fixed diagnostic showed more slot collapse,
+  not less.
 - Use `EOS-conditioned slot attention pooling` after every recurrent pass: the frozen
   final-valid-token embedding selects useful slots with soft attention. Project the
-  selected state to 2,048 dimensions with Xavier initialization and L2-normalize this
-  residual direction before multiplying it by a shared `tanh` scalar gate initialized to
+  selected state to a 2,048-dimensional unit slot proposal with Xavier initialization.
+  During training, supervise every proposal against the same frozen candidate gallery
+  with InfoNCE weight 0.1; this gives the slot branch a direct gradient even while the
+  output gate is exactly zero. This is a training-only auxiliary loss and must not create
+  a second inference output. Multiply the proposal by a shared `tanh` scalar gate initialized to
   zero. Add that norm-bounded update to the frozen Qwen embedding, then L2-normalize. This
   `zero-gated residual fusion` makes every pass exactly equal to frozen Qwen at
   initialization and makes the gate value an interpretable upper bound on update norm,
   independent of projection width or weight magnitude. The gate receives the first
-  optimizer-step gradient; the residual projection and recurrent path receive gradients
-  after the gate becomes nonzero.
+  optimizer-step gradient, while the proposal loss trains the residual projection and
+  recurrent path from the first optimizer step.
 - The first v2 uses an explicit fixed recurrent count only. It contains no exit controller,
   exit threshold, halting loss, or compute penalty. Reconsider dynamic exit only after a
   fixed Pass-4 model shows a measurable gain over a separately trained fixed Pass-1 model.
@@ -148,16 +150,17 @@
   or training protocol.
 - Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
   and `report.json` must declare architecture
-  `query_only_history_recurrent_no_lora_v5_candidate`, protocol
-  `single_stage_persistent_slot_identity_v5_candidate`, `backbone_frozen: true`,
+  `query_only_history_recurrent_no_lora_v6_candidate`, protocol
+  `single_stage_slot_proposal_supervision_v6_candidate`, `backbone_frozen: true`,
   `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
 - Recurrent training runs for exactly one epoch. Compute InfoNCE separately inside each
   candidate gallery; a COCO text-to-image query must never use caption candidates, and an
   image-to-text query must never use image candidates. Directly supervise every fused
-  recurrent pass with linearly increasing normalized pass weights. Use progressive margin
-  0.02 with weight 0.1 and mine 32 same-gallery hard negatives from the complete immutable
+  recurrent pass and every unit slot proposal with the same linearly increasing normalized
+  pass weights. Use slot-proposal loss weight 0.1, progressive margin 0.02 with weight 0.1,
+  and mine 32 same-gallery hard negatives from the complete immutable
   bank while excluding every matching `positive_id`. Slot absolute cosine is logged but
   has weight 0.0. All trainable groups use one learning-rate schedule from step one.
 - The last-four-layer query-only LoRA control is separate from the ordinary two-tower LoRA

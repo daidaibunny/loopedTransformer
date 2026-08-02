@@ -53,22 +53,17 @@ class RecurrentHistoryLayer(nn.Module):
 		slots: torch.Tensor,
 		memory: torch.Tensor,
 		memory_padding_mask: torch.Tensor,
-		*,
-		slot_identity: torch.Tensor,
 	) -> torch.Tensor:
 		"""Apply one shared state update while the Qwen memory remains fixed."""
-		if slot_identity.shape[-2:] != slots.shape[-2:]:
-			raise ValueError("Slot identity must match the slot count and state dimension")
-		identity = parameter_free_rms_norm(slot_identity).to(slots.dtype)
 		normalized_slots = self.self_norm(slots)
 		self_update = self.self_attention(
-			normalized_slots + identity,
+			normalized_slots,
 			normalized_slots,
 			normalized_slots,
 			need_weights=False,
 		)[0]
 		slots = slots + self_update
-		history_query = self.history_norm(slots) + identity
+		history_query = self.history_norm(slots)
 		history_update = self.history_attention(
 			history_query,
 			memory,
@@ -86,6 +81,7 @@ class QueryRecurrentOutput:
 
 	embeddings: torch.Tensor
 	step_embeddings: tuple[torch.Tensor, ...]
+	slot_proposal_embeddings: tuple[torch.Tensor, ...]
 	slot_states: tuple[torch.Tensor, ...]
 	slot_attention_weights: tuple[torch.Tensor, ...]
 
@@ -228,6 +224,12 @@ def combine_query_recurrent_outputs(
 			)
 			for step in range(step_count)
 		),
+		slot_proposal_embeddings=tuple(
+			combine_tensors(
+				tuple(output.slot_proposal_embeddings[step] for _indices, output in groups),
+			)
+			for step in range(step_count)
+		),
 		slot_states=tuple(
 			combine_tensors(
 				tuple(output.slot_states[step] for _indices, output in groups),
@@ -349,7 +351,7 @@ class QueryRecurrentHead(nn.Module):
 		self,
 		slots: torch.Tensor,
 		base_embeddings: torch.Tensor,
-	) -> tuple[torch.Tensor, torch.Tensor]:
+	) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 		condition = parameter_free_rms_norm(
 			self.memory_projection(base_embeddings.to(slots.dtype)),
 		)
@@ -358,17 +360,17 @@ class QueryRecurrentHead(nn.Module):
 		scores = scores / (self.config.state_size**0.5)
 		weights = torch.softmax(scores, dim=1)
 		pooled = torch.einsum("bk,bkd->bd", weights.to(slots.dtype), slots)
-		residual = F.normalize(
+		proposal = F.normalize(
 			self.output_projection(self.output_norm(pooled)).float(),
 			p=2,
 			dim=-1,
 		)
 		fused = F.normalize(
-			base_embeddings.float() + torch.tanh(self.residual_gate.float()) * residual,
+			base_embeddings.float() + torch.tanh(self.residual_gate.float()) * proposal,
 			p=2,
 			dim=-1,
 		)
-		return fused, weights
+		return fused, proposal, weights
 
 	def forward(
 		self,
@@ -386,23 +388,23 @@ class QueryRecurrentHead(nn.Module):
 		)
 		slots = self._initialize_slots(memory, memory_padding_mask)
 		step_embeddings = []
+		slot_proposal_embeddings = []
 		slot_states = []
 		slot_attention_weights = []
 		for _step in range(self.config.max_recurrent_steps):
+			# Retain the v4 behavior while testing proposal supervision in isolation.
+			slots = slots + self.slot_queries[None].to(slots.dtype)
 			for layer in self.recurrent_layers:
-				slots = layer(
-					slots,
-					memory,
-					memory_padding_mask,
-					slot_identity=self.slot_queries,
-				)
-			fused, slot_weights = self._read_step(slots, base_embeddings)
+				slots = layer(slots, memory, memory_padding_mask)
+			fused, proposal, slot_weights = self._read_step(slots, base_embeddings)
 			step_embeddings.append(fused)
+			slot_proposal_embeddings.append(proposal)
 			slot_states.append(slots)
 			slot_attention_weights.append(slot_weights)
 		return QueryRecurrentOutput(
 			embeddings=step_embeddings[-1],
 			step_embeddings=tuple(step_embeddings),
+			slot_proposal_embeddings=tuple(slot_proposal_embeddings),
 			slot_states=tuple(slot_states),
 			slot_attention_weights=tuple(slot_attention_weights),
 		)

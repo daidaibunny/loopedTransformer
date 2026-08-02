@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Any
 
-QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v5_candidate"
-QUERY_RECURRENT_PROTOCOL = "single_stage_persistent_slot_identity_v5_candidate"
+QUERY_RECURRENT_ARCHITECTURE = "query_only_history_recurrent_no_lora_v6_candidate"
+QUERY_RECURRENT_PROTOCOL = "single_stage_slot_proposal_supervision_v6_candidate"
 MAX_QUERY_RECURRENT_PARAMETERS = 5_000_000
 DEFAULT_HISTORY_LAYERS = (7, 14, 21, 28)
 SUPPORTED_SLOT_COUNTS = (1, 4, 8)
@@ -27,6 +27,7 @@ class QueryRecurrentConfig:
 	history_layers: tuple[int, ...] = DEFAULT_HISTORY_LAYERS
 	temperature: float = 0.02
 	direct_pass_loss_weight: float = 1.0
+	slot_proposal_loss_weight: float = 0.1
 	progressive_loss_weight: float = 0.1
 	progressive_margin: float = 0.02
 	hard_negative_count: int = 32
@@ -56,6 +57,7 @@ class QueryRecurrentConfig:
 			raise ValueError("temperature must be positive")
 		for name in (
 			"direct_pass_loss_weight",
+			"slot_proposal_loss_weight",
 			"progressive_loss_weight",
 			"progressive_margin",
 		):

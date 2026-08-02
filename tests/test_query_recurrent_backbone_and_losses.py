@@ -180,7 +180,12 @@ def test_query_recurrent_loss_backpropagates_without_candidate_gradients() -> No
 	assert head.residual_gate.grad is not None
 	assert head.residual_gate.grad.abs().sum() > 0
 	assert head.output_projection.weight.grad is not None
-	assert head.output_projection.weight.grad.abs().sum() == 0
+	assert head.output_projection.weight.grad.abs().sum() > 0
+	assert losses["slot_proposal_info_nce"].item() > 0
+	assert any(
+		parameter.grad is not None and parameter.grad.abs().sum() > 0
+		for parameter in head.recurrent_layers.parameters()
+	)
 
 
 def test_contrastive_loss_never_uses_candidates_from_another_gallery() -> None:

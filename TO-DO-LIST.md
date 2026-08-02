@@ -200,6 +200,12 @@
   documented protobuf compatibility mode before unavoidable Qwen vision imports reach its
   legacy ONNX package.
 - [ ] Run the same 200-step COCO quality diagnostic for the v5 persistent-identity candidate.
+- [x] Add a no-parameter, training-only InfoNCE loss on every 2,048-dimensional unit slot
+  proposal so the residual projection and recurrent Block receive gradients while the
+  inference residual gate remains initialized to exactly zero; restore the v4 recurrent
+  state path so this v6 diagnostic changes only the supervision mechanism relative to v4.
+- [ ] Run the same 200-step COCO quality diagnostic for the v6 slot-proposal-supervised
+  candidate and compare its component gradients and Pass-0-to-Pass-4 metrics with v4/v5.
 - [ ] Use the diagnostic evidence to isolate gradient reachability, slot specialization,
   recurrent update stability, hard-negative freshness, and progressive-loss effectiveness.
 - [ ] Change one failed mechanism at a time and rerun the same fixed diagnostic window;

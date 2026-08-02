@@ -16,7 +16,6 @@ from looped_vl.query_recurrent.config import (
 from looped_vl.query_recurrent.model import (
 	GroupedQueryRecurrentHead,
 	QueryRecurrentHead,
-	RecurrentHistoryLayer,
 	query_recurrent_diagnostics,
 	recurrent_gradient_group_norms,
 )
@@ -38,22 +37,6 @@ def _inputs(config: QueryRecurrentConfig, batch_size: int = 3) -> dict[str, torc
 	}
 
 
-class _RecordingAttention(torch.nn.Module):
-	def __init__(self) -> None:
-		super().__init__()
-		self.query: torch.Tensor | None = None
-
-	def forward(
-		self,
-		query: torch.Tensor,
-		_key: torch.Tensor,
-		_value: torch.Tensor,
-		**_kwargs: object,
-	) -> tuple[torch.Tensor, None]:
-		self.query = query.detach().clone()
-		return torch.zeros_like(query), None
-
-
 def test_locked_query_recurrent_identity_is_frozen_candidate_no_lora() -> None:
 	identity = QueryRecurrentConfig().identity()
 
@@ -64,6 +47,7 @@ def test_locked_query_recurrent_identity_is_frozen_candidate_no_lora() -> None:
 	assert identity["lora_enabled"] is False
 	assert identity["formal_training_stages"] == 1
 	assert identity["history_layers"] == DEFAULT_HISTORY_LAYERS
+	assert identity["slot_proposal_loss_weight"] == 0.1
 
 
 @pytest.mark.parametrize("slot_count", [1, 4, 8])
@@ -105,47 +89,19 @@ def test_zero_gated_residual_scale_is_independent_of_projection_magnitude() -> N
 	assert movement.max().item() < 0.12
 
 
-def test_recurrent_history_attention_keeps_persistent_slot_identities() -> None:
-	config = QueryRecurrentConfig()
-	layer = RecurrentHistoryLayer(config)
-	self_attention = _RecordingAttention()
-	history_attention = _RecordingAttention()
-	layer.self_attention = self_attention
-	layer.history_attention = history_attention
-	slots = torch.zeros(1, 2, config.state_size)
-	memory = torch.zeros(1, 3, config.state_size)
-	memory_padding_mask = torch.zeros(1, 3, dtype=torch.bool)
-	identity = torch.stack(
-		(
-			torch.tensor([1.0, -1.0] * (config.state_size // 2)),
-			torch.tensor([-1.0, 1.0] * (config.state_size // 2)),
-		),
-	)
-
-	layer(
-		slots,
-		memory,
-		memory_padding_mask,
-		slot_identity=identity,
-	)
-
-	assert history_attention.query is not None
-	assert not torch.equal(
-		history_attention.query[:, 0],
-		history_attention.query[:, 1],
-	)
-
-
 def test_fixed_recurrence_returns_normalized_pass_outputs_and_final_pass() -> None:
 	config = QueryRecurrentConfig()
 	head = QueryRecurrentHead(config)
 	output = head(**_inputs(config))
 
 	assert len(output.step_embeddings) == 4
+	assert len(output.slot_proposal_embeddings) == 4
 	assert len(output.slot_states) == 4
 	assert len(output.slot_attention_weights) == 4
 	assert torch.allclose(output.embeddings.norm(dim=1), torch.ones(3), atol=1e-5)
 	assert torch.equal(output.embeddings, output.step_embeddings[-1])
+	for proposal in output.slot_proposal_embeddings:
+		assert torch.allclose(proposal.norm(dim=1), torch.ones(3), atol=1e-5)
 	for weights in output.slot_attention_weights:
 		assert torch.allclose(weights.sum(dim=1), torch.ones(3), atol=1e-6)
 
@@ -191,7 +147,7 @@ def test_recurrent_diagnostics_expose_each_pass_movement_attention_and_collapse(
 	assert diagnostics["step_2_slot_attention_max_weight"].item() == pytest.approx(1.0)
 
 
-def test_zero_initialized_readout_exposes_first_step_gradient_starvation() -> None:
+def test_zero_gate_still_blocks_fused_only_first_step_gradients() -> None:
 	config = QueryRecurrentConfig(num_slots=4, max_recurrent_steps=1)
 	head = QueryRecurrentHead(config)
 	inputs = _inputs(config, batch_size=2)
