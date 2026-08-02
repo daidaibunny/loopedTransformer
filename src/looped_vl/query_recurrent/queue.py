@@ -416,7 +416,7 @@ def _run_lora_control(
 	args: argparse.Namespace,
 	status_path: Path,
 ) -> None:
-	run_root = Path(args.control_output_root) / run.name
+	run_root = _lora_control_run_root(run, args=args)
 	training_output = run_root / "train"
 	if not _passed(training_output / "status.json"):
 		resume_checkpoint = _require_resumable_or_fresh(training_output)
@@ -444,6 +444,18 @@ def _run_lora_control(
 		run_root / "latest_test.json",
 		{"path": str(evaluation_output), "report": str(evaluation_output / "report.json")},
 	)
+
+
+def _lora_control_run_root(
+	run: QueryOnlyLoraRun,
+	*,
+	args: argparse.Namespace,
+) -> Path:
+	"""Resolve an explicitly recorded legacy COCO control without guessing paths."""
+	existing_coco_root = getattr(args, "existing_coco_control_run_root", None)
+	if run.dataset == "coco" and existing_coco_root is not None:
+		return Path(existing_coco_root)
+	return Path(args.control_output_root) / run.name
 
 
 def run_queue(args: argparse.Namespace) -> None:
@@ -479,6 +491,11 @@ def run_queue(args: argparse.Namespace) -> None:
 		"model_root": str(args.model_root),
 		"candidate_root": str(args.candidate_root),
 		"control_output_root": str(args.control_output_root),
+		"existing_coco_control_run_root": (
+			str(args.existing_coco_control_run_root)
+			if args.existing_coco_control_run_root is not None
+			else None
+		),
 	}
 	if manifest_path.exists():
 		existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -532,6 +549,7 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument("--output-root", type=Path, required=True)
 	parser.add_argument("--control-output-root", type=Path, required=True)
+	parser.add_argument("--existing-coco-control-run-root", type=Path)
 	parser.add_argument("--world-size", type=int, default=8)
 	parser.add_argument("--per-device-batch-size", type=int, default=32)
 	parser.add_argument("--evaluation-batch-size", type=int, default=32)

@@ -142,6 +142,13 @@ def _queue_command(args: argparse.Namespace) -> list[str]:
 		"--num-workers",
 		str(args.num_workers),
 	]
+	if args.existing_coco_control_run_root is not None:
+		command.extend(
+			[
+				"--existing-coco-control-run-root",
+				str(args.existing_coco_control_run_root),
+			],
+		)
 	return command
 
 
@@ -217,6 +224,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--candidate-root", type=Path, required=True)
 	parser.add_argument("--output-root", type=Path, required=True)
 	parser.add_argument("--control-output-root", type=Path, required=True)
+	parser.add_argument("--existing-coco-control-run-root", type=Path)
 	parser.add_argument("--candidate-tmux", required=True)
 	parser.add_argument(
 		"--guard-script",

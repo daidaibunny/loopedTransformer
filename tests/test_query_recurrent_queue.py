@@ -76,6 +76,7 @@ def _args(tmp_path: Path) -> SimpleNamespace:
 		candidate_root=tmp_path / "banks",
 		output_root=tmp_path / "outputs",
 		control_output_root=tmp_path / "controls",
+		existing_coco_control_run_root=None,
 	)
 
 
@@ -242,6 +243,17 @@ def test_launcher_passes_the_separate_lora_control_root(tmp_path: Path) -> None:
 
 	assert command[command.index("--control-output-root") + 1] == str(
 		args.control_output_root,
+	)
+
+
+def test_launcher_passes_explicit_existing_coco_control_root(tmp_path: Path) -> None:
+	args = _args(tmp_path)
+	args.existing_coco_control_run_root = tmp_path / "existing-coco"
+
+	command = _queue_command(args)
+
+	assert command[command.index("--existing-coco-control-run-root") + 1] == str(
+		args.existing_coco_control_run_root,
 	)
 
 

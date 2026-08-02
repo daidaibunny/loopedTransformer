@@ -31,6 +31,18 @@ def test_monitor_locks_recurrent_before_three_lora_controls(tmp_path: Path) -> N
 	]
 
 
+def test_monitor_uses_explicit_existing_coco_control_root(tmp_path: Path) -> None:
+	existing_coco_root = tmp_path / "historical" / "coco"
+	stages = expected_stage_paths(
+		output_root=tmp_path / "recurrent",
+		control_output_root=tmp_path / "controls",
+		existing_coco_control_run_root=existing_coco_root,
+	)
+
+	assert stages[3][1] == existing_coco_root / "train"
+	assert stages[4][1] == existing_coco_root / "test"
+
+
 def test_monitor_rejects_later_stage_before_recurrent_test_passes(tmp_path: Path) -> None:
 	stages = expected_stage_paths(
 		output_root=tmp_path / "recurrent",

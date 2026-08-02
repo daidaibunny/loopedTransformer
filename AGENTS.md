@@ -165,6 +165,9 @@
   rows as recurrent training, one full epoch, and no validation. COCO uses its split-specific
   image/text galleries, while GQA Balanced and CLEVR use their shared training-answer
   galleries.
+- A serial recurrent queue may reuse a completed COCO query-only LoRA control only through
+  the explicit `--existing-coco-control-run-root` argument. Record that exact root in the
+  queue manifest; never infer, rename, copy, or silently retrain an existing control.
 
 ## Verification
 

@@ -17,6 +17,7 @@ def expected_stage_paths(
 	*,
 	output_root: Path,
 	control_output_root: Path,
+	existing_coco_control_run_root: Path | None = None,
 ) -> tuple[tuple[str, Path], ...]:
 	"""Return the only valid production order for this launch."""
 	recurrent_root = output_root / "coco_v11_p4_r4_final_mean"
@@ -29,7 +30,11 @@ def expected_stage_paths(
 		("coco_v11_p4_r4_final_mean_test", recurrent_root / "test"),
 	]
 	for run in QUERY_ONLY_LORA_RUNS:
-		run_root = control_output_root / run.name
+		run_root = (
+			existing_coco_control_run_root
+			if run.dataset == "coco" and existing_coco_control_run_root is not None
+			else control_output_root / run.name
+		)
 		stages.extend(
 			(
 				(f"{run.name}_train", run_root / "train"),
@@ -118,6 +123,7 @@ def collect_snapshot(args: argparse.Namespace) -> dict[str, Any]:
 	stages = expected_stage_paths(
 		output_root=args.output_root,
 		control_output_root=args.control_output_root,
+		existing_coco_control_run_root=args.existing_coco_control_run_root,
 	)
 	statuses = read_stage_statuses(stages)
 	validate_stage_order(statuses)
@@ -175,6 +181,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--expected-commit", required=True)
 	parser.add_argument("--output-root", type=Path, required=True)
 	parser.add_argument("--control-output-root", type=Path, required=True)
+	parser.add_argument("--existing-coco-control-run-root", type=Path)
 	parser.add_argument("--queue-tmux", required=True)
 	parser.add_argument("--log-path", type=Path, required=True)
 	parser.add_argument("--poll-seconds", type=float, default=3600.0)
