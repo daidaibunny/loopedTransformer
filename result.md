@@ -1046,12 +1046,16 @@ gradients were finite. Final slot pairwise absolute cosine was 0.9934.
 
 ## All-model horizontal comparison
 
-This is the single primary comparison table. It contains the frozen reference and the two
-locked LoRA baselines. No recurrent row is included until the current fixed-pass design
-passes its diagnostic gate and completes a formal run. Historical recurrent controls and
-ablations remain in their corresponding experiment sections above.
+This is the single primary comparison table. It contains the frozen reference, the two
+locked LoRA baselines, and the explicitly requested best historical online recurrent
+reference. No row from the current recurrent candidate is included until its fixed-pass
+design passes the diagnostic gate and completes a formal run. Other historical recurrent
+controls and ablations remain in their corresponding experiment sections above.
 COCO uses the equal-direction mean of text-to-image and image-to-text. GQA Balanced and
 CLEVR use answer retrieval. Compare metrics only within the same dataset.
+The historical row uses the online two-tower EXP-004C K=16 Pass 4 because it is the best
+protocol-defined final output in the old K=8/12/16/32 sweep. No verified full GQA
+Balanced or CLEVR run exists for that architecture, so those cells are `N/A`.
 
 <table>
 <thead>
@@ -1125,6 +1129,22 @@ CLEVR use answer retrieval. Compare metrics only within the same dataset.
 <td>Passed</td>
 <td>93.3167</td><td>87.4560</td><td>19.9515</td><td>9.9997</td><td>5.0000</td>
 <td>87.4560</td><td>99.7573</td><td>99.9973</td><td>100.0000</td><td>93.3167</td><td>95.0396</td>
+</tr>
+<tr>
+<td>Historical online two-tower damped mid-decoder recurrent (no LoRA), K=16 Pass 4</td>
+<td>16</td>
+<td>4</td>
+<td>2,658,305</td>
+<td>Passed</td>
+<td>61.3779</td><td>63.4129</td><td>33.4504</td><td>20.4321</td><td>11.7182</td>
+<td>34.9299</td><td>65.1075</td><td>75.3321</td><td>83.6843</td><td>72.7805</td>
+<td>66.9165</td>
+<td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 </tr>
 </tbody>
 </table>
