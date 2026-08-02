@@ -224,6 +224,8 @@ def run_queue(args: argparse.Namespace, runs: list[BaselineRun]) -> None:
 			"dataset_root": str(args.dataset_root),
 			"model_root": str(args.model_root),
 			"lora_scope": args.lora_scope,
+			"candidate_bank_used": False,
+			"candidate_encoding_protocol": "online_same_qwen_as_query",
 		},
 	)
 	status_path = output_root / "status.json"

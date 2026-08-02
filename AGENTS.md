@@ -80,6 +80,10 @@
   - GQA Balanced uses official train/validation/testdev.
   - CLEVR uses full official train and the seed-42 image-disjoint halves of official
     validation for validation/test.
+- Full-layer and last-four-decoder-layer LoRA baselines must read the same raw baseline
+  Parquet rows for every dataset. They encode both query and candidate online with the
+  active Qwen model; they must never read an immutable candidate bank. Candidate banks
+  belong only to the query-only recurrent experiments below.
 - Recurrent training, acceptance, and evaluation must read those exact baseline Parquet
   files directly. Do not copy rows into another recurrent dataset or use
   `looped_vl_single_v1/{coco_full,gqa_balanced_full,clevr_full}`.

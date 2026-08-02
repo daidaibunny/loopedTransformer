@@ -455,6 +455,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"visual_length_buckets": args.visual_length_buckets,
 		"min_visual_bucket_size": args.min_visual_bucket_size,
 		"lora_decoder_scope": lora_scope,
+		"candidate_bank_used": False,
+		"candidate_encoding_protocol": "online_same_qwen_as_query",
 	}
 	cursor = TrainingCursor(
 		stage=0,
@@ -499,6 +501,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"dataset": args.dataset,
 		"dataset_root": str(args.dataset_root),
 		"train_rows": len(loader.dataset),
+		"candidate_bank_used": False,
+		"candidate_encoding_protocol": "online_same_qwen_as_query",
 		"direction_counts": (
 			count_coco_retrieval_directions(len(loader.dataset))
 			if args.dataset == "coco"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -81,6 +82,40 @@ def test_training_command_can_select_only_the_last_four_decoder_layers(
 	assert command[command.index("--lora-decoder-layer-indices") + 1] == "24,25,26,27"
 
 
+def test_clevr_lora_scopes_share_raw_data_and_never_use_candidate_banks(
+	tmp_path: Path,
+) -> None:
+	run = BaselineRun("clevr", 32, 1, 4)
+	common = {
+		"project_root": tmp_path,
+		"dataset_root": tmp_path / "datasets",
+		"model_root": tmp_path / "model",
+		"world_size": 8,
+	}
+	all_layers = build_training_command(
+		run,
+		output_root=tmp_path / "all_layers",
+		**common,
+	)
+	last_four_layers = build_training_command(
+		run,
+		output_root=tmp_path / "last_four_layers",
+		lora_decoder_layer_indices=BASELINE_LORA_LAST_FOUR_DECODER_LAYERS,
+		**common,
+	)
+
+	expected_dataset_root = str(tmp_path / "datasets" / "clevr")
+	for command in (all_layers, last_four_layers):
+		assert command[command.index("--dataset-root") + 1] == expected_dataset_root
+		assert "--candidate-root" not in command
+		assert "--candidate-bank" not in command
+	assert "--lora-decoder-layer-indices" not in all_layers
+	assert (
+		last_four_layers[last_four_layers.index("--lora-decoder-layer-indices") + 1]
+		== "24,25,26,27"
+	)
+
+
 def test_zero_idle_seconds_submits_all_three_runs_without_an_idle_gate(
 	tmp_path: Path,
 	monkeypatch,
@@ -114,6 +149,11 @@ def test_zero_idle_seconds_submits_all_three_runs_without_an_idle_gate(
 	run_queue(args, runs)
 
 	assert not list((tmp_path / "outputs").glob("*_idle_gate.jsonl"))
+	manifest = json.loads(
+		(tmp_path / "outputs" / "queue_manifest.json").read_text(encoding="utf-8"),
+	)
+	assert manifest["candidate_bank_used"] is False
+	assert manifest["candidate_encoding_protocol"] == "online_same_qwen_as_query"
 
 
 def test_frozen_evaluation_command_uses_all_eight_v100_ranks(tmp_path: Path) -> None:
