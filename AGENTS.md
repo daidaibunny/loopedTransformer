@@ -8,7 +8,7 @@
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
 - The active diagnostic candidate is
-  `query_only_history_recurrent_no_lora_v4_candidate`. The completed v1 query-only runs,
+  `query_only_history_recurrent_no_lora_v5_candidate`. The completed v1 query-only runs,
   the rejected unbounded-residual v2 diagnostic, the unnormalized zero-gated v3
   diagnostic, and former
   `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue remain historical only;
@@ -23,6 +23,11 @@
   layer contains slot self-attention, cross-attention to the unchanged Qwen histories,
   and a feed-forward network. The default is K=8 and R=4; formal ablations use K=1/4/8
   and R=1/4.
+- Preserve slot identity in every shared Block layer by adding the RMS-normalized learned
+  slot query to the self-attention query and history cross-attention query. Do not add it
+  to the recurrent state residual itself. This keeps parallel slot tracks distinguishable
+  even when their accumulated state has a large common component, without a diversity
+  loss or extra parameters.
 - Use `EOS-conditioned slot attention pooling` after every recurrent pass: the frozen
   final-valid-token embedding selects useful slots with soft attention. Project the
   selected state to 2,048 dimensions with Xavier initialization and L2-normalize this
@@ -143,8 +148,8 @@
   or training protocol.
 - Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
   and `report.json` must declare architecture
-  `query_only_history_recurrent_no_lora_v4_candidate`, protocol
-  `single_stage_fixed_recurrence_unit_residual_v4_candidate`, `backbone_frozen: true`,
+  `query_only_history_recurrent_no_lora_v5_candidate`, protocol
+  `single_stage_persistent_slot_identity_v5_candidate`, `backbone_frozen: true`,
   `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.

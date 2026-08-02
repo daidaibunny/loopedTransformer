@@ -16,6 +16,7 @@ from looped_vl.query_recurrent.config import (
 from looped_vl.query_recurrent.model import (
 	GroupedQueryRecurrentHead,
 	QueryRecurrentHead,
+	RecurrentHistoryLayer,
 	query_recurrent_diagnostics,
 	recurrent_gradient_group_norms,
 )
@@ -35,6 +36,22 @@ def _inputs(config: QueryRecurrentConfig, batch_size: int = 3) -> dict[str, torc
 		"attention_mask": mask,
 		"base_embeddings": base,
 	}
+
+
+class _RecordingAttention(torch.nn.Module):
+	def __init__(self) -> None:
+		super().__init__()
+		self.query: torch.Tensor | None = None
+
+	def forward(
+		self,
+		query: torch.Tensor,
+		_key: torch.Tensor,
+		_value: torch.Tensor,
+		**_kwargs: object,
+	) -> tuple[torch.Tensor, None]:
+		self.query = query.detach().clone()
+		return torch.zeros_like(query), None
 
 
 def test_locked_query_recurrent_identity_is_frozen_candidate_no_lora() -> None:
@@ -86,6 +103,37 @@ def test_zero_gated_residual_scale_is_independent_of_projection_magnitude() -> N
 	)
 
 	assert movement.max().item() < 0.12
+
+
+def test_recurrent_history_attention_keeps_persistent_slot_identities() -> None:
+	config = QueryRecurrentConfig()
+	layer = RecurrentHistoryLayer(config)
+	self_attention = _RecordingAttention()
+	history_attention = _RecordingAttention()
+	layer.self_attention = self_attention
+	layer.history_attention = history_attention
+	slots = torch.zeros(1, 2, config.state_size)
+	memory = torch.zeros(1, 3, config.state_size)
+	memory_padding_mask = torch.zeros(1, 3, dtype=torch.bool)
+	identity = torch.stack(
+		(
+			torch.tensor([1.0, -1.0] * (config.state_size // 2)),
+			torch.tensor([-1.0, 1.0] * (config.state_size // 2)),
+		),
+	)
+
+	layer(
+		slots,
+		memory,
+		memory_padding_mask,
+		slot_identity=identity,
+	)
+
+	assert history_attention.query is not None
+	assert not torch.equal(
+		history_attention.query[:, 0],
+		history_attention.query[:, 1],
+	)
 
 
 def test_fixed_recurrence_returns_normalized_pass_outputs_and_final_pass() -> None:

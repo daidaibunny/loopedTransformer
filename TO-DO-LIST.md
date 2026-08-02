@@ -186,6 +186,11 @@
 - [x] L2-normalize the residual direction before the scalar gate so projection magnitude
   cannot bypass zero-gated fusion; add a scale-invariance regression test.
 - [ ] Run the same 200-step COCO quality diagnostic for the v4 unit-residual candidate.
+- [x] Diagnose that v4 step 50 still has approximately 0.999 slot cosine and near-uniform
+  EOS-conditioned slot attention despite fixing residual scale.
+- [x] Add RMS-normalized persistent slot identity to every recurrent self-attention and
+  history-attention query, replacing the ineffective small raw-state reinjection.
+- [ ] Run the same 200-step COCO quality diagnostic for the v5 persistent-identity candidate.
 - [ ] Use the diagnostic evidence to isolate gradient reachability, slot specialization,
   recurrent update stability, hard-negative freshness, and progressive-loss effectiveness.
 - [ ] Change one failed mechanism at a time and rerun the same fixed diagnostic window;

@@ -53,17 +53,22 @@ class RecurrentHistoryLayer(nn.Module):
 		slots: torch.Tensor,
 		memory: torch.Tensor,
 		memory_padding_mask: torch.Tensor,
+		*,
+		slot_identity: torch.Tensor,
 	) -> torch.Tensor:
 		"""Apply one shared state update while the Qwen memory remains fixed."""
+		if slot_identity.shape[-2:] != slots.shape[-2:]:
+			raise ValueError("Slot identity must match the slot count and state dimension")
+		identity = parameter_free_rms_norm(slot_identity).to(slots.dtype)
 		normalized_slots = self.self_norm(slots)
 		self_update = self.self_attention(
-			normalized_slots,
+			normalized_slots + identity,
 			normalized_slots,
 			normalized_slots,
 			need_weights=False,
 		)[0]
 		slots = slots + self_update
-		history_query = self.history_norm(slots)
+		history_query = self.history_norm(slots) + identity
 		history_update = self.history_attention(
 			history_query,
 			memory,
@@ -384,11 +389,13 @@ class QueryRecurrentHead(nn.Module):
 		slot_states = []
 		slot_attention_weights = []
 		for _step in range(self.config.max_recurrent_steps):
-			# Re-inject the learned slot identities at every shared update so recurrent
-			# attention cannot erase all slot distinctions after initialization.
-			slots = slots + self.slot_queries[None].to(slots.dtype)
 			for layer in self.recurrent_layers:
-				slots = layer(slots, memory, memory_padding_mask)
+				slots = layer(
+					slots,
+					memory,
+					memory_padding_mask,
+					slot_identity=self.slot_queries,
+				)
 			fused, slot_weights = self._read_step(slots, base_embeddings)
 			step_embeddings.append(fused)
 			slot_states.append(slots)

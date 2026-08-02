@@ -37,8 +37,8 @@ class QueryRecurrentRun:
 
 
 FORMAL_QUERY_RECURRENT_RUNS = (
-	QueryRecurrentRun("coco_v4_k8_r1_fixed", "coco", 8, 1),
-	QueryRecurrentRun("coco_v4_k8_r4_fixed", "coco", 8, 4),
+	QueryRecurrentRun("coco_v5_k8_r1_fixed", "coco", 8, 1),
+	QueryRecurrentRun("coco_v5_k8_r4_fixed", "coco", 8, 4),
 )
 QUERY_ONLY_LORA_CONTROL_NAME = "coco_query_only_last4_lora_frozen_candidates"
 
