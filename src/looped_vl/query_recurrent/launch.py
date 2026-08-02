@@ -131,6 +131,8 @@ def _queue_command(args: argparse.Namespace) -> list[str]:
 		str(args.candidate_root),
 		"--output-root",
 		str(args.output_root),
+		"--control-output-root",
+		str(args.control_output_root),
 		"--world-size",
 		str(args.world_size),
 		"--per-device-batch-size",
@@ -140,16 +142,6 @@ def _queue_command(args: argparse.Namespace) -> list[str]:
 		"--num-workers",
 		str(args.num_workers),
 	]
-	if args.diagnostic_only:
-		command.extend(
-			[
-				"--diagnostic-only",
-				"--diagnostic-rows",
-				str(args.diagnostic_rows),
-				"--diagnostic-steps",
-				str(args.diagnostic_steps),
-			],
-		)
 	return command
 
 
@@ -224,6 +216,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--model-root", type=Path, required=True)
 	parser.add_argument("--candidate-root", type=Path, required=True)
 	parser.add_argument("--output-root", type=Path, required=True)
+	parser.add_argument("--control-output-root", type=Path, required=True)
 	parser.add_argument("--candidate-tmux", required=True)
 	parser.add_argument(
 		"--guard-script",
@@ -234,9 +227,6 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--per-device-batch-size", type=int, default=32)
 	parser.add_argument("--evaluation-batch-size", type=int, default=32)
 	parser.add_argument("--num-workers", type=int, default=4)
-	parser.add_argument("--diagnostic-only", action="store_true")
-	parser.add_argument("--diagnostic-rows", type=int, default=51_200)
-	parser.add_argument("--diagnostic-steps", type=int, default=200)
 	parser.add_argument("--poll-seconds", type=float, default=30.0)
 	parser.add_argument("--maximum-wait-seconds", type=float, default=0.0)
 	return parser.parse_args()

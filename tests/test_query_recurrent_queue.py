@@ -18,6 +18,7 @@ from looped_vl.query_recurrent.evaluate import (
 from looped_vl.query_recurrent.launch import _queue_command, validate_gpu_inventory
 from looped_vl.query_recurrent.queue import (
 	FORMAL_QUERY_RECURRENT_RUNS,
+	QUERY_ONLY_LORA_RUNS,
 	_child_process_environment,
 	_next_evaluation_output,
 	_queue_manifests_match,
@@ -74,17 +75,24 @@ def _args(tmp_path: Path) -> SimpleNamespace:
 		model_root=tmp_path / "model",
 		candidate_root=tmp_path / "banks",
 		output_root=tmp_path / "outputs",
+		control_output_root=tmp_path / "controls",
 	)
 
 
-def test_formal_queue_contains_only_the_focused_coco_v10_controls() -> None:
+def test_formal_queue_runs_population_coco_then_three_lora_controls() -> None:
 	assert [run.name for run in FORMAL_QUERY_RECURRENT_RUNS] == [
-		"coco_v10_k8_r1_fixed",
-		"coco_v10_k8_r4_fixed",
+		"coco_v11_p4_r4_final_mean",
 	]
 	assert all(run.dataset == "coco" for run in FORMAL_QUERY_RECURRENT_RUNS)
+	assert FORMAL_QUERY_RECURRENT_RUNS[0].num_worlds == 4
+	assert FORMAL_QUERY_RECURRENT_RUNS[0].max_recurrent_steps == 4
 	assert not any(hasattr(run, "exit_mode") for run in FORMAL_QUERY_RECURRENT_RUNS)
-	assert _variant_names(FORMAL_QUERY_RECURRENT_RUNS[1].max_recurrent_steps) == (
+	assert [run.dataset for run in QUERY_ONLY_LORA_RUNS] == [
+		"coco",
+		"gqa_balanced",
+		"clevr",
+	]
+	assert _variant_names(FORMAL_QUERY_RECURRENT_RUNS[0].max_recurrent_steps) == (
 		"pass_0_frozen_backbone",
 		"pass_1",
 		"pass_2",
@@ -116,7 +124,7 @@ def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
 	tmp_path: Path,
 ) -> None:
 	args = _args(tmp_path)
-	run = FORMAL_QUERY_RECURRENT_RUNS[1]
+	run = FORMAL_QUERY_RECURRENT_RUNS[0]
 	train = build_training_command(run, args=args, output_dir=tmp_path / "train")
 	test = build_evaluation_command(
 		run,
@@ -132,9 +140,11 @@ def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
 	assert train[train.index("--max-checkpoints") + 1] == "1"
 	assert train[train.index("--per-device-batch-size") + 1] == "32"
 	assert train[train.index("--hard-negative-count") + 1] == "32"
-	assert train[train.index("--slot-bridge-loss-weight") + 1] == "0.1"
-	assert train[train.index("--slot-bridge-scale") + 1] == "0.1"
-	assert train[train.index("--progressive-loss-weight") + 1] == "0.0"
+	assert train[train.index("--num-worlds") + 1] == "4"
+	assert train[train.index("--perturbation-scale") + 1] == "0.02"
+	assert "--history-layers" not in train
+	assert "--slot-bridge-loss-weight" not in train
+	assert "--progressive-loss-weight" not in train
 	assert "--exit-mode" not in train
 	assert "--exit-threshold" not in train
 	assert "looped_vl.query_recurrent.evaluate" in test_text
@@ -143,52 +153,49 @@ def test_commands_lock_no_lora_one_epoch_no_validation_and_every_pass_test(
 	)
 
 
-def test_quality_diagnostic_saves_a_testable_model_after_exactly_200_steps(
+def test_smoke_runs_exactly_two_steps_without_publishing_a_checkpoint(
 	tmp_path: Path,
 ) -> None:
 	args = _args(tmp_path)
 	command = build_training_command(
-		FORMAL_QUERY_RECURRENT_RUNS[1],
+		FORMAL_QUERY_RECURRENT_RUNS[0],
 		args=args,
-		output_dir=tmp_path / "diagnostic_train",
-		diagnostic=True,
+		output_dir=tmp_path / "smoke_train",
+		smoke=True,
 	)
 
-	assert command[command.index("--max-train-rows") + 1] == "51200"
-	assert command[command.index("--max-optimizer-steps") + 1] == "200"
-	assert "--skip-checkpoint-save" not in command
-	assert "--skip-final-save" not in command
-
-	with pytest.raises(ValueError, match="mutually exclusive"):
-		build_training_command(
-			FORMAL_QUERY_RECURRENT_RUNS[1],
-			args=args,
-			output_dir=tmp_path / "invalid",
-			smoke=True,
-			diagnostic=True,
-		)
+	assert command[command.index("--max-train-rows") + 1] == "512"
+	assert command[command.index("--max-optimizer-steps") + 1] == "2"
+	assert "--skip-checkpoint-save" in command
+	assert "--skip-final-save" in command
 
 
 def test_query_only_lora_control_uses_last_four_layers_and_frozen_candidates(
 	tmp_path: Path,
 ) -> None:
 	args = _args(tmp_path)
+	run = QUERY_ONLY_LORA_RUNS[1]
 	train = build_query_only_lora_training_command(
+		run,
 		args=args,
 		output_dir=tmp_path / "lora_train",
 	)
 	test = build_query_only_lora_evaluation_command(
+		run,
 		args=args,
 		training_output=tmp_path / "lora_train",
 		evaluation_output=tmp_path / "lora_test",
 	)
 
 	assert train[train.index("--lora-decoder-layer-indices") + 1] == "24,25,26,27"
+	assert train[train.index("--dataset") + 1] == "gqa_balanced"
+	assert train[train.index("--dataset-root") + 1].endswith("/gqa_balanced")
 	assert train[train.index("--candidate-root") + 1] == str(args.candidate_root)
 	assert train[train.index("--hard-negative-count") + 1] == "32"
 	assert train[train.index("--epochs") + 1] == "1"
 	assert train[train.index("--max-checkpoints") + 1] == "1"
 	assert test[test.index("--candidate-root") + 1] == str(args.candidate_root)
+	assert test[test.index("--dataset") + 1] == "gqa_balanced"
 	assert test[test.index("--adapter-root") + 1].endswith("lora_train/adapter")
 
 
@@ -229,14 +236,13 @@ def test_launcher_requires_exactly_eight_v100s_and_preserves_batch_32(tmp_path: 
 	assert command[command.index("--world-size") + 1] == "8"
 
 
-def test_launcher_can_select_only_the_fixed_quality_diagnostic(tmp_path: Path) -> None:
+def test_launcher_passes_the_separate_lora_control_root(tmp_path: Path) -> None:
 	args = _args(tmp_path)
-	args.diagnostic_only = True
 	command = _queue_command(args)
 
-	assert "--diagnostic-only" in command
-	assert command[command.index("--diagnostic-rows") + 1] == "51200"
-	assert command[command.index("--diagnostic-steps") + 1] == "200"
+	assert command[command.index("--control-output-root") + 1] == str(
+		args.control_output_root,
+	)
 
 
 def test_recovery_requires_the_exact_checkpoint_source_commit() -> None:
@@ -285,7 +291,7 @@ def test_resume_command_records_the_authorized_commit_and_lower_scale(
 	checkpoint = tmp_path / "step001000.pt"
 
 	command = build_training_command(
-		FORMAL_QUERY_RECURRENT_RUNS[-1],
+		FORMAL_QUERY_RECURRENT_RUNS[0],
 		args=args,
 		output_dir=tmp_path / "train",
 		resume_checkpoint=checkpoint,
@@ -296,9 +302,27 @@ def test_resume_command_records_the_authorized_commit_and_lower_scale(
 	assert command[command.index("--resume-gradient-scale") + 1] == "2048.0"
 
 
+def test_lora_resume_command_records_the_authorized_checkpoint_commit(tmp_path: Path) -> None:
+	args = _args(tmp_path)
+	args.resume_source_git_commit = "old-lora-commit"
+	checkpoint = tmp_path / "step000400.pt"
+
+	command = build_query_only_lora_training_command(
+		QUERY_ONLY_LORA_RUNS[0],
+		args=args,
+		output_dir=tmp_path / "lora_train",
+		resume_checkpoint=checkpoint,
+	)
+
+	assert command[command.index("--resume-checkpoint") + 1] == str(checkpoint)
+	assert command[command.index("--resume-source-git-commit") + 1] == "old-lora-commit"
+
+
 def test_existing_queue_manifest_normalizes_json_tuple_round_trip() -> None:
-	current = {"runs": [{"history_layers": (7, 14, 21, 28)}]}
-	written_and_loaded = {"runs": [{"history_layers": [7, 14, 21, 28]}]}
+	current = {"sequence": ("recurrent", "coco_lora", "gqa_lora", "clevr_lora")}
+	written_and_loaded = {
+		"sequence": ["recurrent", "coco_lora", "gqa_lora", "clevr_lora"],
+	}
 
 	assert _queue_manifests_match(written_and_loaded, current)
 

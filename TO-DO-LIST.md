@@ -250,3 +250,16 @@
   both Pass 0 and Pass 1.
 - [ ] Change one failed mechanism at a time and rerun the same fixed diagnostic window;
   promote no architecture to full training until a later pass beats both Pass 0 and Pass 1.
+- [x] Supersede history-slot v10 with the no-LoRA parallel-world v11 contract: one frozen
+  final Query embedding, four query-conditioned antithetic zero-mean worlds, one shared
+  centered cross-world recurrent Block, four fixed passes, and final mean-only InfoNCE.
+- [x] Keep v11 at 4,391,554 trainable parameters and remove decoder histories, slot
+  initialization, pass embeddings, EOS-conditioned slot attention pooling, learned final
+  readout, dynamic exit, and intermediate-pass supervision from its formal path.
+- [x] Add structural, numerical, gradient, frozen-backbone, final-only-loss, command, and
+  serial-queue tests for v11.
+- [ ] Run the eight-V100 two-step v11 COCO smoke and verify all ranks, finite gradients,
+  exact zero candidate-Qwen calls, parameter count, throughput, and peak memory.
+- [ ] Train and test full COCO v11 for one epoch, reporting frozen Pass 0 and Pass 1–4.
+- [ ] After COCO v11 completes, resume or run the COCO, GQA Balanced, and CLEVR
+  last-four-layer query-only LoRA fixed-candidate controls serially.

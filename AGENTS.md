@@ -7,66 +7,42 @@
 - The formal recurrent model is pure recurrent and must contain no LoRA modules or
   parameters. LoRA belongs only to the independent comparison code under
   `src/looped_vl/baseline/`.
-- The active diagnostic candidate is
-  `query_only_history_recurrent_no_lora_v10_candidate`. The completed v1 query-only runs,
-  the rejected unbounded-residual v2 diagnostic, the unnormalized zero-gated v3
-  diagnostic, and former
-  `direct_eos_layerscale_mid_decoder_recurrence_no_lora_v5` queue remain historical only;
-  never launch them as current experiments.
+- The active architecture is `query_only_parallel_world_recurrent_no_lora_v11` with
+  protocol `single_stage_antithetic_final_mean_v11`. Every history-slot model through
+  v10 and the former mid-decoder recurrent queue are historical only; never launch them
+  as current experiments.
 - Use one training stage and one full-data epoch. All trainable recurrent parameters are
   active from the first optimizer step; do not use validation or checkpoint selection.
-- The completely frozen Qwen query tower runs exactly once. It exposes the token states
-  after decoder Layers 7, 14, 21, and 28 plus the official final-valid-token 2,048-
-  dimensional embedding. The Layer-28-only history is an explicit ablation.
-- Project the frozen histories into a 288-dimensional state. Initialize K latent slots by
-  cross-attention, then apply one shared two-layer recurrent Block R times. Each Block
-  layer contains slot self-attention, cross-attention to the unchanged Qwen histories,
-  and a feed-forward network. The default is K=8 and R=4; formal ablations use K=1/4/8
-  and R=1/4.
-- Add each learned slot query back to its corresponding slot state once at the start of
-  every recurrent pass. Do not use the rejected v5 mechanism that added an RMS-normalized
-  slot identity to every attention query; the fixed diagnostic showed more slot collapse,
-  not less.
-- Add one learned 288-dimensional recurrent-step embedding to every slot before each
-  shared Block pass. Maintain exactly four phase rows for every R=1/2/3/4 model so the
-  parameter count does not depend on the executed pass count. This is only a time signal;
-  all attention and feed-forward weights remain shared across recurrent passes.
-- Treat every shared Block output as a proposed state and update the recurrent state with
-  pass-count-dependent damping: `state = previous + (proposed - previous) / R`. Therefore
-  R=1 preserves the complete one-pass Block update exactly, while R=2/3/4 distributes one
-  refinement trajectory over 2/3/4 shared-parameter passes. The scale is fixed and adds no
-  parameter. Do not replace it with an exit controller or learned damping in the first
-  version.
-- Use `EOS-conditioned slot attention pooling` after every recurrent pass: the frozen
-  final-valid-token embedding selects useful slots with soft attention. Project the
-  selected state to a 2,048-dimensional unit slot proposal with Xavier initialization.
-  During training, form a fixed-scale bridge by L2-normalizing the frozen embedding plus
-  `0.1 * proposal`, then supervise only the final-pass bridge against the frozen candidate
-  gallery with InfoNCE weight 0.1. This gives the slot branch a direct first-step gradient
-  in the same additive geometry used at inference without teaching every intermediate pass
-  to solve the final retrieval task immediately. Do not supervise the bare proposal as if
-  it were a complete embedding; the v6 diagnostic proved that objective does not
-  generalize. The bridge is training-only and must not become a reported inference output.
-  Multiply
-  the proposal by a shared `tanh` scalar gate initialized to
-  zero. Add that norm-bounded update to the frozen Qwen embedding, then L2-normalize. This
-  `zero-gated residual fusion` makes every pass exactly equal to frozen Qwen at
-  initialization and makes the gate value an interpretable upper bound on update norm,
-  independent of projection width or weight magnitude. The gate receives the first
-  optimizer-step gradient, while the bridge loss trains the residual projection and
-  recurrent path from the first optimizer step.
-- The first v2 uses an explicit fixed recurrent count only. It contains no exit controller,
-  exit threshold, halting loss, or compute penalty. Reconsider dynamic exit only after a
-  fixed Pass-4 model shows a measurable gain over a separately trained fixed Pass-1 model.
-- Train only the slot initializer, recurrent-step embeddings, shared recurrent Block,
-  history projection,
-  and zero-initialized residual readout. Enforce the 5,000,000-parameter limit. Exact v2
-  candidate counts are 4,853,953 for K=1, 4,854,817 for K=4, and 4,855,969 for K=8.
+- The completely frozen Qwen query tower runs exactly once and exposes only its official
+  final-valid-token 2,048-dimensional unit embedding. Do not expose or project intermediate
+  decoder histories in v11.
+- Use P=4 parallel 2,048-dimensional worlds. Create two deterministic query-conditioned
+  directions, orthogonalize them, scale each to 2% of the frozen embedding norm, and form
+  the antithetic population `[e+d1, e-d1, e+d2, e-d2]`. Recenter numerically so its mean is
+  exactly the original frozen embedding.
+- Apply one shared recurrent Block exactly R=4 times. At each pass, compute the population
+  mean and centered world deviations; obtain attention queries from full world states and
+  keys/values from centered deviations; run bidirectional attention across the four worlds;
+  center its output across worlds; then apply one shared SwiGLU update independently to
+  every world. All worlds update simultaneously from the same previous-pass tensor.
+- The recurrent Block is permutation-equivariant over worlds and contains one 320-wide
+  five-head interaction attention and one 288-wide SwiGLU. The same attention, SwiGLU, and
+  bounded residual-scale parameters are reused at every pass. v11 contains no recurrent-step
+  embedding, branch-specific recurrent weights, pass-count damping, exit controller,
+  threshold, halting loss, or compute penalty.
+- After each pass, expose the L2-normalized arithmetic mean of the complete 2,048-dimensional
+  world states for diagnostics. The final Pass-4 mean is the only inference output and the
+  only embedding directly supervised by InfoNCE. Do not supervise individual worlds or
+  intermediate passes; doing so would force the parallel hypotheses to collapse.
+- Train only the shared population Block and two compact perturbation direction codes.
+  The exact trainable parameter count is 4,391,554, below the 5,000,000 limit and the
+  4,456,448-parameter last-four-layer LoRA control.
 - Keep the original Qwen3-VL checkpoint immutable. Save learned parameters and checkpoints
   only under experiment-specific output directories.
-- Always call the single-query attention from the final valid token over latent slots
-  `EOS-conditioned slot attention pooling` (`EOS 条件化槽位注意力池化`). Do not shorten
-  it to ordinary pooling. Never use mean pooling in a formal run.
+- The current v11 final operation is ordinary parameter-free world mean pooling followed by
+  L2 normalization. `EOS-conditioned slot attention pooling` and `zero-gated residual
+  fusion` remain names for historical slot architectures only and must not appear in a v11
+  run manifest.
 
 ## Remote execution
 
@@ -166,20 +142,20 @@
   or training protocol.
 - Every new recurrent `run_manifest.json`, `training_result.json`, checkpoint metadata,
   and `report.json` must declare architecture
-  `query_only_history_recurrent_no_lora_v10_candidate`, protocol
-  `single_stage_phase_conditioned_final_pass_v10_candidate`, `backbone_frozen: true`,
+  `query_only_parallel_world_recurrent_no_lora_v11`, protocol
+  `single_stage_antithetic_final_mean_v11`, `backbone_frozen: true`,
   `candidate_backbone_executed: false`,
   `lora_enabled: false`, and `formal_training_stages: 1`. Reject missing or
   conflicting identities.
 - Recurrent training runs for exactly one epoch. Compute InfoNCE separately inside each
   candidate gallery; a COCO text-to-image query must never use caption candidates, and an
   image-to-text query must never use image candidates. Directly supervise only the final
-  fused recurrent pass and final fixed-scale slot bridge. Intermediate passes remain
-  required diagnostic outputs but receive no direct or progressive retrieval loss. Use
-  bridge scale 0.1, bridge-loss weight 0.1, progressive-loss weight 0.0, and mine 32
-  same-gallery hard negatives from the complete immutable
-  bank while excluding every matching `positive_id`. Slot absolute cosine is logged but
-  has weight 0.0. All trainable groups use one learning-rate schedule from step one.
+  Pass-4 L2-normalized world mean. Intermediate passes and individual worlds receive no
+  direct retrieval loss. Mine 32 same-gallery hard negatives from the complete immutable
+  bank while excluding every matching `positive_id`. Log initial mean error, population
+  spread, interaction entropy, off-diagonal attention mass, pass-wise movement, and every
+  component's gradient norm. All trainable groups use one learning-rate schedule from
+  step one.
 - The last-four-layer query-only LoRA control is separate from the ordinary two-tower LoRA
   baseline. It may read frozen candidate banks, but must declare the query-only control
   scope, keep candidate Qwen forward calls at zero, use the same gallery-isolated objective

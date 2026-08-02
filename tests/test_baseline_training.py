@@ -11,6 +11,7 @@ from looped_vl.baseline.train import (
 	_accumulate_logging_metrics,
 	_build_loader,
 	_finalize_logging_metrics,
+	_resolve_resume_source_commit,
 	_validate_epoch_count,
 	_validate_parallel_batch_sizes,
 	_validate_query_only_lora_settings,
@@ -189,3 +190,28 @@ def test_query_only_loader_reuses_the_recurrent_manifest_dataset(
 
 	assert loader.dataset is query_dataset
 	assert loader.collate_fn.__name__ == "query_only_collate"
+
+
+def test_baseline_resume_requires_the_exact_authorized_checkpoint_commit() -> None:
+	assert (
+		_resolve_resume_source_commit(
+			current_git_commit="new",
+			checkpoint_git_commit="new",
+			authorized_source_git_commit=None,
+		)
+		== "new"
+	)
+	with pytest.raises(ValueError, match="source Git commit"):
+		_resolve_resume_source_commit(
+			current_git_commit="new",
+			checkpoint_git_commit="old",
+			authorized_source_git_commit=None,
+		)
+	assert (
+		_resolve_resume_source_commit(
+			current_git_commit="new",
+			checkpoint_git_commit="old",
+			authorized_source_git_commit="old",
+		)
+		== "old"
+	)

@@ -167,8 +167,6 @@ def _encode_query_group(
 				frozen_groups.append(
 					(
 						group.original_indices,
-						frozen.history_hidden_states,
-						frozen.attention_mask,
 						frozen.base_embeddings,
 					),
 				)
@@ -178,7 +176,7 @@ def _encode_query_group(
 					total_rows=len(batch["global_indices"]),
 				)
 				base_embeddings = torch.cat(
-					[feature_group[3] for feature_group in frozen_groups],
+					[feature_group[1] for feature_group in frozen_groups],
 					dim=0,
 				)
 				restore_order = torch.argsort(
@@ -399,7 +397,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any] | None:
 		dtype=torch.float16,
 		attention_implementation=args.attention_implementation,
 	).to(device)
-	backbone = FrozenQueryBackbone(base_model, head.config.history_layers)
+	backbone = FrozenQueryBackbone(base_model)
 	torch.cuda.reset_peak_memory_stats(device)
 	start = time.perf_counter()
 	for name in _query_group_names(args.dataset):

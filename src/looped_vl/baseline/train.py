@@ -396,6 +396,29 @@ def _resolve_git_commit(project_root: Path) -> str:
 	return result.stdout.strip()
 
 
+def _resolve_resume_source_commit(
+	*,
+	current_git_commit: str,
+	checkpoint_git_commit: str,
+	authorized_source_git_commit: str | None,
+) -> str:
+	"""Allow a verified old checkpoint after unrelated repository changes."""
+	if not checkpoint_git_commit:
+		raise ValueError("Resume checkpoint is missing its source Git commit")
+	if checkpoint_git_commit == current_git_commit:
+		if (
+			authorized_source_git_commit is not None
+			and authorized_source_git_commit != checkpoint_git_commit
+		):
+			raise ValueError("Authorized source Git commit does not match the checkpoint")
+		return checkpoint_git_commit
+	if authorized_source_git_commit != checkpoint_git_commit:
+		raise ValueError(
+			"Baseline resume requires the exact checkpoint source Git commit",
+		)
+	return checkpoint_git_commit
+
+
 def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	if args.dataset not in BASELINE_DATASETS:
 		raise ValueError(args.dataset)
@@ -433,6 +456,8 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	generator = _seed_everything(args.seed, rank)
 	output_dir = Path(args.output_dir)
 	resume_checkpoint = Path(args.resume_checkpoint) if args.resume_checkpoint else None
+	if resume_checkpoint is None and args.resume_source_git_commit is not None:
+		raise ValueError("--resume-source-git-commit requires --resume-checkpoint")
 	if rank == 0:
 		output_mode = prepare_training_output_directory(
 			output_dir,
@@ -586,6 +611,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		gradient_accumulation_step=0,
 		processed_samples=0,
 	)
+	resume_source_git_commit: str | None = None
 	if resume_checkpoint is not None:
 		cursor, resume_metadata = load_training_checkpoint(
 			path=resume_checkpoint,
@@ -595,10 +621,14 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			rank=rank,
 			gradient_scaler=scaler,
 		)
-		validate_checkpoint_metadata(
-			resume_metadata,
-			expected=checkpoint_metadata,
+		resume_source_git_commit = _resolve_resume_source_commit(
+			current_git_commit=git_commit,
+			checkpoint_git_commit=str(resume_metadata.get("git_commit", "")),
+			authorized_source_git_commit=args.resume_source_git_commit,
 		)
+		expected_resume_metadata = dict(checkpoint_metadata)
+		expected_resume_metadata["git_commit"] = resume_source_git_commit
+		validate_checkpoint_metadata(resume_metadata, expected=expected_resume_metadata)
 		if cursor.stage != 0 or cursor.gradient_accumulation_step != 0:
 			raise ValueError("Baseline resume requires a complete optimizer-step checkpoint")
 		if cursor.global_step >= total_steps:
@@ -691,6 +721,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		"formal_training_log_interval": FORMAL_TRAINING_LOG_INTERVAL,
 		"max_checkpoints": args.max_checkpoints,
 		"resume_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
+		"resume_source_git_commit": resume_source_git_commit,
 		"lora": {
 			"rank": BASELINE_LORA_RANK,
 			"alpha": BASELINE_LORA_ALPHA,
@@ -1023,6 +1054,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--checkpoint-every", type=int, default=100)
 	parser.add_argument("--max-checkpoints", type=int, choices=(1,), default=1)
 	parser.add_argument("--resume-checkpoint", type=Path)
+	parser.add_argument("--resume-source-git-commit")
 	parser.add_argument(
 		"--lora-decoder-layer-indices",
 		type=_parse_decoder_layer_indices,

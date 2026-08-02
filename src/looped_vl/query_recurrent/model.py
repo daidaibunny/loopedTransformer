@@ -1,4 +1,4 @@
-"""Small shared recurrent block over frozen multi-layer Qwen query histories."""
+"""Shared parallel-world recurrent Block over frozen Qwen query embeddings."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from torch.nn import functional as F
 
 from looped_vl.query_recurrent.config import (
 	MAX_QUERY_RECURRENT_PARAMETERS,
-	SUPPORTED_RECURRENT_STEPS,
 	QueryRecurrentConfig,
 )
 
@@ -23,82 +22,126 @@ def parameter_free_rms_norm(values: torch.Tensor) -> torch.Tensor:
 	)
 
 
-def _damped_state_update(
-	previous: torch.Tensor,
-	proposed: torch.Tensor,
-	*,
-	scale: float,
-) -> torch.Tensor:
-	"""Blend one complete Block proposal into the recurrent state without new parameters."""
-	if previous.shape != proposed.shape:
-		raise ValueError("Previous and proposed recurrent states must have matching shapes")
-	if not 0 < scale <= 1:
-		raise ValueError("Recurrent update scale must be in (0, 1]")
-	return torch.lerp(previous, proposed, scale)
-
-
-class RecurrentHistoryLayer(nn.Module):
-	"""Update slots through self-attention, frozen-history attention, and one feed-forward path."""
-
-	def __init__(self, config: QueryRecurrentConfig) -> None:
-		super().__init__()
-		dimension = config.state_size
-		feed_forward_size = dimension * config.feed_forward_multiplier
-		self.self_norm = nn.LayerNorm(dimension)
-		self.self_attention = nn.MultiheadAttention(
-			dimension,
-			config.num_attention_heads,
-			batch_first=True,
-		)
-		self.history_norm = nn.LayerNorm(dimension)
-		self.history_attention = nn.MultiheadAttention(
-			dimension,
-			config.num_attention_heads,
-			batch_first=True,
-		)
-		self.feed_forward_norm = nn.LayerNorm(dimension)
-		self.feed_forward = nn.Sequential(
-			nn.Linear(dimension, feed_forward_size),
-			nn.GELU(approximate="tanh"),
-			nn.Linear(feed_forward_size, dimension),
-		)
-
-	def forward(
-		self,
-		slots: torch.Tensor,
-		memory: torch.Tensor,
-		memory_padding_mask: torch.Tensor,
-	) -> torch.Tensor:
-		"""Apply one shared state update while the Qwen memory remains fixed."""
-		normalized_slots = self.self_norm(slots)
-		self_update = self.self_attention(
-			normalized_slots,
-			normalized_slots,
-			normalized_slots,
-			need_weights=False,
-		)[0]
-		slots = slots + self_update
-		history_query = self.history_norm(slots)
-		history_update = self.history_attention(
-			history_query,
-			memory,
-			memory,
-			key_padding_mask=memory_padding_mask,
-			need_weights=False,
-		)[0]
-		slots = slots + history_update
-		return slots + self.feed_forward(self.feed_forward_norm(slots))
-
-
 @dataclass(frozen=True)
 class QueryRecurrentOutput:
-	"""Every fixed-pass recurrent result needed for training and evaluation."""
+	"""Final mean embedding and every fixed recurrent-pass diagnostic state."""
 
 	embeddings: torch.Tensor
 	step_embeddings: tuple[torch.Tensor, ...]
-	slot_bridge_embeddings: tuple[torch.Tensor, ...]
-	slot_states: tuple[torch.Tensor, ...]
-	slot_attention_weights: tuple[torch.Tensor, ...]
+	world_states: tuple[torch.Tensor, ...]
+	interaction_weights: tuple[torch.Tensor, ...]
+	initial_world_states: torch.Tensor
+
+
+class ParallelWorldRecurrentCell(nn.Module):
+	"""Compare centered worlds and update all of them with one shared nonlinear cell."""
+
+	def __init__(self, config: QueryRecurrentConfig) -> None:
+		super().__init__()
+		self.config = config
+		self.query_projection = nn.Linear(
+			config.hidden_size,
+			config.attention_size,
+			bias=False,
+		)
+		self.key_projection = nn.Linear(
+			config.hidden_size,
+			config.attention_size,
+			bias=False,
+		)
+		self.value_projection = nn.Linear(
+			config.hidden_size,
+			config.attention_size,
+			bias=False,
+		)
+		self.attention_output = nn.Linear(
+			config.attention_size,
+			config.hidden_size,
+			bias=False,
+		)
+		self.feed_forward_gate = nn.Linear(
+			config.hidden_size,
+			config.feed_forward_size,
+			bias=False,
+		)
+		self.feed_forward_up = nn.Linear(
+			config.hidden_size,
+			config.feed_forward_size,
+			bias=False,
+		)
+		self.feed_forward_down = nn.Linear(
+			config.feed_forward_size,
+			config.hidden_size,
+			bias=False,
+		)
+		initial_logit = math.atanh(
+			config.initial_residual_scale / config.maximum_residual_scale,
+		)
+		self.attention_residual_logit = nn.Parameter(torch.tensor(initial_logit))
+		self.feed_forward_residual_logit = nn.Parameter(torch.tensor(initial_logit))
+
+	@property
+	def attention_residual_scale(self) -> torch.Tensor:
+		"""Return one bounded attention scale shared by every recurrent pass."""
+		return self.config.maximum_residual_scale * torch.tanh(
+			self.attention_residual_logit,
+		)
+
+	@property
+	def feed_forward_residual_scale(self) -> torch.Tensor:
+		"""Return one bounded feed-forward scale shared by every recurrent pass."""
+		return self.config.maximum_residual_scale * torch.tanh(
+			self.feed_forward_residual_logit,
+		)
+
+	def _split_heads(self, values: torch.Tensor) -> torch.Tensor:
+		batch_size, world_count, _dimension = values.shape
+		head_dimension = self.config.attention_size // self.config.num_attention_heads
+		return values.reshape(
+			batch_size,
+			world_count,
+			self.config.num_attention_heads,
+			head_dimension,
+		).transpose(1, 2)
+
+	def forward(self, world_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+		"""Advance every world simultaneously using centered bidirectional interaction."""
+		if world_states.ndim != 3:
+			raise ValueError("World states must have shape [batch, worlds, hidden]")
+		if world_states.shape[1:] != (
+			self.config.num_worlds,
+			self.config.hidden_size,
+		):
+			raise ValueError("World state shape does not match the configuration")
+		world_mean = world_states.mean(dim=1, keepdim=True)
+		deviations = world_states - world_mean
+		state_rms = torch.sqrt(
+			world_states.float().pow(2).mean(dim=(-2, -1), keepdim=True) + 1e-6,
+		)
+		normalized_states = parameter_free_rms_norm(world_states)
+		normalized_deviations = (deviations.float() / state_rms).to(world_states.dtype)
+		queries = self._split_heads(self.query_projection(normalized_states))
+		keys = self._split_heads(self.key_projection(normalized_deviations))
+		values = self._split_heads(self.value_projection(normalized_deviations))
+		head_dimension = queries.shape[-1]
+		scores = torch.matmul(queries.float(), keys.float().transpose(-1, -2))
+		weights = torch.softmax(scores / math.sqrt(head_dimension), dim=-1)
+		attended = torch.matmul(weights.to(values.dtype), values)
+		attended = attended.transpose(1, 2).reshape(
+			world_states.shape[0],
+			self.config.num_worlds,
+			self.config.attention_size,
+		)
+		interaction = self.attention_output(attended)
+		interaction = interaction - interaction.mean(dim=1, keepdim=True)
+		interacted = world_states + self.attention_residual_scale * interaction
+		normalized_interacted = parameter_free_rms_norm(interacted)
+		feed_forward = self.feed_forward_down(
+			F.silu(self.feed_forward_gate(normalized_interacted))
+			* self.feed_forward_up(normalized_interacted),
+		)
+		updated = interacted + self.feed_forward_residual_scale * feed_forward
+		return updated, weights.mean(dim=1)
 
 
 def _mean_l2_norm(values: torch.Tensor) -> torch.Tensor:
@@ -113,39 +156,46 @@ def _normalized_attention_entropy(weights: torch.Tensor) -> torch.Tensor:
 	return (entropy / math.log(weights.shape[-1])).mean()
 
 
-def _slot_pairwise_absolute_cosine(slot_states: torch.Tensor) -> torch.Tensor:
-	if slot_states.shape[1] <= 1:
-		return slot_states.new_zeros((), dtype=torch.float32)
-	normalized = F.normalize(slot_states.float(), dim=-1)
-	cosine = normalized @ normalized.transpose(1, 2)
-	off_diagonal = ~torch.eye(
-		slot_states.shape[1],
-		device=slot_states.device,
-		dtype=torch.bool,
-	)
-	return cosine[:, off_diagonal].abs().mean()
+def _interaction_off_diagonal_mass(weights: torch.Tensor) -> torch.Tensor:
+	if weights.shape[-1] <= 1:
+		return weights.new_zeros((), dtype=torch.float32)
+	diagonal = weights.float().diagonal(dim1=-2, dim2=-1).sum(dim=-1)
+	return (1 - diagonal / weights.shape[-1]).mean()
+
+
+def _population_spread(world_states: torch.Tensor) -> torch.Tensor:
+	deviations = world_states.float() - world_states.float().mean(dim=1, keepdim=True)
+	return torch.linalg.vector_norm(deviations, dim=-1).mean()
 
 
 def query_recurrent_diagnostics(
 	output: QueryRecurrentOutput,
 	base_embeddings: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
-	"""Measure whether each pass moves, specializes slots, and changes the readout."""
+	"""Measure population spread, interaction, and mean movement at every pass."""
 	if not output.step_embeddings:
 		raise ValueError("At least one recurrent pass is required for diagnostics")
 	if not (
 		len(output.step_embeddings)
-		== len(output.slot_states)
-		== len(output.slot_attention_weights)
+		== len(output.world_states)
+		== len(output.interaction_weights)
 	):
 		raise ValueError("Recurrent diagnostic tensors must have the same pass count")
-	diagnostics: dict[str, torch.Tensor] = {}
+	initial_mean = output.initial_world_states.float().mean(dim=1)
+	diagnostics = {
+		"initial_population_mean_error_l2": _mean_l2_norm(
+			initial_mean - base_embeddings.float(),
+		),
+		"initial_population_spread_l2": _population_spread(
+			output.initial_world_states,
+		),
+	}
 	previous = base_embeddings.float()
-	for step, (embedding, slots, weights) in enumerate(
+	for step, (embedding, worlds, weights) in enumerate(
 		zip(
 			output.step_embeddings,
-			output.slot_states,
-			output.slot_attention_weights,
+			output.world_states,
+			output.interaction_weights,
 			strict=True,
 		),
 		start=1,
@@ -163,14 +213,12 @@ def query_recurrent_diagnostics(
 			base_embeddings.float(),
 			dim=-1,
 		).mean()
-		diagnostics[f"{prefix}_slot_pairwise_absolute_cosine"] = (
-			_slot_pairwise_absolute_cosine(slots)
-		)
-		diagnostics[f"{prefix}_slot_attention_normalized_entropy"] = (
+		diagnostics[f"{prefix}_population_spread_l2"] = _population_spread(worlds)
+		diagnostics[f"{prefix}_interaction_normalized_entropy"] = (
 			_normalized_attention_entropy(weights)
 		)
-		diagnostics[f"{prefix}_slot_attention_max_weight"] = (
-			weights.float().amax(dim=-1).mean()
+		diagnostics[f"{prefix}_interaction_off_diagonal_mass"] = (
+			_interaction_off_diagonal_mass(weights)
 		)
 		previous = embedding_float
 	return diagnostics
@@ -187,23 +235,25 @@ def _gradient_l2_norm(parameters: tuple[nn.Parameter, ...]) -> torch.Tensor:
 
 
 def recurrent_gradient_group_norms(head: QueryRecurrentHead) -> dict[str, torch.Tensor]:
-	"""Expose gradient reachability for every distinct recurrent-head component."""
-	initializer_parameters = (
-		*tuple(head.initializer_norm.parameters()),
-		*tuple(head.initializer_attention.parameters()),
-		*tuple(head.initializer_feed_forward_norm.parameters()),
-		*tuple(head.initializer_feed_forward.parameters()),
-	)
+	"""Expose first-step gradient reachability for each population component."""
+	cell = head.recurrent_cell
 	groups = {
-		"residual_gate": (head.residual_gate,),
-		"output_projection": tuple(head.output_projection.parameters()),
-		"output_norm": tuple(head.output_norm.parameters()),
-		"recurrent_layers": tuple(head.recurrent_layers.parameters()),
-		"initializer": initializer_parameters,
-		"memory_projection": tuple(head.memory_projection.parameters()),
-		"slot_queries": (head.slot_queries,),
-		"recurrent_step_embeddings": (head.recurrent_step_embeddings,),
-		"layer_embeddings": (head.layer_embeddings,),
+		"perturbation_directions": (head.perturbation_direction_codes,),
+		"world_attention": (
+			*tuple(cell.query_projection.parameters()),
+			*tuple(cell.key_projection.parameters()),
+			*tuple(cell.value_projection.parameters()),
+			*tuple(cell.attention_output.parameters()),
+		),
+		"feed_forward": (
+			*tuple(cell.feed_forward_gate.parameters()),
+			*tuple(cell.feed_forward_up.parameters()),
+			*tuple(cell.feed_forward_down.parameters()),
+		),
+		"residual_scales": (
+			cell.attention_residual_logit,
+			cell.feed_forward_residual_logit,
+		),
 	}
 	return {
 		f"gradient_norm_{name}": _gradient_l2_norm(parameters)
@@ -211,254 +261,89 @@ def recurrent_gradient_group_norms(head: QueryRecurrentHead) -> dict[str, torch.
 	}
 
 
-def combine_query_recurrent_outputs(
-	groups: tuple[tuple[tuple[int, ...], QueryRecurrentOutput], ...],
-	*,
-	total_rows: int,
-) -> QueryRecurrentOutput:
-	"""Restore grouped encoding order without padding histories across visual buckets."""
-	if not groups or total_rows <= 0:
-		raise ValueError("At least one non-empty recurrent group is required")
-	flat_indices = tuple(index for indices, _output in groups for index in indices)
-	if tuple(sorted(flat_indices)) != tuple(range(total_rows)):
-		raise ValueError("Recurrent groups must cover every logical row exactly once")
-	restore_order = torch.argsort(
-		torch.tensor(flat_indices, device=groups[0][1].embeddings.device),
-	)
-
-	def combine_tensors(values: tuple[torch.Tensor, ...]) -> torch.Tensor:
-		return torch.cat(values, dim=0).index_select(0, restore_order)
-
-	step_count = len(groups[0][1].step_embeddings)
-	if any(len(output.step_embeddings) != step_count for _indices, output in groups):
-		raise ValueError("Grouped recurrent outputs have different pass counts")
-	return QueryRecurrentOutput(
-		embeddings=combine_tensors(tuple(output.embeddings for _indices, output in groups)),
-		step_embeddings=tuple(
-			combine_tensors(
-				tuple(output.step_embeddings[step] for _indices, output in groups),
-			)
-			for step in range(step_count)
-		),
-		slot_bridge_embeddings=tuple(
-			combine_tensors(
-				tuple(output.slot_bridge_embeddings[step] for _indices, output in groups),
-			)
-			for step in range(step_count)
-		),
-		slot_states=tuple(
-			combine_tensors(
-				tuple(output.slot_states[step] for _indices, output in groups),
-			)
-			for step in range(step_count)
-		),
-		slot_attention_weights=tuple(
-			combine_tensors(
-				tuple(output.slot_attention_weights[step] for _indices, output in groups),
-			)
-			for step in range(step_count)
-		),
-	)
-
-
 class QueryRecurrentHead(nn.Module):
-	"""Convert frozen Qwen histories into a retrieval embedding with a shared recurrent Block."""
+	"""Evolve antithetic 2,048-dimensional worlds with one shared recurrent Block."""
 
 	def __init__(self, config: QueryRecurrentConfig) -> None:
 		super().__init__()
 		config.validate()
 		self.config = config
-		dimension = config.state_size
-		feed_forward_size = dimension * config.feed_forward_multiplier
-		self.memory_projection = nn.Linear(config.hidden_size, dimension, bias=False)
-		self.layer_embeddings = nn.Parameter(torch.empty(28, dimension))
-		self.slot_queries = nn.Parameter(torch.empty(config.num_slots, dimension))
-		self.recurrent_step_embeddings = nn.Parameter(
-			torch.empty(max(SUPPORTED_RECURRENT_STEPS), dimension),
+		self.recurrent_cell = ParallelWorldRecurrentCell(config)
+		self.perturbation_direction_codes = nn.Parameter(
+			torch.empty(2, config.attention_size),
 		)
-		self.initializer_norm = nn.LayerNorm(dimension)
-		self.initializer_attention = nn.MultiheadAttention(
-			dimension,
-			config.num_attention_heads,
-			batch_first=True,
-		)
-		self.initializer_feed_forward_norm = nn.LayerNorm(dimension)
-		self.initializer_feed_forward = nn.Sequential(
-			nn.Linear(dimension, feed_forward_size),
-			nn.GELU(approximate="tanh"),
-			nn.Linear(feed_forward_size, dimension),
-		)
-		self.recurrent_layers = nn.ModuleList(
-			RecurrentHistoryLayer(config) for _ in range(config.recurrent_block_layers)
-		)
-		self.output_norm = nn.LayerNorm(dimension)
-		self.output_projection = nn.Linear(dimension, config.hidden_size, bias=False)
-		self.residual_gate = nn.Parameter(torch.zeros(()))
 		self._reset_parameters()
-		trainable_count = sum(parameter.numel() for parameter in self.parameters())
-		if trainable_count > MAX_QUERY_RECURRENT_PARAMETERS:
+		if self.trainable_parameter_count > MAX_QUERY_RECURRENT_PARAMETERS:
 			raise ValueError(
-				f"Query-only recurrent head has {trainable_count:,} parameters; "
+				f"Query-only recurrent head has {self.trainable_parameter_count:,} parameters; "
 				f"limit is {MAX_QUERY_RECURRENT_PARAMETERS:,}",
 			)
 
 	def _reset_parameters(self) -> None:
-		common_generator = torch.Generator(device="cpu")
-		common_generator.manual_seed(self.config.seed)
-		phase_generator = torch.Generator(device="cpu")
-		phase_generator.manual_seed(self.config.seed + 1)
-		with torch.no_grad():
-			self.layer_embeddings.normal_(
-				mean=0.0,
-				std=0.02,
-				generator=common_generator,
-			)
-			nn.init.orthogonal_(self.slot_queries)
-			self.slot_queries.mul_(self.config.state_size**0.5 * 0.02)
-			self.recurrent_step_embeddings.normal_(
-				mean=0.0,
-				std=0.02,
-				generator=phase_generator,
-			)
-			nn.init.xavier_uniform_(
-				self.output_projection.weight,
-				generator=common_generator,
-			)
-			self.residual_gate.zero_()
+		with torch.random.fork_rng(devices=[]):
+			torch.manual_seed(self.config.seed)
+			for module in self.modules():
+				if isinstance(module, nn.Linear):
+					nn.init.xavier_uniform_(module.weight)
+			nn.init.orthogonal_(self.perturbation_direction_codes)
 
 	@property
 	def trainable_parameter_count(self) -> int:
-		"""Return the exact parameter count used for comparison with last-four-layer LoRA."""
+		"""Return the exact parameter count for the last-four-layer LoRA comparison."""
 		return sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)
 
-	def _project_history(
-		self,
-		history_hidden_states: torch.Tensor,
-		attention_mask: torch.Tensor,
-	) -> tuple[torch.Tensor, torch.Tensor]:
-		if history_hidden_states.ndim != 4:
-			raise ValueError("History states must have shape [batch, layers, tokens, hidden]")
-		batch_size, history_count, token_count, hidden_size = history_hidden_states.shape
-		if hidden_size != self.config.hidden_size:
-			raise ValueError("Frozen history hidden size does not match the configuration")
-		if history_count != len(self.config.history_layers):
-			raise ValueError("Frozen history layer count does not match the configuration")
-		if attention_mask.shape != (batch_size, token_count):
-			raise ValueError("History attention mask shape does not match frozen tokens")
-		normalized = parameter_free_rms_norm(history_hidden_states)
-		memory = self.memory_projection(normalized)
-		layer_indices = torch.tensor(
-			[layer - 1 for layer in self.config.history_layers],
-			device=memory.device,
-		)
-		memory = memory + self.layer_embeddings[layer_indices][None, :, None, :]
-		memory = memory.reshape(batch_size, history_count * token_count, -1)
-		valid = attention_mask.to(torch.bool)
-		memory_padding_mask = (~valid[:, None, :]).expand(
-			batch_size,
-			history_count,
-			token_count,
-		).reshape(batch_size, history_count * token_count)
-		return memory, memory_padding_mask
-
-	def _initialize_slots(
-		self,
-		memory: torch.Tensor,
-		memory_padding_mask: torch.Tensor,
-	) -> torch.Tensor:
-		queries = self.slot_queries[None].expand(memory.shape[0], -1, -1)
-		normalized_queries = self.initializer_norm(queries)
-		update = self.initializer_attention(
-			normalized_queries,
-			memory,
-			memory,
-			key_padding_mask=memory_padding_mask,
-			need_weights=False,
-		)[0]
-		slots = queries + update
-		return slots + self.initializer_feed_forward(
-			self.initializer_feed_forward_norm(slots),
-		)
-
-	def _read_step(
-		self,
-		slots: torch.Tensor,
-		base_embeddings: torch.Tensor,
-	) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-		condition = parameter_free_rms_norm(
-			self.memory_projection(base_embeddings.to(slots.dtype)),
-		)
-		normalized_slots = parameter_free_rms_norm(slots)
-		scores = torch.einsum("bd,bkd->bk", condition, normalized_slots)
-		scores = scores / (self.config.state_size**0.5)
-		weights = torch.softmax(scores, dim=1)
-		pooled = torch.einsum("bk,bkd->bd", weights.to(slots.dtype), slots)
-		proposal = F.normalize(
-			self.output_projection(self.output_norm(pooled)).float(),
-			p=2,
-			dim=-1,
-		)
-		bridge = F.normalize(
-			base_embeddings.float() + self.config.slot_bridge_scale * proposal,
-			p=2,
-			dim=-1,
-		)
-		fused = F.normalize(
-			base_embeddings.float() + torch.tanh(self.residual_gate.float()) * proposal,
-			p=2,
-			dim=-1,
-		)
-		return fused, bridge, weights
-
-	def forward(
-		self,
-		*,
-		history_hidden_states: torch.Tensor,
-		attention_mask: torch.Tensor,
-		base_embeddings: torch.Tensor,
-	) -> QueryRecurrentOutput:
-		"""Run exactly the configured number of shared recurrent updates."""
+	def initialize_worlds(self, base_embeddings: torch.Tensor) -> torch.Tensor:
+		"""Create deterministic antithetic worlds whose mean is exactly the Qwen embedding."""
 		if base_embeddings.ndim != 2 or base_embeddings.shape[-1] != self.config.hidden_size:
 			raise ValueError("Base embeddings must have shape [batch, 2048]")
-		memory, memory_padding_mask = self._project_history(
-			history_hidden_states,
-			attention_mask,
+		base = base_embeddings.float()
+		if self.config.num_worlds == 1:
+			return base[:, None, :]
+		normalized = parameter_free_rms_norm(base_embeddings)
+		features = torch.tanh(self.recurrent_cell.value_projection(normalized))
+		raw_directions = tuple(
+			self.recurrent_cell.attention_output(
+				features * code[None].to(features.dtype),
+			).float()
+			for code in self.perturbation_direction_codes
 		)
-		slots = self._initialize_slots(memory, memory_padding_mask)
+		first = F.normalize(raw_directions[0], dim=-1, eps=1e-6)
+		base_norm = torch.linalg.vector_norm(base, dim=-1, keepdim=True)
+		first_delta = self.config.perturbation_scale * base_norm * first
+		worlds = [base + first_delta, base - first_delta]
+		if self.config.num_worlds == 4:
+			second_raw = raw_directions[1] - (
+				raw_directions[1] * first
+			).sum(dim=-1, keepdim=True) * first
+			second = F.normalize(second_raw, dim=-1, eps=1e-6)
+			second_delta = self.config.perturbation_scale * base_norm * second
+			worlds.extend((base + second_delta, base - second_delta))
+		stacked = torch.stack(worlds, dim=1)
+		return stacked - stacked.mean(dim=1, keepdim=True) + base[:, None, :]
+
+	def forward(self, *, base_embeddings: torch.Tensor) -> QueryRecurrentOutput:
+		"""Run a fixed number of simultaneous shared-parameter population updates."""
+		worlds = self.initialize_worlds(base_embeddings)
+		initial_worlds = worlds
 		step_embeddings = []
-		slot_bridge_embeddings = []
-		slot_states = []
-		slot_attention_weights = []
-		for step in range(self.config.max_recurrent_steps):
-			previous_slots = slots
-			proposed_slots = (
-				slots
-				+ self.slot_queries[None].to(slots.dtype)
-				+ self.recurrent_step_embeddings[step][None, None].to(slots.dtype)
-			)
-			for layer in self.recurrent_layers:
-				proposed_slots = layer(proposed_slots, memory, memory_padding_mask)
-			slots = _damped_state_update(
-				previous_slots,
-				proposed_slots,
-				scale=self.config.recurrent_update_scale,
-			)
-			fused, bridge, slot_weights = self._read_step(slots, base_embeddings)
-			step_embeddings.append(fused)
-			slot_bridge_embeddings.append(bridge)
-			slot_states.append(slots)
-			slot_attention_weights.append(slot_weights)
+		world_states = []
+		interaction_weights = []
+		for _step in range(self.config.max_recurrent_steps):
+			worlds, weights = self.recurrent_cell(worlds)
+			step_embeddings.append(F.normalize(worlds.mean(dim=1).float(), dim=-1))
+			world_states.append(worlds)
+			interaction_weights.append(weights)
 		return QueryRecurrentOutput(
 			embeddings=step_embeddings[-1],
 			step_embeddings=tuple(step_embeddings),
-			slot_bridge_embeddings=tuple(slot_bridge_embeddings),
-			slot_states=tuple(slot_states),
-			slot_attention_weights=tuple(slot_attention_weights),
+			world_states=tuple(world_states),
+			interaction_weights=tuple(interaction_weights),
+			initial_world_states=initial_worlds,
 		)
 
 
 class GroupedQueryRecurrentHead(nn.Module):
-	"""Run one shared head per padding bucket while keeping one logical contrastive batch."""
+	"""Restore grouped frozen embeddings before one logical population forward."""
 
 	def __init__(self, head: QueryRecurrentHead) -> None:
 		super().__init__()
@@ -467,22 +352,20 @@ class GroupedQueryRecurrentHead(nn.Module):
 	def forward(
 		self,
 		*,
-		feature_groups: tuple[
-			tuple[tuple[int, ...], torch.Tensor, torch.Tensor, torch.Tensor],
-			...,
-		],
+		feature_groups: tuple[tuple[tuple[int, ...], torch.Tensor], ...],
 		total_rows: int,
 	) -> QueryRecurrentOutput:
-		"""Apply the head independently to each bucket and restore logical row order."""
-		outputs = tuple(
-			(
-				indices,
-				self.head(
-					history_hidden_states=history,
-					attention_mask=attention_mask,
-					base_embeddings=base_embeddings,
-				),
-			)
-			for indices, history, attention_mask, base_embeddings in feature_groups
-		)
-		return combine_query_recurrent_outputs(outputs, total_rows=total_rows)
+		"""Restore the contrastive batch order, then evolve every Query once."""
+		if not feature_groups or total_rows <= 0:
+			raise ValueError("At least one non-empty feature group is required")
+		flat_indices = tuple(index for indices, _base in feature_groups for index in indices)
+		if tuple(sorted(flat_indices)) != tuple(range(total_rows)):
+			raise ValueError("Feature groups must cover every logical row exactly once")
+		first = feature_groups[0][1]
+		base_embeddings = first.new_empty((total_rows, first.shape[-1]))
+		for indices, values in feature_groups:
+			if len(indices) != values.shape[0]:
+				raise ValueError("Feature group indexes and rows must match")
+			positions = torch.tensor(indices, device=values.device)
+			base_embeddings[positions] = values
+		return self.head(base_embeddings=base_embeddings)

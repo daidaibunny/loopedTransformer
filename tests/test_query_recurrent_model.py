@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import math
 from types import SimpleNamespace
 
 import pytest
 import torch
 
 from looped_vl.query_recurrent.config import (
-	DEFAULT_HISTORY_LAYERS,
 	MAX_QUERY_RECURRENT_PARAMETERS,
 	QUERY_RECURRENT_ARCHITECTURE,
 	QUERY_RECURRENT_PROTOCOL,
@@ -16,29 +14,16 @@ from looped_vl.query_recurrent.config import (
 from looped_vl.query_recurrent.model import (
 	GroupedQueryRecurrentHead,
 	QueryRecurrentHead,
-	_damped_state_update,
 	query_recurrent_diagnostics,
 	recurrent_gradient_group_norms,
 )
 
 
-def _inputs(config: QueryRecurrentConfig, batch_size: int = 3) -> dict[str, torch.Tensor]:
-	history = torch.randn(
-		batch_size,
-		len(config.history_layers),
-		6,
-		config.hidden_size,
-	)
-	mask = torch.tensor([[1, 1, 1, 1, 0, 0]] * batch_size)
-	base = torch.nn.functional.normalize(torch.randn(batch_size, config.hidden_size), dim=-1)
-	return {
-		"history_hidden_states": history,
-		"attention_mask": mask,
-		"base_embeddings": base,
-	}
+def _base_embeddings(batch_size: int = 3) -> torch.Tensor:
+	return torch.nn.functional.normalize(torch.randn(batch_size, 2048), dim=-1)
 
 
-def test_locked_query_recurrent_identity_is_frozen_candidate_no_lora() -> None:
+def test_locked_identity_is_parallel_population_no_lora_final_mean() -> None:
 	identity = QueryRecurrentConfig().identity()
 
 	assert identity["architecture"] == QUERY_RECURRENT_ARCHITECTURE
@@ -47,273 +32,159 @@ def test_locked_query_recurrent_identity_is_frozen_candidate_no_lora() -> None:
 	assert identity["candidate_backbone_executed"] is False
 	assert identity["lora_enabled"] is False
 	assert identity["formal_training_stages"] == 1
-	assert identity["history_layers"] == DEFAULT_HISTORY_LAYERS
-	assert identity["slot_bridge_loss_weight"] == 0.1
-	assert identity["slot_bridge_scale"] == 0.1
+	assert identity["num_worlds"] == 4
+	assert identity["max_recurrent_steps"] == 4
+	assert identity["initialization"] == "query_conditioned_antithetic_zero_mean"
+	assert identity["world_interaction"] == "shared_centered_bidirectional_attention"
+	assert identity["readout"] == "final_world_mean_l2_normalized"
 	assert identity["pass_supervision"] == "final_only"
-	assert identity["progressive_loss_weight"] == 0.0
-	assert identity["recurrent_step_conditioning"] == "learned_phase_embedding"
-	assert identity["recurrent_update_scale"] == 0.25
+	assert identity["dynamic_exit"] is False
+	assert identity["recurrent_step_embeddings"] is False
 
 
-@pytest.mark.parametrize(
-	("slot_count", "expected_parameters"),
-	[(1, 4_853_953), (4, 4_854_817), (8, 4_855_969)],
-)
-def test_slot_ablation_stays_below_five_million_parameters(
-	slot_count: int,
-	expected_parameters: int,
-) -> None:
-	head = QueryRecurrentHead(QueryRecurrentConfig(num_slots=slot_count))
+def test_parameter_count_matches_last_four_layer_lora_budget() -> None:
+	head = QueryRecurrentHead(QueryRecurrentConfig())
 
-	assert head.trainable_parameter_count == expected_parameters
+	assert head.trainable_parameter_count == 4_391_554
 	assert head.trainable_parameter_count < MAX_QUERY_RECURRENT_PARAMETERS
+	assert head.trainable_parameter_count < 4_456_448
 
 
-def test_zero_gate_starts_every_recurrent_step_at_the_frozen_embedding() -> None:
-	config = QueryRecurrentConfig()
-	head = QueryRecurrentHead(config)
-	inputs = _inputs(config)
+def test_antithetic_initial_worlds_preserve_mean_and_two_axes() -> None:
+	head = QueryRecurrentHead(QueryRecurrentConfig())
+	base = _base_embeddings(batch_size=2)
 
-	output = head(**inputs)
+	worlds = head.initialize_worlds(base)
+	deviations = worlds - base[:, None, :]
 
-	for embedding in output.step_embeddings:
-		assert torch.allclose(embedding, inputs["base_embeddings"], atol=1e-6)
-	assert torch.allclose(output.embeddings, inputs["base_embeddings"], atol=1e-6)
-	assert torch.count_nonzero(head.output_projection.weight) > 0
-	assert head.residual_gate.item() == 0.0
-	assert not hasattr(head, "exit_controller")
-
-
-def test_zero_gated_residual_scale_is_independent_of_projection_magnitude() -> None:
-	config = QueryRecurrentConfig(max_recurrent_steps=1)
-	head = QueryRecurrentHead(config)
-	inputs = _inputs(config)
-	with torch.no_grad():
-		head.output_projection.weight.mul_(1_000.0)
-		head.residual_gate.fill_(math.atanh(0.1))
-
-	output = head(**inputs)
-	movement = torch.linalg.vector_norm(
-		output.embeddings - inputs["base_embeddings"],
-		dim=-1,
-	)
-
-	assert movement.max().item() < 0.12
-
-
-@pytest.mark.parametrize(
-	("recurrent_steps", "expected_scale"),
-	[(1, 1.0), (2, 0.5), (3, 1.0 / 3.0), (4, 0.25)],
-)
-def test_recurrent_state_update_uses_inverse_pass_count_damping(
-	recurrent_steps: int,
-	expected_scale: float,
-) -> None:
-	previous = torch.tensor([[1.0, 3.0]])
-	proposed = torch.tensor([[5.0, 11.0]])
-
-	assert QueryRecurrentConfig(
-		max_recurrent_steps=recurrent_steps,
-	).recurrent_update_scale == pytest.approx(expected_scale)
+	assert worlds.shape == (2, 4, 2048)
+	assert torch.allclose(worlds.mean(dim=1), base, atol=1e-7)
+	assert torch.allclose(deviations[:, 0], -deviations[:, 1], atol=1e-7)
+	assert torch.allclose(deviations[:, 2], -deviations[:, 3], atol=1e-7)
 	assert torch.allclose(
-		_damped_state_update(previous, proposed, scale=expected_scale),
-		previous + expected_scale * (proposed - previous),
+		(deviations[:, 0] * deviations[:, 2]).sum(dim=-1),
+		torch.zeros(2),
+		atol=1e-5,
+	)
+	assert torch.allclose(
+		deviations[:, 0].norm(dim=-1),
+		base.norm(dim=-1) * head.config.perturbation_scale,
+		atol=1e-5,
 	)
 
 
-def test_fixed_recurrence_returns_normalized_pass_outputs_and_final_pass() -> None:
-	config = QueryRecurrentConfig()
-	head = QueryRecurrentHead(config)
-	inputs = _inputs(config)
-	output = head(**inputs)
+def test_shared_cell_is_permutation_equivariant_over_worlds() -> None:
+	head = QueryRecurrentHead(QueryRecurrentConfig(max_recurrent_steps=1))
+	worlds = head.initialize_worlds(_base_embeddings(batch_size=2))
+	permutation = torch.tensor([2, 0, 3, 1])
+
+	original, original_attention = head.recurrent_cell(worlds)
+	permuted, permuted_attention = head.recurrent_cell(worlds[:, permutation])
+
+	assert torch.allclose(permuted, original[:, permutation], atol=1e-5)
+	assert torch.allclose(
+		permuted_attention,
+		original_attention[:, permutation][:, :, permutation],
+		atol=1e-5,
+	)
+
+
+def test_fixed_recurrence_returns_only_mean_pooled_unit_embeddings() -> None:
+	head = QueryRecurrentHead(QueryRecurrentConfig())
+	base = _base_embeddings()
+
+	output = head(base_embeddings=base)
 
 	assert len(output.step_embeddings) == 4
-	assert len(output.slot_bridge_embeddings) == 4
-	assert len(output.slot_states) == 4
-	assert len(output.slot_attention_weights) == 4
-	assert torch.allclose(output.embeddings.norm(dim=1), torch.ones(3), atol=1e-5)
+	assert len(output.world_states) == 4
+	assert len(output.interaction_weights) == 4
+	assert output.initial_world_states.shape == (3, 4, 2048)
+	assert torch.allclose(output.initial_world_states.mean(dim=1), base, atol=1e-7)
 	assert torch.equal(output.embeddings, output.step_embeddings[-1])
-	for bridge in output.slot_bridge_embeddings:
-		assert torch.allclose(bridge.norm(dim=1), torch.ones(3), atol=1e-5)
-		movement = torch.linalg.vector_norm(bridge - inputs["base_embeddings"], dim=-1)
-		assert movement.max().item() < 0.12
-	for weights in output.slot_attention_weights:
-		assert torch.allclose(weights.sum(dim=1), torch.ones(3), atol=1e-6)
+	for step, worlds in zip(output.step_embeddings, output.world_states, strict=True):
+		assert torch.allclose(step.norm(dim=-1), torch.ones(3), atol=1e-5)
+		assert torch.allclose(
+			step,
+			torch.nn.functional.normalize(worlds.mean(dim=1).float(), dim=-1),
+			atol=1e-6,
+		)
+	assert not hasattr(head, "recurrent_step_embeddings")
+	assert not hasattr(head, "exit_controller")
+	assert not hasattr(output, "slot_bridge_embeddings")
 
 
-def test_recurrent_step_embedding_changes_only_its_current_and_later_passes() -> None:
-	config = QueryRecurrentConfig(max_recurrent_steps=2)
-	baseline = QueryRecurrentHead(config)
-	conditioned = QueryRecurrentHead(config)
-	conditioned.load_state_dict(baseline.state_dict())
-	with torch.no_grad():
-		conditioned.recurrent_step_embeddings[1].fill_(0.25)
-	inputs = _inputs(config, batch_size=2)
+def test_one_shared_cell_is_reused_for_every_recurrent_step() -> None:
+	head = QueryRecurrentHead(QueryRecurrentConfig(max_recurrent_steps=4))
 
-	baseline_output = baseline(**inputs)
-	conditioned_output = conditioned(**inputs)
-
-	assert torch.allclose(
-		baseline_output.slot_states[0],
-		conditioned_output.slot_states[0],
-	)
-	assert not torch.allclose(
-		baseline_output.slot_states[1],
-		conditioned_output.slot_states[1],
-	)
+	assert hasattr(head, "recurrent_cell")
+	assert not hasattr(head, "recurrent_layers")
+	assert sum(1 for name, _module in head.named_modules() if name == "recurrent_cell") == 1
 
 
-def test_phase_initialization_does_not_change_existing_parameter_initialization() -> None:
-	config = QueryRecurrentConfig()
-	common_generator = torch.Generator(device="cpu")
-	common_generator.manual_seed(config.seed)
-	expected_layer_embeddings = torch.empty(28, config.state_size)
-	expected_layer_embeddings.normal_(
-		mean=0.0,
-		std=0.02,
-		generator=common_generator,
-	)
-	expected_output_projection = torch.empty(config.hidden_size, config.state_size)
-	torch.nn.init.xavier_uniform_(
-		expected_output_projection,
-		generator=common_generator,
-	)
+def test_grouped_head_restores_logical_order_before_one_population_forward() -> None:
+	head = QueryRecurrentHead(QueryRecurrentConfig())
+	grouped_head = GroupedQueryRecurrentHead(head)
+	short = _base_embeddings(batch_size=1)
+	long = _base_embeddings(batch_size=2)
 
-	head = QueryRecurrentHead(config)
-
-	assert torch.equal(head.layer_embeddings, expected_layer_embeddings)
-	assert torch.equal(head.output_projection.weight, expected_output_projection)
-
-
-def test_recurrent_diagnostics_expose_each_pass_movement_attention_and_collapse() -> None:
-	base = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
-	pass_one = torch.nn.functional.normalize(
-		torch.tensor([[1.0, 1.0], [1.0, 1.0]]),
-		dim=-1,
-	)
-	pass_two = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
-	collapsed_slots = torch.tensor(
-		[
-			[[1.0, 0.0], [1.0, 0.0]],
-			[[0.0, 1.0], [0.0, 1.0]],
-		],
-	)
-	diverse_slots = torch.tensor(
-		[
-			[[1.0, 0.0], [0.0, 1.0]],
-			[[1.0, 0.0], [0.0, 1.0]],
-		],
-	)
-	output = SimpleNamespace(
-		step_embeddings=(pass_one, pass_two),
-		slot_states=(collapsed_slots, diverse_slots),
-		slot_attention_weights=(
-			torch.full((2, 2), 0.5),
-			torch.tensor([[1.0, 0.0], [1.0, 0.0]]),
+	output = grouped_head(
+		feature_groups=(
+			((1,), short),
+			((0, 2), long),
 		),
+		total_rows=3,
+	)
+	direct_base = torch.stack((long[0], short[0], long[1]))
+	direct = head(base_embeddings=direct_base)
+
+	assert torch.allclose(output.embeddings, direct.embeddings)
+	assert torch.allclose(output.initial_world_states, direct.initial_world_states)
+
+
+def test_final_loss_reaches_every_trainable_component_on_first_step() -> None:
+	head = QueryRecurrentHead(QueryRecurrentConfig(max_recurrent_steps=2))
+	output = head(base_embeddings=_base_embeddings(batch_size=4))
+
+	output.embeddings.square().sum().backward()
+	gradient_norms = recurrent_gradient_group_norms(head)
+
+	assert all(value.item() > 0 for value in gradient_norms.values())
+
+
+def test_diagnostics_measure_population_spread_interaction_and_mean_motion() -> None:
+	base = torch.nn.functional.normalize(torch.randn(2, 4), dim=-1)
+	initial = torch.stack((base + 0.1, base - 0.1), dim=1)
+	step_one_worlds = initial + 0.05
+	step_two_worlds = step_one_worlds + torch.tensor([0.1, 0.0, 0.0, 0.0])
+	step_one = torch.nn.functional.normalize(step_one_worlds.mean(dim=1), dim=-1)
+	step_two = torch.nn.functional.normalize(step_two_worlds.mean(dim=1), dim=-1)
+	weights = torch.full((2, 2, 2), 0.5)
+	output = SimpleNamespace(
+		step_embeddings=(step_one, step_two),
+		world_states=(step_one_worlds, step_two_worlds),
+		interaction_weights=(weights, weights),
+		initial_world_states=initial,
 	)
 
 	diagnostics = query_recurrent_diagnostics(output, base)
 
+	assert diagnostics["initial_population_mean_error_l2"].item() < 1e-7
 	assert diagnostics["step_1_embedding_delta_from_base_l2"].item() > 0
-	assert diagnostics["step_1_embedding_delta_from_previous_l2"].item() > 0
 	assert diagnostics["step_2_embedding_delta_from_previous_l2"].item() > 0
-	assert diagnostics["step_1_slot_pairwise_absolute_cosine"].item() == pytest.approx(1.0)
-	assert diagnostics["step_2_slot_pairwise_absolute_cosine"].item() == pytest.approx(0.0)
-	assert diagnostics["step_1_slot_attention_normalized_entropy"].item() == pytest.approx(1.0)
-	assert diagnostics["step_2_slot_attention_normalized_entropy"].item() == pytest.approx(0.0)
-	assert diagnostics["step_1_slot_attention_max_weight"].item() == pytest.approx(0.5)
-	assert diagnostics["step_2_slot_attention_max_weight"].item() == pytest.approx(1.0)
-
-
-def test_zero_gate_still_blocks_fused_only_first_step_gradients() -> None:
-	config = QueryRecurrentConfig(num_slots=4, max_recurrent_steps=1)
-	head = QueryRecurrentHead(config)
-	inputs = _inputs(config, batch_size=2)
-	optimizer = torch.optim.SGD(head.parameters(), lr=0.1)
-
-	first_output = head(**inputs)
-	first_output.embeddings.sum().backward()
-	first_norms = recurrent_gradient_group_norms(head)
-
-	assert first_norms["gradient_norm_residual_gate"].item() > 0
-	assert first_norms["gradient_norm_output_projection"].item() == 0
-	assert first_norms["gradient_norm_recurrent_layers"].item() == 0
-	assert first_norms["gradient_norm_initializer"].item() == 0
-	assert first_norms["gradient_norm_memory_projection"].item() == 0
-	optimizer.step()
-	optimizer.zero_grad(set_to_none=True)
-
-	second_output = head(**inputs)
-	second_output.embeddings.sum().backward()
-	second_norms = recurrent_gradient_group_norms(head)
-
-	assert second_norms["gradient_norm_output_projection"].item() > 0
-	assert second_norms["gradient_norm_recurrent_layers"].item() > 0
-	assert second_norms["gradient_norm_initializer"].item() > 0
-	assert second_norms["gradient_norm_memory_projection"].item() > 0
-
-
-def test_fixed_one_step_and_final_layer_history_are_supported_ablations() -> None:
-	config = QueryRecurrentConfig(
-		history_layers=(28,),
-		max_recurrent_steps=1,
-	)
-	head = QueryRecurrentHead(config)
-	output = head(**_inputs(config, batch_size=2))
-
-	assert len(output.step_embeddings) == 1
-	assert torch.equal(output.embeddings, output.step_embeddings[0])
-
-
-def test_grouped_head_preserves_results_and_avoids_cross_bucket_padding() -> None:
-	config = QueryRecurrentConfig(num_slots=4)
-	head = QueryRecurrentHead(config)
-	grouped_head = GroupedQueryRecurrentHead(head)
-	short = _inputs(config, batch_size=1)
-	long = _inputs(config, batch_size=2)
-	long["history_hidden_states"] = torch.randn(2, len(config.history_layers), 9, 2048)
-	long["attention_mask"] = torch.ones(2, 9, dtype=torch.long)
-
-	output = grouped_head(
-		feature_groups=(
-			(
-				(1,),
-				short["history_hidden_states"],
-				short["attention_mask"],
-				short["base_embeddings"],
-			),
-			(
-				(0, 2),
-				long["history_hidden_states"],
-				long["attention_mask"],
-				long["base_embeddings"],
-			),
-		),
-		total_rows=3,
-	)
-	short_output = head(**short)
-	long_output = head(**long)
-
-	assert torch.allclose(output.step_embeddings[-1][1], short_output.step_embeddings[-1][0])
-	assert torch.allclose(output.step_embeddings[-1][0], long_output.step_embeddings[-1][0])
-	assert torch.allclose(output.step_embeddings[-1][2], long_output.step_embeddings[-1][1])
-	output.slot_states[-1].sum().backward()
-	assert head.memory_projection.weight.grad is not None
+	assert diagnostics["step_1_population_spread_l2"].item() > 0
+	assert diagnostics["step_1_interaction_normalized_entropy"].item() == pytest.approx(1.0)
+	assert diagnostics["step_1_interaction_off_diagonal_mass"].item() == pytest.approx(0.5)
 
 
 @pytest.mark.parametrize(
-	"changes,match",
+	("changes", "match"),
 	[
-		({"num_slots": 2}, "num_slots"),
+		({"hidden_size": 1024}, "2048"),
+		({"attention_size": 318}, "attention_size"),
+		({"num_worlds": 3}, "num_worlds"),
 		({"max_recurrent_steps": 5}, "max_recurrent_steps"),
-		({"history_layers": ()}, "history"),
-		({"history_layers": (0, 28)}, "1 through 28"),
-		({"slot_bridge_scale": 0.0}, "slot_bridge_scale"),
+		({"perturbation_scale": 0.0}, "perturbation_scale"),
 		({"pass_supervision": "every_pass"}, "pass_supervision"),
-		({"recurrent_step_conditioning": "none"}, "recurrent_step_conditioning"),
-		({"progressive_loss_weight": 0.1}, "progressive_loss_weight"),
 	],
 )
 def test_invalid_formal_variants_are_rejected(changes: dict[str, object], match: str) -> None:

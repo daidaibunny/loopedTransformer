@@ -142,20 +142,6 @@ def multi_query_symmetric_info_nce(
 	return tuple(losses)
 
 
-def slot_pairwise_absolute_cosine(slot_states: torch.Tensor) -> torch.Tensor:
-	"""Log slot collapse without forcing potentially meaningless diversity."""
-	if slot_states.shape[1] <= 1:
-		return slot_states.new_zeros(())
-	normalized = torch.nn.functional.normalize(slot_states.float(), dim=-1)
-	cosine = normalized @ normalized.transpose(1, 2)
-	off_diagonal = ~torch.eye(
-		slot_states.shape[1],
-		device=slot_states.device,
-		dtype=torch.bool,
-	)
-	return cosine[:, off_diagonal].abs().mean()
-
-
 def query_recurrent_loss(
 	output: QueryRecurrentOutput,
 	candidate_embeddings: torch.Tensor,
@@ -165,60 +151,19 @@ def query_recurrent_loss(
 	*,
 	hard_negative_embeddings: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
-	"""Train every fused pass directly within its own candidate gallery."""
-	losses = multi_query_symmetric_info_nce(
-		(*output.step_embeddings, *output.slot_bridge_embeddings),
+	"""Supervise only the final mean-pooled population embedding."""
+	if config.pass_supervision != "final_only":
+		raise ValueError("Query recurrent training requires final-only pass supervision")
+	(final_loss,) = multi_query_symmetric_info_nce(
+		(output.embeddings,),
 		candidate_embeddings,
 		positive_ids,
 		directions,
 		temperature=config.temperature,
 		hard_negative_embeddings=hard_negative_embeddings,
 	)
-	step_count = len(output.step_embeddings)
-	step_losses = losses[:step_count]
-	bridge_losses = losses[step_count:]
-	if len(bridge_losses) != step_count:
-		raise RuntimeError("Every recurrent pass must expose one slot bridge embedding")
-	if config.pass_supervision != "final_only":
-		raise ValueError("Query recurrent training requires final-only pass supervision")
-	pass_weights = torch.zeros(
-		step_count,
-		device=step_losses[0].device,
-		dtype=step_losses[0].dtype,
-	)
-	pass_weights[-1] = 1
-	direct_pass_loss = (torch.stack(step_losses) * pass_weights).sum()
-	slot_bridge_loss = (torch.stack(bridge_losses) * pass_weights).sum()
-	main_loss = step_losses[-1]
-	if len(step_losses) > 1:
-		progressive_loss = torch.stack(
-			[
-				torch.relu(current - previous + config.progressive_margin)
-				for previous, current in zip(step_losses[:-1], step_losses[1:], strict=True)
-			],
-		).mean()
-	else:
-		progressive_loss = main_loss.new_zeros(())
-	total = (
-		config.direct_pass_loss_weight * direct_pass_loss
-		+ config.slot_bridge_loss_weight * slot_bridge_loss
-		+ config.progressive_loss_weight * progressive_loss
-	)
 	return {
-		"loss": total,
-		"main_info_nce": main_loss,
-		"direct_pass_info_nce": direct_pass_loss,
-		"slot_bridge_info_nce": slot_bridge_loss,
-		"progressive_margin_loss": progressive_loss,
-		"slot_pairwise_absolute_cosine": slot_pairwise_absolute_cosine(
-			output.slot_states[-1],
-		),
-		**{
-			f"step_{index}_info_nce": loss
-			for index, loss in enumerate(step_losses, start=1)
-		},
-		**{
-			f"step_{index}_slot_bridge_info_nce": loss
-			for index, loss in enumerate(bridge_losses, start=1)
-		},
+		"loss": final_loss,
+		"main_info_nce": final_loss,
+		"final_mean_info_nce": final_loss,
 	}

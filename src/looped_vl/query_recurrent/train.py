@@ -78,18 +78,6 @@ def _append_json_line(path: Path, value: Any) -> None:
 		handle.write(json.dumps(value, sort_keys=True) + "\n")
 
 
-def _parse_history_layers(value: str) -> tuple[int, ...]:
-	try:
-		layers = tuple(int(part) for part in value.split(","))
-	except ValueError as error:
-		raise argparse.ArgumentTypeError(
-			"history layers must be comma-separated integers",
-		) from error
-	if not layers:
-		raise argparse.ArgumentTypeError("at least one history layer is required")
-	return layers
-
-
 def _resolve_resume_source_commit(
 	*,
 	current_git_commit: str,
@@ -281,7 +269,7 @@ def _encode_query_batch(
 	backbone: FrozenQueryBackbone,
 	args: argparse.Namespace,
 	device: torch.device,
-) -> tuple[tuple[tuple[int, ...], torch.Tensor, torch.Tensor, torch.Tensor], ...]:
+) -> tuple[tuple[tuple[int, ...], torch.Tensor], ...]:
 	try:
 		groups = group_baseline_model_inputs(
 			batch["query_inputs"],
@@ -302,8 +290,6 @@ def _encode_query_batch(
 			features.append(
 				(
 					group.original_indices,
-					frozen.history_hidden_states,
-					frozen.attention_mask,
 					frozen.base_embeddings,
 				),
 			)
@@ -312,7 +298,7 @@ def _encode_query_batch(
 
 def _restore_base_embeddings(
 	feature_groups: tuple[
-		tuple[tuple[int, ...], torch.Tensor, torch.Tensor, torch.Tensor],
+		tuple[tuple[int, ...], torch.Tensor],
 		...,
 	],
 	*,
@@ -322,7 +308,7 @@ def _restore_base_embeddings(
 	flat_indices = tuple(index for group in feature_groups for index in group[0])
 	if tuple(sorted(flat_indices)) != tuple(range(total_rows)):
 		raise ValueError("Frozen feature groups must cover every logical query row")
-	values = torch.cat(tuple(group[3] for group in feature_groups), dim=0)
+	values = torch.cat(tuple(group[1] for group in feature_groups), dim=0)
 	restore_order = torch.argsort(torch.tensor(flat_indices, device=values.device))
 	return values.index_select(0, restore_order)
 
@@ -412,15 +398,10 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 	if args.max_checkpoints != 1 or args.checkpoint_every <= 0:
 		raise ValueError("Exactly one rolling checkpoint and a positive interval are required")
 	config = QueryRecurrentConfig(
-		num_slots=args.num_slots,
+		num_worlds=args.num_worlds,
 		max_recurrent_steps=args.max_recurrent_steps,
-		history_layers=args.history_layers,
+		perturbation_scale=args.perturbation_scale,
 		temperature=args.temperature,
-		direct_pass_loss_weight=args.direct_pass_loss_weight,
-		slot_bridge_loss_weight=args.slot_bridge_loss_weight,
-		slot_bridge_scale=args.slot_bridge_scale,
-		progressive_loss_weight=args.progressive_loss_weight,
-		progressive_margin=args.progressive_margin,
 		hard_negative_count=args.hard_negative_count,
 		seed=args.seed,
 	)
@@ -497,7 +478,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		dtype=torch.float16,
 		attention_implementation=args.attention_implementation,
 	).to(device)
-	backbone = FrozenQueryBackbone(base_model, config.history_layers)
+	backbone = FrozenQueryBackbone(base_model)
 	head = QueryRecurrentHead(config).to(device)
 	training_model = GroupedQueryRecurrentHead(head)
 	if head.trainable_parameter_count > MAX_QUERY_RECURRENT_PARAMETERS:
@@ -589,7 +570,7 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 		gradient_as_bucket_view=True,
 	)
 	manifest = {
-		"scope": "query_only_history_recurrent_no_lora",
+		"scope": "query_only_parallel_world_recurrent_no_lora",
 		"dataset": args.dataset,
 		"dataset_root": str(args.dataset_root),
 		"candidate_root": str(args.candidate_root),
@@ -702,7 +683,12 @@ def run_training(args: argparse.Namespace) -> dict[str, Any] | None:
 			batch_metrics = {
 				**losses,
 				**query_recurrent_diagnostics(output, base_embeddings),
-				"residual_gate": torch.tanh(head.residual_gate.float()),
+				"attention_residual_scale": (
+					head.recurrent_cell.attention_residual_scale.float()
+				),
+				"feed_forward_residual_scale": (
+					head.recurrent_cell.feed_forward_residual_scale.float()
+				),
 			}
 			scaler.scale(losses["loss"]).backward()
 			scaler.unscale_(optimizer)
@@ -871,18 +857,13 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--resume-gradient-scale", type=float)
 	parser.add_argument("--skip-checkpoint-save", action="store_true")
 	parser.add_argument("--skip-final-save", action="store_true")
-	parser.add_argument("--num-slots", type=int, choices=(1, 4, 8), default=8)
+	parser.add_argument("--num-worlds", type=int, choices=(1, 2, 4), default=4)
 	parser.add_argument("--max-recurrent-steps", type=int, choices=(1, 2, 3, 4), default=4)
-	parser.add_argument("--history-layers", type=_parse_history_layers, default=(7, 14, 21, 28))
+	parser.add_argument("--perturbation-scale", type=float, default=0.02)
 	parser.add_argument("--learning-rate", type=float, default=1e-4)
 	parser.add_argument("--weight-decay", type=float, default=0.01)
 	parser.add_argument("--warmup-ratio", type=float, default=0.02)
 	parser.add_argument("--temperature", type=float, default=0.02)
-	parser.add_argument("--direct-pass-loss-weight", type=float, default=1.0)
-	parser.add_argument("--slot-bridge-loss-weight", type=float, default=0.1)
-	parser.add_argument("--slot-bridge-scale", type=float, default=0.1)
-	parser.add_argument("--progressive-loss-weight", type=float, default=0.0)
-	parser.add_argument("--progressive-margin", type=float, default=0.02)
 	parser.add_argument("--hard-negative-count", type=int, default=32)
 	parser.add_argument("--gradient-clip-norm", type=float, default=1.0)
 	parser.add_argument("--initial-gradient-scale", type=float, default=4096.0)

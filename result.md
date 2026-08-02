@@ -33,18 +33,18 @@ the current experiments.
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA, decoder layers 24–27 only | Passed | Passed | Passed | All three datasets |
-| Query-only history recurrent Block (no LoRA) | No accepted current result | N/A | N/A | Historical v1 only |
+| Query-only parallel-world recurrent Block (no LoRA) | Pending | N/A | N/A | No accepted v11 result yet |
 
-The current diagnostic candidate is `query_only_history_recurrent_no_lora_v10_candidate`,
-with protocol `single_stage_phase_conditioned_final_pass_v10_candidate`. Candidate
+The current formal candidate is `query_only_parallel_world_recurrent_no_lora_v11`, with
+protocol `single_stage_antithetic_final_mean_v11`. Candidate
 embeddings come only from the eight immutable frozen-Qwen banks, so candidate Qwen has
-zero training and test forward calls. Query Qwen is frozen and runs once, exposing
-decoder histories from Layers 7, 14, 21, and 28 to a trainable 288-dimensional shared
-recurrent Block. The default uses K=8 slots and executes exactly R=4 updates. It has no
-exit controller, exit threshold, halting loss, compute penalty, or LoRA. The first v10
-launch was interrupted before evaluation because the new phase-embedding initialization
-changed an existing parameter's random initialization; it is invalid and is not reported
-as an experiment result.
+zero training and test forward calls. Query Qwen is frozen and runs once, exposing only
+its official final 2,048-dimensional embedding. Two query-conditioned orthogonal directions
+create four antithetic, zero-mean worlds. One shared cross-world attention plus SwiGLU Block
+updates all worlds simultaneously for exactly four passes, and the final L2-normalized
+arithmetic world mean is the sole supervised and inference embedding. It has no decoder
+history inputs, latent slots, recurrent-step embeddings, exit controller, intermediate-pass
+loss, final learned readout, or LoRA. No v11 full experiment has completed yet.
 
 Every future formal run uses one stage, one full-data epoch, no validation, one rolling
 checkpoint, per-device batch 32 on eight V100 GPUs, and a true contrastive global batch
@@ -57,21 +57,21 @@ architectures and are excluded from the primary all-model table.
 ## Current recurrent parameter accounting
 
 The original Qwen3-VL-Embedding-2B backbone and every candidate bank remain frozen and
-unchanged. The active K=8 query recurrent head adds:
+unchanged. The active P=4 query recurrent head adds:
 
 | Component | Parameters | Retained for inference |
 | --- | ---: | --- |
-| Frozen-history projection and layer identities | 597,888 | Yes |
-| Slot queries and slot initializer | 1,001,376 | Yes |
-| Two-layer shared recurrent Block | 2,665,152 | Yes |
-| Recurrent-step embeddings | 1,152 | Yes |
-| EOS-conditioned readout and zero-gated residual fusion | 590,401 | Yes |
-| **Total trainable addition** | **4,855,969** | **Yes** |
+| Shared cross-world attention, internal width 320 | 2,621,440 | Yes |
+| Shared SwiGLU, internal width 288 | 1,769,472 | Yes |
+| Two perturbation direction codes | 640 | Yes |
+| Two bounded recurrent residual scales | 2 | Yes |
+| Final arithmetic mean and L2 normalization | 0 | Yes |
+| **Total trainable addition** | **4,391,554** | **Yes** |
 
 All active recurrent parameters are retained for inference; there is no training-only
-head. The current K=8 candidate has 4,855,969 trainable parameters.
+head. The current P=4 candidate has 4,391,554 trainable parameters.
 The independent last-four-decoder-layer LoRA baseline trains 4,456,448 parameters, so
-K=8 recurrent adds 399,521 more parameters, or 1.0896 times that LoRA parameter count.
+the recurrent head uses 64,894 fewer parameters, or 0.9854 times that LoRA parameter count.
 The full 28-layer LoRA baseline trains 31,195,136 parameters. Parameter counts alone do
 not establish quality; use the held-out metrics below.
 

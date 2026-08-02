@@ -1,4 +1,4 @@
-"""Run the focused COCO v2 recurrent repair controls serially."""
+"""Run the COCO parallel-world recurrent experiment before three LoRA controls."""
 
 from __future__ import annotations
 
@@ -19,31 +19,52 @@ from looped_vl.candidate_bank import CANDIDATE_BANK_SPECS, sha256_file
 
 @dataclass(frozen=True)
 class QueryRecurrentRun:
-	"""One full-data train/test experiment that isolates a single design decision."""
+	"""One full-data fixed-recurrence experiment."""
 
 	name: str
 	dataset: str
-	num_slots: int
+	num_worlds: int
 	max_recurrent_steps: int
-	history_layers: tuple[int, ...] = (7, 14, 21, 28)
+	perturbation_scale: float = 0.02
 
 	def validate(self) -> None:
 		if self.dataset not in BASELINE_DATASETS:
 			raise ValueError(f"Unsupported dataset: {self.dataset}")
-		if self.num_slots not in (1, 4, 8):
-			raise ValueError("Formal slot count must be 1, 4, or 8")
+		if self.num_worlds not in (1, 2, 4):
+			raise ValueError("Formal world count must be 1, 2, or 4")
 		if self.max_recurrent_steps not in (1, 2, 3, 4):
 			raise ValueError("Formal recurrent steps must be 1, 2, 3, or 4")
+		if not 0 < self.perturbation_scale < 1:
+			raise ValueError("Perturbation scale must be in (0, 1)")
+
+
+@dataclass(frozen=True)
+class QueryOnlyLoraRun:
+	"""One last-four-layer query-only LoRA control against fixed candidates."""
+
+	name: str
+	dataset: str
+
+	def validate(self) -> None:
+		if self.dataset not in BASELINE_DATASETS:
+			raise ValueError(f"Unsupported dataset: {self.dataset}")
 
 
 FORMAL_QUERY_RECURRENT_RUNS = (
-	QueryRecurrentRun("coco_v10_k8_r1_fixed", "coco", 8, 1),
-	QueryRecurrentRun("coco_v10_k8_r4_fixed", "coco", 8, 4),
+	QueryRecurrentRun("coco_v11_p4_r4_final_mean", "coco", 4, 4),
 )
-QUERY_ONLY_LORA_CONTROL_NAME = "coco_query_only_last4_lora_frozen_candidates"
+QUERY_ONLY_LORA_RUNS = (
+	QueryOnlyLoraRun("coco_query_only_last4_lora_frozen_candidates", "coco"),
+	QueryOnlyLoraRun(
+		"gqa_balanced_query_only_last4_lora_frozen_candidates",
+		"gqa_balanced",
+	),
+	QueryOnlyLoraRun("clevr_query_only_last4_lora_frozen_candidates", "clevr"),
+)
 
 
 def _write_json(path: Path, value: Any) -> None:
+	path.parent.mkdir(parents=True, exist_ok=True)
 	path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -54,7 +75,7 @@ def _queue_manifests_match(existing: dict[str, Any], current: dict[str, Any]) ->
 
 
 def validate_all_candidate_banks(candidate_root: Path) -> dict[str, str]:
-	"""Require all eight immutable banks before any recurrent GPU process starts."""
+	"""Require all eight immutable banks before any GPU process starts."""
 	identities = {}
 	for spec in CANDIDATE_BANK_SPECS:
 		bank_root = candidate_root / spec.relative_path
@@ -76,12 +97,9 @@ def build_training_command(
 	output_dir: Path,
 	resume_checkpoint: Path | None = None,
 	smoke: bool = False,
-	diagnostic: bool = False,
 ) -> list[str]:
-	"""Build an eight-rank no-LoRA command for one immutable run identity."""
+	"""Build one eight-rank no-LoRA parallel-world training command."""
 	run.validate()
-	if smoke and diagnostic:
-		raise ValueError("Technical smoke and quality diagnostic are mutually exclusive")
 	command = [
 		sys.executable,
 		"-m",
@@ -114,28 +132,18 @@ def build_training_command(
 		str(args.checkpoint_every),
 		"--max-checkpoints",
 		"1",
-		"--num-slots",
-		str(run.num_slots),
+		"--num-worlds",
+		str(run.num_worlds),
 		"--max-recurrent-steps",
 		str(run.max_recurrent_steps),
-		"--history-layers",
-		",".join(str(layer) for layer in run.history_layers),
+		"--perturbation-scale",
+		str(run.perturbation_scale),
 		"--visual-length-buckets",
 		"3",
 		"--min-visual-bucket-size",
 		"8",
 		"--hard-negative-count",
 		"32",
-		"--direct-pass-loss-weight",
-		"1.0",
-		"--slot-bridge-loss-weight",
-		"0.1",
-		"--slot-bridge-scale",
-		"0.1",
-		"--progressive-loss-weight",
-		"0.0",
-		"--progressive-margin",
-		"0.02",
 	]
 	if resume_checkpoint is not None:
 		command.extend(["--resume-checkpoint", str(resume_checkpoint)])
@@ -158,15 +166,6 @@ def build_training_command(
 				"--skip-final-save",
 			],
 		)
-	if diagnostic:
-		command.extend(
-			[
-				"--max-train-rows",
-				str(args.diagnostic_rows),
-				"--max-optimizer-steps",
-				str(args.diagnostic_steps),
-			],
-		)
 	return command
 
 
@@ -177,7 +176,7 @@ def build_evaluation_command(
 	training_output: Path,
 	evaluation_output: Path,
 ) -> list[str]:
-	"""Build the full held-out test that reports every recurrent pass."""
+	"""Build the full held-out test that reports Pass 0 through Pass R."""
 	return [
 		sys.executable,
 		"-m",
@@ -212,13 +211,14 @@ def build_evaluation_command(
 
 
 def build_query_only_lora_training_command(
+	run: QueryOnlyLoraRun,
 	*,
 	args: argparse.Namespace,
 	output_dir: Path,
 	resume_checkpoint: Path | None = None,
-	smoke: bool = False,
 ) -> list[str]:
-	"""Build the parameter-matched query-only last-four-layer LoRA control."""
+	"""Build a last-four-layer LoRA command using the matching fixed gallery."""
+	run.validate()
 	command = [
 		sys.executable,
 		"-m",
@@ -228,9 +228,9 @@ def build_query_only_lora_training_command(
 		"-m",
 		"looped_vl.baseline.train",
 		"--dataset",
-		"coco",
+		run.dataset,
 		"--dataset-root",
-		str(Path(args.dataset_root) / "coco"),
+		str(Path(args.dataset_root) / run.dataset),
 		"--candidate-root",
 		str(args.candidate_root),
 		"--model-root",
@@ -264,27 +264,23 @@ def build_query_only_lora_training_command(
 	]
 	if resume_checkpoint is not None:
 		command.extend(["--resume-checkpoint", str(resume_checkpoint)])
-	if smoke:
-		command.extend(
-			[
-				"--max-train-rows",
-				str(args.smoke_rows),
-				"--max-optimizer-steps",
-				str(args.smoke_steps),
-				"--skip-checkpoint-save",
-				"--skip-adapter-save",
-			],
-		)
+		resume_source_git_commit = getattr(args, "resume_source_git_commit", None)
+		if resume_source_git_commit is not None:
+			command.extend(
+				["--resume-source-git-commit", str(resume_source_git_commit)],
+			)
 	return command
 
 
 def build_query_only_lora_evaluation_command(
+	run: QueryOnlyLoraRun,
 	*,
 	args: argparse.Namespace,
 	training_output: Path,
 	evaluation_output: Path,
 ) -> list[str]:
-	"""Evaluate LoRA queries against the same immutable test candidates as recurrent v2."""
+	"""Evaluate LoRA queries against the same immutable test candidates."""
+	run.validate()
 	return [
 		sys.executable,
 		"-m",
@@ -294,9 +290,9 @@ def build_query_only_lora_evaluation_command(
 		"-m",
 		"looped_vl.baseline.evaluate",
 		"--dataset",
-		"coco",
+		run.dataset,
 		"--dataset-root",
-		str(Path(args.dataset_root) / "coco"),
+		str(Path(args.dataset_root) / run.dataset),
 		"--candidate-root",
 		str(args.candidate_root),
 		"--model-root",
@@ -336,9 +332,7 @@ def _resume_checkpoint(training_output: Path) -> Path | None:
 
 def _next_evaluation_output(run_root: Path) -> Path:
 	primary = run_root / "test"
-	if not primary.exists():
-		return primary
-	if _passed(primary / "status.json"):
+	if not primary.exists() or _passed(primary / "status.json"):
 		return primary
 	for attempt in range(1, 100):
 		candidate = run_root / f"test_retry_{attempt:02d}"
@@ -363,108 +357,128 @@ def _child_process_environment(args: argparse.Namespace) -> dict[str, str]:
 
 
 def _run(command: list[str], *, args: argparse.Namespace) -> None:
-	environment = _child_process_environment(args)
 	result = subprocess.run(
 		command,
 		cwd=args.project_root,
-		env=environment,
+		env=_child_process_environment(args),
 		check=False,
 	)
 	if result.returncode:
 		raise RuntimeError(f"Command failed with exit code {result.returncode}: {command}")
 
 
-def run_quality_diagnostic(args: argparse.Namespace) -> None:
-	"""Train one fixed-window v2 model and fully test every recurrent pass."""
-	if args.world_size != 8 or args.per_device_batch_size != 32:
-		raise ValueError("Quality diagnostic is locked to 8 GPUs and batch 32 per GPU")
-	if args.diagnostic_rows != args.diagnostic_steps * 8 * args.per_device_batch_size:
-		raise ValueError("Diagnostic rows must equal steps times the global batch size")
-	output_root = Path(args.output_root)
-	output_root.mkdir(parents=True, exist_ok=True)
-	bank_identities = validate_all_candidate_banks(Path(args.candidate_root))
-	run = FORMAL_QUERY_RECURRENT_RUNS[1]
-	manifest = {
-		"scope": "non_formal_root_cause_quality_diagnostic",
-		"run": asdict(run),
-		"diagnostic_rows": args.diagnostic_rows,
-		"diagnostic_steps": args.diagnostic_steps,
-		"validation_used": False,
-		"candidate_bank_manifest_sha256": bank_identities,
-	}
-	manifest_path = output_root / "diagnostic_manifest.json"
-	if manifest_path.exists():
-		if not _queue_manifests_match(
-			json.loads(manifest_path.read_text(encoding="utf-8")),
-			manifest,
-		):
-			raise ValueError("Existing diagnostic manifest does not match this run")
-	else:
-		_write_json(manifest_path, manifest)
-	status_path = output_root / "status.json"
-	training_output = output_root / "train"
+def _require_resumable_or_fresh(training_output: Path) -> Path | None:
+	if not training_output.exists():
+		return None
+	checkpoint = _resume_checkpoint(training_output)
+	if checkpoint is None:
+		raise FileExistsError(
+			f"Incomplete training has no resumable checkpoint: {training_output}",
+		)
+	return checkpoint
+
+
+def _run_recurrent(args: argparse.Namespace, status_path: Path) -> None:
+	run = FORMAL_QUERY_RECURRENT_RUNS[0]
+	run_root = Path(args.output_root) / run.name
+	training_output = run_root / "train"
 	if not _passed(training_output / "status.json"):
-		if training_output.exists():
-			raise FileExistsError(
-				f"Incomplete diagnostic training requires diagnosis: {training_output}",
-			)
+		resume_checkpoint = _require_resumable_or_fresh(training_output)
 		command = build_training_command(
 			run,
 			args=args,
 			output_dir=training_output,
-			diagnostic=True,
+			resume_checkpoint=resume_checkpoint,
 		)
-		_write_json(status_path, {"status": "training", "command": command})
+		_write_json(status_path, {"status": "training", "run": run.name, "command": command})
 		_run(command, args=args)
 	if not (training_output / "query_recurrent_model.pt").is_file():
-		raise FileNotFoundError(f"Missing diagnostic recurrent model: {training_output}")
-	evaluation_output = output_root / "test"
+		raise FileNotFoundError(f"Missing final recurrent model: {training_output}")
+	evaluation_output = _next_evaluation_output(run_root)
 	if not _passed(evaluation_output / "status.json"):
-		if evaluation_output.exists():
-			raise FileExistsError(
-				f"Incomplete diagnostic test requires diagnosis: {evaluation_output}",
-			)
 		command = build_evaluation_command(
 			run,
 			args=args,
 			training_output=training_output,
 			evaluation_output=evaluation_output,
 		)
-		_write_json(status_path, {"status": "testing", "command": command})
+		_write_json(status_path, {"status": "testing", "run": run.name, "command": command})
 		_run(command, args=args)
 	_write_json(
-		status_path,
-		{"status": "passed", "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+		run_root / "latest_test.json",
+		{"path": str(evaluation_output), "report": str(evaluation_output / "report.json")},
+	)
+
+
+def _run_lora_control(
+	run: QueryOnlyLoraRun,
+	*,
+	args: argparse.Namespace,
+	status_path: Path,
+) -> None:
+	run_root = Path(args.control_output_root) / run.name
+	training_output = run_root / "train"
+	if not _passed(training_output / "status.json"):
+		resume_checkpoint = _require_resumable_or_fresh(training_output)
+		command = build_query_only_lora_training_command(
+			run,
+			args=args,
+			output_dir=training_output,
+			resume_checkpoint=resume_checkpoint,
+		)
+		_write_json(status_path, {"status": "training", "run": run.name, "command": command})
+		_run(command, args=args)
+	if not (training_output / "adapter" / "adapter_model.safetensors").is_file():
+		raise FileNotFoundError(f"Missing final query-only LoRA adapter: {training_output}")
+	evaluation_output = _next_evaluation_output(run_root)
+	if not _passed(evaluation_output / "status.json"):
+		command = build_query_only_lora_evaluation_command(
+			run,
+			args=args,
+			training_output=training_output,
+			evaluation_output=evaluation_output,
+		)
+		_write_json(status_path, {"status": "testing", "run": run.name, "command": command})
+		_run(command, args=args)
+	_write_json(
+		run_root / "latest_test.json",
+		{"path": str(evaluation_output), "report": str(evaluation_output / "report.json")},
 	)
 
 
 def run_queue(args: argparse.Namespace) -> None:
+	"""Smoke, run full COCO recurrence, then resume/run all three LoRA controls."""
 	if args.world_size != 8 or args.per_device_batch_size != 32:
 		raise ValueError("Formal queue is locked to 8 GPUs and batch 32 per GPU")
-	for run in FORMAL_QUERY_RECURRENT_RUNS:
+	for run in (*FORMAL_QUERY_RECURRENT_RUNS, *QUERY_ONLY_LORA_RUNS):
 		run.validate()
 	output_root = Path(args.output_root)
 	output_root.mkdir(parents=True, exist_ok=True)
+	Path(args.control_output_root).mkdir(parents=True, exist_ok=True)
 	bank_identities = validate_all_candidate_banks(Path(args.candidate_root))
 	manifest_path = output_root / "queue_manifest.json"
+	sequence = (
+		"smoke_coco_v11_p4_r4_final_mean",
+		FORMAL_QUERY_RECURRENT_RUNS[0].name,
+		*(run.name for run in QUERY_ONLY_LORA_RUNS),
+	)
 	queue_manifest = {
-		"query_only_lora_control": {
-			"name": QUERY_ONLY_LORA_CONTROL_NAME,
-			"dataset": "coco",
-			"decoder_layer_indices": BASELINE_LORA_LAST_FOUR_DECODER_LAYERS,
-			"candidate_qwen_forward_calls": 0,
-		},
-		"runs": [asdict(run) for run in FORMAL_QUERY_RECURRENT_RUNS],
+		"sequence": sequence,
+		"recurrent_runs": [asdict(run) for run in FORMAL_QUERY_RECURRENT_RUNS],
+		"query_only_lora_controls": [asdict(run) for run in QUERY_ONLY_LORA_RUNS],
+		"lora_decoder_layer_indices": BASELINE_LORA_LAST_FOUR_DECODER_LAYERS,
 		"world_size": args.world_size,
 		"per_device_batch_size": args.per_device_batch_size,
 		"contrastive_global_batch_size": args.world_size * args.per_device_batch_size,
 		"epochs": 1,
 		"validation_used": False,
+		"candidate_qwen_forward_calls": 0,
 		"candidate_bank_manifest_sha256": bank_identities,
 		"project_root": str(args.project_root),
 		"dataset_root": str(args.dataset_root),
 		"model_root": str(args.model_root),
 		"candidate_root": str(args.candidate_root),
+		"control_output_root": str(args.control_output_root),
 	}
 	if manifest_path.exists():
 		existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -473,116 +487,21 @@ def run_queue(args: argparse.Namespace) -> None:
 	else:
 		_write_json(manifest_path, queue_manifest)
 	status_path = output_root / "status.json"
-
-	lora_smoke_output = output_root / "smoke_coco_query_only_last4_lora"
-	if not _passed(lora_smoke_output / "status.json"):
-		if lora_smoke_output.exists():
-			raise FileExistsError(f"Failed smoke output requires diagnosis: {lora_smoke_output}")
-		_write_json(status_path, {"status": "smoke", "run": "query_only_last4_lora"})
-		_run(
-			build_query_only_lora_training_command(
-				args=args,
-				output_dir=lora_smoke_output,
-				smoke=True,
-			),
-			args=args,
-		)
-	smoke_output = output_root / "smoke_coco_k8_r4_fixed"
+	smoke_output = output_root / "smoke_coco_v11_p4_r4_final_mean"
 	if not _passed(smoke_output / "status.json"):
 		if smoke_output.exists():
 			raise FileExistsError(f"Failed smoke output requires diagnosis: {smoke_output}")
-		_write_json(status_path, {"status": "smoke", "run": "coco_k8_r4_fixed"})
-		_run(
-			build_training_command(
-				FORMAL_QUERY_RECURRENT_RUNS[1],
-				args=args,
-				output_dir=smoke_output,
-				smoke=True,
-			),
+		command = build_training_command(
+			FORMAL_QUERY_RECURRENT_RUNS[0],
 			args=args,
+			output_dir=smoke_output,
+			smoke=True,
 		)
-	lora_root = output_root / QUERY_ONLY_LORA_CONTROL_NAME
-	lora_training_output = lora_root / "train"
-	if not _passed(lora_training_output / "status.json"):
-		resume_checkpoint = (
-			_resume_checkpoint(lora_training_output) if lora_training_output.exists() else None
-		)
-		if lora_training_output.exists() and resume_checkpoint is None:
-			raise FileExistsError(
-				f"Incomplete LoRA control has no resumable checkpoint: {lora_training_output}",
-			)
-		command = build_query_only_lora_training_command(
-			args=args,
-			output_dir=lora_training_output,
-			resume_checkpoint=resume_checkpoint,
-		)
-		_write_json(
-			status_path,
-			{"status": "training", "run": QUERY_ONLY_LORA_CONTROL_NAME, "command": command},
-		)
+		_write_json(status_path, {"status": "smoke", "run": sequence[0], "command": command})
 		_run(command, args=args)
-	if not (lora_training_output / "adapter" / "adapter_model.safetensors").is_file():
-		raise FileNotFoundError(f"Missing final query-only LoRA adapter: {lora_training_output}")
-	lora_evaluation_output = _next_evaluation_output(lora_root)
-	if not _passed(lora_evaluation_output / "status.json"):
-		command = build_query_only_lora_evaluation_command(
-			args=args,
-			training_output=lora_training_output,
-			evaluation_output=lora_evaluation_output,
-		)
-		_write_json(
-			status_path,
-			{"status": "testing", "run": QUERY_ONLY_LORA_CONTROL_NAME, "command": command},
-		)
-		_run(command, args=args)
-	_write_json(
-		lora_root / "latest_test.json",
-		{
-			"path": str(lora_evaluation_output),
-			"report": str(lora_evaluation_output / "report.json"),
-		},
-	)
-	for index, run in enumerate(FORMAL_QUERY_RECURRENT_RUNS):
-		run_root = output_root / run.name
-		training_output = run_root / "train"
-		if not _passed(training_output / "status.json"):
-			resume_checkpoint = (
-				_resume_checkpoint(training_output) if training_output.exists() else None
-			)
-			if training_output.exists() and resume_checkpoint is None:
-				raise FileExistsError(
-					f"Incomplete training has no resumable checkpoint: {training_output}",
-				)
-			command = build_training_command(
-				run,
-				args=args,
-				output_dir=training_output,
-				resume_checkpoint=resume_checkpoint,
-			)
-			_write_json(
-				status_path,
-				{"status": "training", "run_index": index, "run": run.name, "command": command},
-			)
-			_run(command, args=args)
-		if not (training_output / "query_recurrent_model.pt").is_file():
-			raise FileNotFoundError(f"Missing final recurrent model: {training_output}")
-		evaluation_output = _next_evaluation_output(run_root)
-		if not _passed(evaluation_output / "status.json"):
-			command = build_evaluation_command(
-				run,
-				args=args,
-				training_output=training_output,
-				evaluation_output=evaluation_output,
-			)
-			_write_json(
-				status_path,
-				{"status": "testing", "run_index": index, "run": run.name, "command": command},
-			)
-			_run(command, args=args)
-		_write_json(
-			run_root / "latest_test.json",
-			{"path": str(evaluation_output), "report": str(evaluation_output / "report.json")},
-		)
+	_run_recurrent(args, status_path)
+	for run in QUERY_ONLY_LORA_RUNS:
+		_run_lora_control(run, args=args, status_path=status_path)
 	_write_json(
 		status_path,
 		{"status": "passed", "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
@@ -612,6 +531,7 @@ def parse_args() -> argparse.Namespace:
 		default=Path("/home/mnt/liyiwei/datasets/looped_vl_candidate_banks_v1_13442b1"),
 	)
 	parser.add_argument("--output-root", type=Path, required=True)
+	parser.add_argument("--control-output-root", type=Path, required=True)
 	parser.add_argument("--world-size", type=int, default=8)
 	parser.add_argument("--per-device-batch-size", type=int, default=32)
 	parser.add_argument("--evaluation-batch-size", type=int, default=32)
@@ -619,9 +539,6 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--checkpoint-every", type=int, default=100)
 	parser.add_argument("--smoke-rows", type=int, default=512)
 	parser.add_argument("--smoke-steps", type=int, default=2)
-	parser.add_argument("--diagnostic-only", action="store_true")
-	parser.add_argument("--diagnostic-rows", type=int, default=51_200)
-	parser.add_argument("--diagnostic-steps", type=int, default=200)
 	parser.add_argument("--resume-source-git-commit")
 	parser.add_argument("--resume-gradient-scale", type=float)
 	return parser.parse_args()
@@ -630,10 +547,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
 	args = parse_args()
 	try:
-		if args.diagnostic_only:
-			run_quality_diagnostic(args)
-		else:
-			run_queue(args)
+		run_queue(args)
 		return 0
 	except KeyboardInterrupt:
 		status = "interrupted"
