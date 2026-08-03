@@ -70,3 +70,36 @@ module would make the implemented architecture and parameter accounting ambiguou
 Recovery: the removed implementation remains available in Git history. Checkpoints that
 contain `recurrent_connector` parameters are intentionally incompatible with the new
 architecture identity.
+
+## 2026-08-03
+
+### Approved 8XV100 obsolete-checkpoint cleanup
+
+Seventy-nine `checkpoints` directories under these two experiment roots are approved for
+deletion after this record is pushed:
+
+- `/home/mnt/liyiwei/outputs`
+- `/home/mnt/liyiwei/loopedTransformer/outputs`
+
+The deletion set contains only checkpoints from superseded recurrent architectures,
+recurrent diagnostics v2 through v10, the obsolete parallel-world v11 run, and smoke,
+throughput, batch-size, or slot-count tests. It occupies 1,368,212 KiB. Experiment logs,
+metrics, reports, manifests, and status files remain in place.
+
+The following checkpoint families are explicitly protected because they are completed or
+current LoRA results:
+
+- `loopedTransformer/outputs/lora_last4_full_20260801_062354`
+- `loopedTransformer/outputs/query_lora_fixed_candidates_post_v11_8fa9c10_20260803`
+- `loopedTransformer/outputs/query_recurrent_v2_08934e8_retry2_20260802/`
+  `coco_v2_query_only_last4_lora_frozen_candidates`
+- `outputs/six_full_train_test_9930a8d_20260730/baseline`
+
+The immutable Qwen base model, datasets, candidate banks, source trees, and checkpoints in
+unrelated projects such as AsymLoop, PoLar, and LatentThought are outside this deletion.
+
+Reason: these checkpoint files cannot resume any accepted current architecture and are no
+longer needed for analysis; their non-checkpoint evidence remains preserved.
+
+Recovery: rerun the preserved experiment command and manifest against the immutable base
+model. These remote checkpoint files are not stored in Git and cannot be restored directly.
