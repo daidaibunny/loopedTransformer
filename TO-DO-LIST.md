@@ -283,4 +283,4 @@
   as EXP-015A/B; CLEVR training and test remain in the same queue.
 - [x] Produce the concise 2026-08-03 Markdown experiment report, covering verified
   single/mixed splits, baseline/recurrent progression, full metrics, failure diagnosis, and the
-  proposed anchored perturbation repair.
+  next architecture and mixed-training directions.
