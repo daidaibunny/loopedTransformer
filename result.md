@@ -33,7 +33,8 @@ the current experiments.
 | Frozen backbone | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA | Passed | Passed | Passed | All three datasets |
 | Backbone + LoRA, decoder layers 24–27 only | Passed | Passed | Passed | All three datasets |
-| Query-only parallel-world recurrent Block (no LoRA) | Running | N/A | N/A | No accepted v11 result yet |
+| Query-only LoRA, decoder layers 24–27, frozen candidates | Passed | Passed | Running | COCO and GQA Balanced |
+| Query-only parallel-world recurrent Block (no LoRA) | Passed | N/A | N/A | COCO Pass 4 |
 
 The current formal candidate is `query_only_parallel_world_recurrent_no_lora_v11`, with
 protocol `single_stage_antithetic_final_mean_v11`. Candidate
@@ -44,9 +45,12 @@ create four antithetic, zero-mean worlds. One shared cross-world attention plus 
 updates all worlds simultaneously for exactly four passes, and the final L2-normalized
 arithmetic world mean is the sole supervised and inference embedding. It has no decoder
 history inputs, latent slots, recurrent-step embeddings, exit controller, intermediate-pass
-loss, final learned readout, or LoRA. No v11 full experiment has completed yet.
+loss, final learned readout, or LoRA. The full COCO experiment completed, but its fixed
+Pass-4 output failed the quality gate: Pass 1 improved over the in-run frozen reference,
+while Passes 2–4 progressively degraded. This is a completed negative result, not an
+accepted architecture improvement.
 
-Every future formal run uses one stage, one full-data epoch, no validation, one rolling
+Every formal run uses one stage, one full-data epoch, no validation, one rolling
 checkpoint, per-device batch 32 on eight V100 GPUs, and a true contrastive global batch
 of 256. Evaluation must retain frozen-Qwen Pass 0 and every fixed Pass 1 through Pass R,
 with every required metric and the change from the in-run Pass 0. COCO uses its
@@ -282,6 +286,12 @@ diagnostics, not additional independent tests.
 | Backbone + LoRA | Passed | Text→image | 72.0247 | 62.0832 | 16.8581 | 9.0672 | 4.7439 | 62.0832 | 84.2903 | 90.6717 | 94.8780 | 72.0247 | 76.2017 |
 | Backbone + LoRA | Passed | Image→text | 64.0410 | 78.4600 | 57.8000 | 35.8980 | 20.5160 | 15.6867 | 57.7787 | 71.7680 | 82.0300 | 85.0017 | 70.5028 |
 | Backbone + LoRA | Passed | Equal-direction mean | 68.0328 | 70.2716 | 37.3290 | 22.4826 | 12.6300 | 38.8849 | 71.0345 | 81.2199 | 88.4540 | 78.5132 | 73.3522 |
+| Query-only last-four-layer LoRA, frozen candidates (EXP-015A) | Passed | Text→image | 67.8328 | 57.2251 | 16.1287 | 8.7677 | 4.6523 | 57.2251 | 80.6437 | 87.6769 | 93.0468 | 67.8328 | 72.1982 |
+| Query-only last-four-layer LoRA, frozen candidates (EXP-015A) | Passed | Image→text | 60.9540 | 75.8600 | 55.1320 | 34.2580 | 19.6100 | 15.1660 | 55.1100 | 68.4887 | 78.4087 | 82.7832 | 67.5131 |
+| Query-only last-four-layer LoRA, frozen candidates (EXP-015A) | Passed | Equal-direction mean | 64.3934 | 66.5426 | 35.6304 | 21.5128 | 12.1312 | 36.1956 | 67.8769 | 78.0828 | 85.7277 | 75.3080 | 69.8557 |
+| Parallel-world recurrent v11, Pass 4 (EXP-014) | Passed | Text→image | 62.6522 | 52.2671 | 14.9452 | 8.2471 | 4.4496 | 52.2671 | 74.7261 | 82.4710 | 88.9924 | 62.6522 | 66.8634 |
+| Parallel-world recurrent v11, Pass 4 (EXP-014) | Passed | Image→text | 43.9381 | 52.3400 | 39.4920 | 25.5480 | 15.4440 | 10.4653 | 39.4787 | 51.0773 | 61.7533 | 61.7070 | 48.9415 |
+| Parallel-world recurrent v11, Pass 4 (EXP-014) | Passed | Equal-direction mean | 53.2951 | 52.3035 | 27.2186 | 16.8976 | 9.9468 | 31.3662 | 57.1024 | 66.7742 | 75.3729 | 62.1796 | 57.9024 |
 | Recurrent latent slots, K=8, Pass 4 (EXP-004A) | Passed | Text→image | 66.5165 | 55.8257 | 15.8561 | 8.6653 | 4.6180 | 55.8257 | 79.2803 | 86.6533 | 92.3591 | 66.5165 | 70.9131 |
 | Recurrent latent slots, K=8, Pass 4 (EXP-004A) | Passed | Image→text | 55.5491 | 70.2600 | 50.2560 | 31.7980 | 18.5670 | 14.0467 | 50.2387 | 63.5727 | 74.2387 | 78.4199 | 62.3308 |
 | Recurrent latent slots, K=8, Pass 4 (EXP-004A) | Passed | Equal-direction mean | 61.0328 | 63.0428 | 33.0560 | 20.2317 | 11.5925 | 34.9362 | 64.7595 | 75.1130 | 83.2989 | 72.4682 | 66.6219 |
@@ -1070,6 +1080,164 @@ gradients were finite. Final slot pairwise absolute cosine was 0.9934.
   queue log
   `/home/mnt/liyiwei/loopedTransformer/outputs/query_parallel_world_v11_8fa9c10_20260803/queue.log`.
 
+## EXP-014 — COCO query-only parallel-world recurrent v11
+
+- Status/time: passed. Training ran from 2026-08-02T18:42:53Z to 19:32:46Z;
+  full-test evaluation finished at 19:36:31Z.
+- Objective: evaluate the locked no-LoRA v11 architecture on the full COCO split with
+  four fixed recurrent passes. Pass 4 is the predeclared final output; Pass 1 is retained
+  only as a diagnostic and is not substituted for the primary result.
+- Route/node/code: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB,
+  commit `8fa9c101807ec0ea3487e01e043174ed4775380e`.
+- Data: 566,747 train rows and 25,010 test rows; 113,287 train images and 5,000 test
+  images; no validation use. Train manifest SHA-256
+  `555211fd08280e4e9ab72f040d64b002c1e2aa4b72f6cb6b42427adabb381ff8`;
+  test manifest SHA-256
+  `a36d9000f665bbaf6bc7d7e472f38e069bb201c0cf6770c0784b498e7193ec89`.
+- Candidate protocol: immutable frozen-Qwen COCO galleries. Train image/text bank
+  manifest SHA-256 values are
+  `9c8fb538574c0687dd415e4dad9212454bcb8d4ff6d0d9e8cda1e6496aed692c` and
+  `9d2f1b0b77ccce7cb9ead1a6f188cb0bfd8f5fb5cdd8ab3d51b794236a02b0c1`;
+  test image/text values are
+  `b23e6fd29ddd472b3c1c95dd2d1d6278a40e45c94862053aa0015c878549110d` and
+  `642299c06d1a7003ebd861a3f5d341501fd5c6f4333e3f37fa7497e908027635`.
+  Candidate Qwen forward calls were exactly zero.
+- Model: `query_only_parallel_world_recurrent_no_lora_v11`, protocol
+  `single_stage_antithetic_final_mean_v11`, four antithetic worlds, four fixed passes,
+  and 4,391,554 trainable parameters. It has no LoRA and no dynamic exit. Final model
+  SHA-256 is
+  `b5d1ff34b4403c8890fc1175ddbb808cbbabb57e375775c75273c8fc738ddd81`.
+- Optimization: seed 42, one epoch, 2,214 optimizer steps, AdamW with betas 0.9/0.95,
+  learning rate 1e-4, linear warmup/decay with warmup ratio 0.02, weight decay 0.01,
+  temperature 0.02, and 32 same-gallery full-bank hard negatives. Frozen Qwen used FP16;
+  the recurrent Block and InfoNCE used FP32. Attention used scaled dot-product attention.
+  Per-device batch was 32 and the contrastive/optimizer global batch was 256.
+- Checkpoints: one rolling resumable checkpoint, ending at step 2,214, plus the separate
+  final recurrent model. Distributed sampling processed 566,752 rows to cover all 566,747
+  unique rows.
+- Efficiency: training took 2,992.57 seconds, stable logged throughput after warmup was
+  192.22 samples/second, peak allocated training memory was 7.89 GiB per rank, final loss
+  was 1.7544, and final gradient norm was 1.5694. Test took 170.78 seconds at 146.45 test
+  rows/second; rank-0 peak allocated test memory was 5.22 GiB.
+- Evidence: tmux `query_parallel_v11_8fa9c10_20260803`; output
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_parallel_world_v11_8fa9c10_20260803/coco_v11_p4_r4_final_mean`;
+  queue log
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_parallel_world_v11_8fa9c10_20260803/queue.log`.
+
+### Equal-direction mean by recurrent pass (%)
+
+| Pass | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 | mAP change vs Pass 0 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0, frozen | 61.2489 | 64.0273 | 33.9309 | 20.6229 | 11.7410 | 34.2406 | 64.9975 | 75.4722 | 83.6290 | 73.0708 | 66.9697 | +0.0000 |
+| 1 | 63.3390 | 66.0028 | 34.9700 | 21.1249 | 11.9610 | 35.6484 | 66.9513 | 77.0669 | 84.8748 | 74.7468 | 68.8611 | +2.0901 |
+| 2 | 60.9085 | 62.2608 | 32.8780 | 19.9663 | 11.4151 | 34.7862 | 64.4925 | 74.3621 | 82.3586 | 71.2997 | 66.0312 | −0.3404 |
+| 3 | 56.6998 | 56.4712 | 29.7313 | 18.2461 | 10.5973 | 32.8855 | 60.4646 | 70.1382 | 78.5333 | 66.1077 | 61.4914 | −4.5491 |
+| 4, primary | 53.2951 | 52.3035 | 27.2186 | 16.8976 | 9.9468 | 31.3662 | 57.1024 | 66.7742 | 75.3729 | 62.1796 | 57.9024 | −7.9537 |
+
+### Primary Pass-4 metrics by direction (%)
+
+| Direction | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Text→image | 62.6522 | 52.2671 | 14.9452 | 8.2471 | 4.4496 | 52.2671 | 74.7261 | 82.4710 | 88.9924 | 62.6522 | 66.8634 |
+| Image→text | 43.9381 | 52.3400 | 39.4920 | 25.5480 | 15.4440 | 10.4653 | 39.4787 | 51.0773 | 61.7533 | 61.7070 | 48.9415 |
+| Equal-direction mean | 53.2951 | 52.3035 | 27.2186 | 16.8976 | 9.9468 | 31.3662 | 57.1024 | 66.7742 | 75.3729 | 62.1796 | 57.9024 |
+
+Pass 1 improved mAP by 2.0901 points over the in-run frozen reference, but every later
+pass degraded and formal Pass 4 finished 7.9537 points below frozen. The run therefore
+passed execution and reproducibility checks but failed its intended recurrent-quality
+gate. The failure is concentrated in repeated updates, especially image-to-text retrieval,
+rather than in the first refinement alone.
+
+## EXP-015A — COCO query-only last-four-layer LoRA with frozen candidates
+
+- Status/time: passed. The initial training manifest was published at
+  2026-08-02T13:20:51Z, training resumed from its sole step-400 checkpoint at 17:02:13Z,
+  completed at 18:19:08Z, and the corrected full-test retry finished at 19:39:45Z.
+- Objective: parameter-matched query-only control for EXP-014. The query backbone trains
+  LoRA only in decoder layers 24–27; candidates come from the same immutable banks and
+  candidate Qwen has zero forward calls.
+- Route/node/code: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB.
+  Training used commit `08934e87c4b97f44f27fdb4426bdba31acf265b6`; the namespaced
+  COCO-positive evaluation fix and retry used queue commit
+  `8fa9c101807ec0ea3487e01e043174ed4775380e`.
+- Data and banks: the same train/test rows, image counts, split checksums, and immutable
+  COCO train/test gallery checksums as EXP-014; no validation use.
+- Model: rank-32, alpha-32, dropout-0 LoRA on `q_proj`, `k_proj`, `v_proj`, `up_proj`,
+  `down_proj`, and `gate_proj` in decoder layers 24–27 only. The training manifest records
+  the authoritative 4,456,448 trainable parameters. Adapter SHA-256 is
+  `ae4e25b93e5bf616666b725b00ca9046279900f55316a6110605e9216bc11a58`.
+- Optimization: seed 42, FP16, scaled dot-product attention, gradient checkpointing,
+  AdamW with betas 0.9/0.95, learning rate 5e-5, linear warmup/decay with warmup ratio
+  0.02, weight decay 0.01, temperature 0.02, 32 same-gallery full-bank hard negatives,
+  one epoch and 2,214 optimizer steps. Per-device batch was 32; contrastive and optimizer
+  global batch were 256.
+- Checkpoints/efficiency: one rolling checkpoint, ending at step 2,214, plus the final
+  adapter. Accumulated training runtime was 4,614.67 seconds, stable logged throughput was
+  101.40 samples/second, peak allocated training memory was 9.35 GiB per rank, final loss
+  was 1.9503, and final gradient norm was 1.0576. Corrected full test took 147.80 seconds
+  at 169.21 rows/second; exact test peak memory was not written and remains N/A.
+- Evidence:
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_recurrent_v2_08934e8_retry2_20260802/coco_v2_query_only_last4_lora_frozen_candidates`;
+  authoritative test report is `test_retry_01/report.json`.
+
+The evaluation report's `trainable_parameter_count` field is zero because evaluation
+freezes the loaded adapter before counting currently trainable tensors. It is not the
+adapter parameter count; the training manifest's exact value, 4,456,448, is used here.
+
+### Test metrics (%)
+
+| Direction | mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Text→image | 67.8328 | 57.2251 | 16.1287 | 8.7677 | 4.6523 | 57.2251 | 80.6437 | 87.6769 | 93.0468 | 67.8328 | 72.1982 |
+| Image→text | 60.9540 | 75.8600 | 55.1320 | 34.2580 | 19.6100 | 15.1660 | 55.1100 | 68.4887 | 78.4087 | 82.7832 | 67.5131 |
+| Equal-direction mean | 64.3934 | 66.5426 | 35.6304 | 21.5128 | 12.1312 | 36.1956 | 67.8769 | 78.0828 | 85.7277 | 75.3080 | 69.8557 |
+
+## EXP-015B — GQA Balanced query-only last-four-layer LoRA with frozen candidates
+
+- Status/time: passed. Training ran from 2026-08-02T19:40:37Z to
+  2026-08-03T01:00:13Z; full-test evaluation finished at 01:03:36Z.
+- Objective: apply the same query-only, parameter-matched LoRA control to full GQA
+  Balanced while holding the training-answer candidate gallery fixed.
+- Route/node/code: `8XV100`,
+  `pt-cd238bc011a547dfa1a2f106b7bf6b1c-worker-0`, 8 × Tesla V100-SXM2-32GB,
+  commit `8fa9c101807ec0ea3487e01e043174ed4775380e`.
+- Data: 943,000 train rows and 12,578 testdev rows; 72,140 train images and 398 testdev
+  images; no validation use. Train manifest SHA-256
+  `2022a835621ea4c072e1e09c5412b78d3322fdd1ac658485ac947859fb20abdb`;
+  test manifest SHA-256
+  `ba1442bb782bb4627efc081111009e833dbbe6a5451a9f0264075cf662318b2b`.
+- Candidate protocol: one immutable 1,833-answer training gallery shared across splits;
+  bank manifest SHA-256
+  `516f9cbb5de44c84bbc7d26fdccc8cd4dc48c99a72f7713b3de88d6dda8845ee`.
+  Candidate Qwen forward calls were exactly zero.
+- Model/optimization: the same 4,456,448-parameter LoRA scope and optimizer settings as
+  EXP-015A, with one epoch and 3,684 optimizer steps. Adapter SHA-256 is
+  `53934bcb408176a134a6f18835b51da06fc2ca4d89eed1e8d230af2802499ce4`.
+- Checkpoints/efficiency: one rolling checkpoint, ending at step 3,684, plus the final
+  adapter. Training took 19,176.55 seconds, stable logged throughput was 49.38
+  samples/second, peak allocated training memory was 15.16 GiB per rank, final loss was
+  0.5535, and final gradient norm was 1.5148. Test took 156.75 seconds at 80.24
+  rows/second; exact test peak memory was not written and remains N/A.
+- Evidence:
+  `/home/mnt/liyiwei/loopedTransformer/outputs/query_lora_fixed_candidates_post_v11_8fa9c10_20260803/gqa_balanced_query_only_last4_lora_frozen_candidates`.
+
+As in EXP-015A, the evaluation-time zero trainable count describes a frozen loaded adapter;
+the authoritative adapter parameter count is 4,456,448 from the training manifest.
+
+### Test metrics (%)
+
+| mAP | P@1 | P@5 | P@10 | P@20 | R@1 | R@5 | R@10 | R@20 | MRR | nDCG@10 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 75.5850 | 63.1102 | 18.0442 | 9.4021 | 4.8191 | 63.1102 | 90.2210 | 94.0213 | 96.3826 | 75.5850 | 79.9811 |
+
+The test coverage was 99.9841%; answer accuracy equals P@1. Compared only as a control
+under this fixed-gallery protocol, EXP-015B is 0.6138 mAP points above the earlier
+full-28-layer online two-tower LoRA result and 4.0116 points above the earlier
+last-four-layer online two-tower LoRA result. The candidate protocol differs, so these
+cross-protocol gaps are descriptive rather than isolated layer-count effects.
+
 ## Required record for every new experiment
 
 1. Identity: unique ID, objective, terminal status, start/end time, route, node, exact code
@@ -1087,10 +1255,10 @@ gradients were finite. Final slot pairwise absolute cosine was 0.9934.
 ## All-model horizontal comparison
 
 This is the single primary comparison table. It contains the frozen reference, the two
-locked LoRA baselines, and the explicitly requested best historical online recurrent
-reference. No row from the current recurrent candidate is included until its fixed-pass
-design passes the diagnostic gate and completes a formal run. Other historical recurrent
-controls and ablations remain in their corresponding experiment sections above.
+locked online two-tower LoRA baselines, the parameter-matched query-only fixed-candidate
+LoRA control, the completed current recurrent candidate, and the explicitly requested
+best historical online recurrent reference. Other historical recurrent controls and
+ablations remain in their corresponding experiment sections above.
 COCO uses the equal-direction mean of text-to-image and image-to-text. GQA Balanced and
 CLEVR use answer retrieval. Compare metrics only within the same dataset.
 The historical row uses the online two-tower EXP-004C K=16 Pass 4 because it is the best
@@ -1169,6 +1337,39 @@ Balanced or CLEVR run exists for that architecture, so those cells are `N/A`.
 <td>Passed</td>
 <td>93.3167</td><td>87.4560</td><td>19.9515</td><td>9.9997</td><td>5.0000</td>
 <td>87.4560</td><td>99.7573</td><td>99.9973</td><td>100.0000</td><td>93.3167</td><td>95.0396</td>
+</tr>
+<tr>
+<td>Query-only LoRA, decoder layers 24–27, frozen candidates</td>
+<td>0</td>
+<td>1</td>
+<td>4,456,448</td>
+<td>Passed</td>
+<td>64.3934</td><td>66.5426</td><td>35.6304</td><td>21.5128</td><td>12.1312</td>
+<td>36.1956</td><td>67.8769</td><td>78.0828</td><td>85.7277</td><td>75.3080</td>
+<td>69.8557</td>
+<td>Passed</td>
+<td>75.5850</td><td>63.1102</td><td>18.0442</td><td>9.4021</td><td>4.8191</td>
+<td>63.1102</td><td>90.2210</td><td>94.0213</td><td>96.3826</td><td>75.5850</td>
+<td>79.9811</td>
+<td>Running</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+</tr>
+<tr>
+<td>Query-only parallel-world recurrent v11 (no LoRA), Pass 4</td>
+<td>N/A</td>
+<td>4</td>
+<td>4,391,554</td>
+<td>Passed</td>
+<td>53.2951</td><td>52.3035</td><td>27.2186</td><td>16.8976</td><td>9.9468</td>
+<td>31.3662</td><td>57.1024</td><td>66.7742</td><td>75.3729</td><td>62.1796</td>
+<td>57.9024</td>
+<td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+<td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
 </tr>
 <tr>
 <td>Historical online two-tower damped mid-decoder recurrent (no LoRA), K=16 Pass 4</td>

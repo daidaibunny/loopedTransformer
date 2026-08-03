@@ -275,8 +275,9 @@
   the frozen Qwen forward in FP16; record the precision split and add a regression test.
 - [x] Run the eight-V100 two-step v11 COCO smoke and verify all ranks, finite gradients,
   exact zero candidate-Qwen calls, parameter count, throughput, and peak memory.
-- [ ] Train and test full COCO v11 for one epoch, reporting frozen Pass 0 and Pass 1–4;
-  currently running in tmux `query_parallel_v11_8fa9c10_20260803` after the passed smoke.
-- [ ] After COCO v11 completes, resume or run the COCO, GQA Balanced, and CLEVR
-  last-four-layer query-only LoRA fixed-candidate controls serially; all three are locked
-  into that same queue, with the completed COCO adapter reused by explicit path.
+- [x] Train and test full COCO v11 for one epoch, reporting frozen Pass 0 and Pass 1–4;
+  Pass 1 improved by 2.0901 mAP points, but the fixed Pass-4 output degraded by 7.9537
+  points and failed the recurrent-quality gate.
+- [ ] Complete all COCO, GQA Balanced, and CLEVR last-four-layer query-only LoRA
+  fixed-candidate controls serially. COCO and GQA Balanced have passed and are recorded
+  as EXP-015A/B; CLEVR training and test remain in the same queue.
