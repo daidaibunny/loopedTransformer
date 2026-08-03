@@ -281,3 +281,6 @@
 - [ ] Complete all COCO, GQA Balanced, and CLEVR last-four-layer query-only LoRA
   fixed-candidate controls serially. COCO and GQA Balanced have passed and are recorded
   as EXP-015A/B; CLEVR training and test remain in the same queue.
+- [x] Produce the concise 2026-08-03 Markdown experiment report from `result.md` only,
+  covering split evidence, baseline/recurrent progression, full metrics, failure diagnosis,
+  and the proposed anchored perturbation repair.
